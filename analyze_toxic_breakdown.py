@@ -41,7 +41,8 @@ def analyze_suspects():
         try:
             with open(file_path, 'r') as f:
                 data = json.load(f)
-        except:
+        except Exception as e:
+            print(f"Warning: Could not load {file_path}: {e}")
             continue
 
         history = data.get('history', [])
@@ -75,7 +76,7 @@ def analyze_suspects():
         sorted_bots = sorted(bot_stats.items(), key=lambda x: x[1]['pnl'])
 
         for bot, s in sorted_bots:
-            win_rate = (s['wins'] / s['total']) * 100
+            win_rate = (s['wins'] / s['total']) * 100 if s['total'] > 0 else 0.0
             pnl_str = f"{s['pnl']:+.2f}%"
 
             # Color coding for terminal

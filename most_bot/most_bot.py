@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict, cast
-from typing import Any, Dict, List, Optional, TypedDict, cast
 import ccxt
 import numpy as np
 

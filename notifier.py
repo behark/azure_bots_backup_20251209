@@ -1,7 +1,7 @@
 import logging
 import requests
 import json
-import random
+import secrets
 import string
 from typing import Dict, Optional
 from datetime import datetime
@@ -13,10 +13,12 @@ def generate_signal_id(symbol: str, direction: str) -> str:
     """Generate a unique signal ID for tracking.
     Format: B1-{SYMBOL}-{DIRECTION}-{RANDOM4}
     Example: B1-ADA-L-X7K2
+
+    Uses cryptographically secure random generation for security.
     """
     symbol_short = symbol.replace('/USDT:USDT', '').replace('/USDT', '').replace(':USDT', '')[:6]
     dir_short = 'L' if direction == 'LONG' else 'S'
-    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    random_part = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
     return f"B1-{symbol_short}-{dir_short}-{random_part}"
 
 class TelegramNotifier:

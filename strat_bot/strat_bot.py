@@ -639,7 +639,7 @@ class STRATBot:
             timestamp=human_ts(),
             bar_sequence=bar_sequence,
             entry=entry,
-            stop_loss=sl,
+            stop_loss=stop_loss,
             take_profit_1=tp1,
             take_profit_2=tp2,
             current_price=current_price,

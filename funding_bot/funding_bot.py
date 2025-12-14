@@ -439,12 +439,23 @@ class FundingBot:
                 snapshot = self._collect(symbol, period)
                 if self.rate_limiter:
                     self.rate_limiter.record_success(f"mexc_{symbol}")
-            except Exception as exc:  # pragma: no cover - network errors
-                logger.error("Failed to collect data for %s: %s", symbol, exc)
+            except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+                logger.error("Exchange API error for %s: %s", symbol, exc)
                 if self.rate_limiter:
                     self.rate_limiter.record_error(f"mexc_{symbol}")
                 if self.health_monitor:
                     self.health_monitor.record_error(f"API error for {symbol}: {exc}")
+                continue
+            except ValueError as exc:
+                logger.error("Invalid data for %s: %s", symbol, exc)
+                if self.health_monitor:
+                    self.health_monitor.record_error(f"Data validation error for {symbol}: {exc}")
+                continue
+            except Exception as exc:
+                # Catch-all for unexpected errors - log and continue
+                logger.exception("Unexpected error collecting data for %s: %s", symbol, exc)
+                if self.health_monitor:
+                    self.health_monitor.record_error(f"Unexpected error for {symbol}: {exc}")
                 continue
 
             evaluation = self.evaluator.evaluate(snapshot, snapshot.price, snapshot.ema_20)

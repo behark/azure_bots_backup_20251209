@@ -1,0 +1,55 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.envrc
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+.venv*/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.cache/
+
+# Logs
+logs/
+*.log
+
+# State files (contain trading data)
+*_state.json
+*_state.json.backup
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+
+# Runtime artifacts
+*.pid

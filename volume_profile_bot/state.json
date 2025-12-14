@@ -1,0 +1,633 @@
+{
+  "last_alerts": {
+    "ALMANAK": {
+      "poc_down": "2025-12-14T02:11:08.023214+00:00",
+      "vah_down": "2025-12-14T02:25:08.002978+00:00",
+      "vah_up": "2025-12-14T02:36:08.221914+00:00",
+      "val_down": "2025-12-14T01:11:38.719367+00:00",
+      "val_up": "2025-12-13T23:21:07.237254+00:00",
+      "poc_up": "2025-12-14T02:17:08.012856+00:00",
+      "high_volume": "2025-12-14T01:10:25.396105+00:00"
+    },
+    "SUI": {
+      "vah_up": "2025-12-14T02:01:09.115709+00:00",
+      "vah_down": "2025-12-14T03:17:36.352071+00:00",
+      "poc_up": "2025-12-14T01:11:40.760123+00:00",
+      "poc_down": "2025-12-14T00:41:08.509542+00:00",
+      "high_volume": "2025-12-14T01:34:35.555646+00:00"
+    },
+    "POWER": {
+      "high_volume": "2025-12-13T19:29:42.588696+00:00",
+      "val_down": "2025-12-13T23:11:05.751191+00:00",
+      "val_up": "2025-12-14T03:17:34.655187+00:00"
+    },
+    "NIGHT": {
+      "high_volume": "2025-12-14T03:14:35.739197+00:00",
+      "vah_up": "2025-12-13T22:16:08.769765+00:00",
+      "val_down": "2025-12-14T01:35:34.698522+00:00",
+      "val_up": "2025-12-14T01:04:24.834953+00:00",
+      "poc_up": "2025-12-14T01:28:30.003711+00:00",
+      "poc_down": "2025-12-14T01:31:37.167627+00:00"
+    },
+    "ON": {
+      "poc_up": "2025-12-14T01:29:32.916043+00:00",
+      "vah_up": "2025-12-14T02:46:49.024046+00:00",
+      "val_up": "2025-12-14T01:24:32.072211+00:00",
+      "poc_down": "2025-12-14T03:08:01.149639+00:00",
+      "vah_down": "2025-12-14T02:52:49.895376+00:00",
+      "val_down": "2025-12-14T03:19:37.521569+00:00",
+      "high_volume": "2025-12-14T01:10:28.776781+00:00"
+    },
+    "WET": {
+      "high_volume": "2025-12-14T03:10:02.975506+00:00",
+      "val_up": "2025-12-14T03:06:49.504829+00:00",
+      "poc_up": "2025-12-14T03:07:04.257446+00:00",
+      "vah_up": "2025-12-14T03:08:01.550748+00:00",
+      "vah_down": "2025-12-14T02:56:50.113314+00:00",
+      "poc_down": "2025-12-14T02:57:49.305067+00:00",
+      "val_down": "2025-12-14T03:00:50.411076+00:00"
+    },
+    "RIVER": {
+      "val_up": "2025-12-14T02:59:46.829451+00:00",
+      "high_volume": "2025-12-14T01:19:29.804048+00:00",
+      "poc_up": "2025-12-13T20:56:06.912930+00:00",
+      "val_down": "2025-12-14T03:07:58.984460+00:00"
+    },
+    "DOGE": {
+      "poc_down": "2025-12-14T03:16:37.196741+00:00",
+      "val_up": "2025-12-13T22:16:11.063156+00:00",
+      "vah_up": "2025-12-14T02:15:08.848847+00:00",
+      "vah_down": "2025-12-14T03:14:37.282657+00:00",
+      "high_volume": "2025-12-14T02:32:08.645266+00:00"
+    },
+    "FRANKLIN": {
+      "poc_up": "2025-12-14T02:41:50.693888+00:00",
+      "vah_down": "2025-12-13T22:26:09.028314+00:00",
+      "vah_up": "2025-12-14T02:41:50.926568+00:00",
+      "poc_down": "2025-12-14T03:00:48.856967+00:00",
+      "high_volume": "2025-12-14T01:10:27.618217+00:00",
+      "val_up": "2025-12-14T03:20:39.561168+00:00"
+    },
+    "PIPPIN": {
+      "high_volume": "2025-12-13T22:16:06.380942+00:00",
+      "vah_up": "2025-12-14T02:13:07.611657+00:00"
+    }
+  },
+  "open_positions": {
+    "VP-FRANKLIN-1765664769-1fec": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "SHORT",
+      "entry": 0.00714,
+      "sl": 0.00732342,
+      "tp_targets": [
+        0.005903759999999999,
+        0.0052856399999999994
+      ],
+      "timeframe": "5m",
+      "event": "vah_down",
+      "trigger_level": 0.0072204,
+      "created_at": "2025-12-13T22:26:09.027234+00:00"
+    },
+    "VP-FRANKLIN-1765667169-1abb": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.0073,
+      "sl": 0.00505698,
+      "tp_targets": [
+        0.00853624,
+        0.00915436
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.0072204,
+      "created_at": "2025-12-13T23:06:09.100602+00:00"
+    },
+    "VP-DOGE-1765667468-49f8": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "LONG",
+      "entry": 0.13885,
+      "sl": 0.1372752,
+      "tp_targets": [
+        0.1397476,
+        0.1401964
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.138846,
+      "created_at": "2025-12-13T23:11:08.517694+00:00"
+    },
+    "VP-DOGE-1765668068-bed6": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "LONG",
+      "entry": 0.13886,
+      "sl": 0.1372752,
+      "tp_targets": [
+        0.1397576,
+        0.1402064
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.138846,
+      "created_at": "2025-12-13T23:21:08.254599+00:00"
+    },
+    "VP-DOGE-1765668968-44ac": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "LONG",
+      "entry": 0.13892,
+      "sl": 0.1372752,
+      "tp_targets": [
+        0.1398176,
+        0.14026639999999999
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.138846,
+      "created_at": "2025-12-13T23:36:08.912934+00:00"
+    },
+    "VP-FRANKLIN-1765671369-3022": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00658,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007625440000000001,
+        0.008148160000000002
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T00:16:09.397075+00:00"
+    },
+    "VP-FRANKLIN-1765672569-c2ba": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00663,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.00767544,
+        0.00819816
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T00:36:09.552633+00:00"
+    },
+    "VP-FRANKLIN-1765672869-762b": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "SHORT",
+      "entry": 0.00651,
+      "sl": 0.0075587200000000005,
+      "tp_targets": [
+        0.00546456,
+        0.004941839999999999
+      ],
+      "timeframe": "5m",
+      "event": "poc_down",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T00:41:09.982708+00:00"
+    },
+    "VP-FRANKLIN-1765674701-e59b": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00674,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007785440000000001,
+        0.008308160000000002
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T01:11:41.841836+00:00"
+    },
+    "VP-DOGE-1765674812-3e0b": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "LONG",
+      "entry": 0.13889,
+      "sl": 0.13727438,
+      "tp_targets": [
+        0.13979744000000002,
+        0.14025116
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.1388624,
+      "created_at": "2025-12-14T01:13:32.552623+00:00"
+    },
+    "VP-FRANKLIN-1765675112-6657": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00658,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007625440000000001,
+        0.008148160000000002
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T01:18:32.196689+00:00"
+    },
+    "VP-ALMANAK-1765675231-a746": {
+      "symbol": "ALMANAK",
+      "pair": "ALMANAK/USDT",
+      "direction": "LONG",
+      "entry": 0.0275,
+      "sl": 0.026063600000000003,
+      "tp_targets": [
+        0.0283208,
+        0.0287312
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.02693,
+      "created_at": "2025-12-14T01:20:31.533817+00:00"
+    },
+    "VP-ALMANAK-1765675231-9823": {
+      "symbol": "ALMANAK",
+      "pair": "ALMANAK/USDT",
+      "direction": "LONG",
+      "entry": 0.0275,
+      "sl": 0.026063600000000003,
+      "tp_targets": [
+        0.0283208,
+        0.0287312
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.0275,
+      "created_at": "2025-12-14T01:20:31.844024+00:00"
+    },
+    "VP-DOGE-1765675651-432c": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "LONG",
+      "entry": 0.13891,
+      "sl": 0.13727438,
+      "tp_targets": [
+        0.13981744000000002,
+        0.14027116
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.1388624,
+      "created_at": "2025-12-14T01:27:31.586750+00:00"
+    },
+    "VP-FRANKLIN-1765675898-ba22": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00658,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007625440000000001,
+        0.008148160000000002
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T01:31:38.710788+00:00"
+    },
+    "VP-FRANKLIN-1765676889-8fcc": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00661,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007655440000000001,
+        0.00817816
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T01:48:09.116051+00:00"
+    },
+    "VP-FRANKLIN-1765677190-fc4c": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00662,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007665440000000001,
+        0.00818816
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T01:53:10.008307+00:00"
+    },
+    "VP-FRANKLIN-1765677549-ba16": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "SHORT",
+      "entry": 0.00652,
+      "sl": 0.0075587200000000005,
+      "tp_targets": [
+        0.00547456,
+        0.004951839999999999
+      ],
+      "timeframe": "5m",
+      "event": "poc_down",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T01:59:09.112343+00:00"
+    },
+    "VP-FRANKLIN-1765677849-60e0": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00661,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007655440000000001,
+        0.00817816
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T02:04:09.538030+00:00"
+    },
+    "VP-FRANKLIN-1765678029-3c4e": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "SHORT",
+      "entry": 0.00654,
+      "sl": 0.0075587200000000005,
+      "tp_targets": [
+        0.005494559999999999,
+        0.004971839999999999
+      ],
+      "timeframe": "5m",
+      "event": "poc_down",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T02:07:09.632970+00:00"
+    },
+    "VP-FRANKLIN-1765678389-754d": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00661,
+      "sl": 0.005642079999999999,
+      "tp_targets": [
+        0.007655440000000001,
+        0.00817816
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0065607999999999994,
+      "created_at": "2025-12-14T02:13:09.942238+00:00"
+    },
+    "VP-DOGE-1765678508-a494": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "LONG",
+      "entry": 0.13887,
+      "sl": 0.13727438,
+      "tp_targets": [
+        0.13977744,
+        0.14023116
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.1388624,
+      "created_at": "2025-12-14T02:15:08.846821+00:00"
+    },
+    "VP-ALMANAK-1765679768-a348": {
+      "symbol": "ALMANAK",
+      "pair": "ALMANAK/USDT",
+      "direction": "LONG",
+      "entry": 0.0275,
+      "sl": 0.0258496,
+      "tp_targets": [
+        0.027960799999999997,
+        0.0281912
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.026656,
+      "created_at": "2025-12-14T02:36:08.217349+00:00"
+    },
+    "VP-FRANKLIN-1765679769-ab98": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00694,
+      "sl": 0.006298,
+      "tp_targets": [
+        0.0072952,
+        0.0074728
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0067716,
+      "created_at": "2025-12-14T02:36:09.535803+00:00"
+    },
+    "VP-FRANKLIN-1765679769-a0cc": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00694,
+      "sl": 0.006298,
+      "tp_targets": [
+        0.0072952,
+        0.0074728
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.0069196,
+      "created_at": "2025-12-14T02:36:09.754580+00:00"
+    },
+    "VP-FRANKLIN-1765680110-05ea": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00695,
+      "sl": 0.006298,
+      "tp_targets": [
+        0.0073051999999999995,
+        0.0074827999999999995
+      ],
+      "timeframe": "5m",
+      "event": "poc_up",
+      "trigger_level": 0.0067716,
+      "created_at": "2025-12-14T02:41:50.691681+00:00"
+    },
+    "VP-FRANKLIN-1765680110-133c": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00695,
+      "sl": 0.006298,
+      "tp_targets": [
+        0.0073051999999999995,
+        0.0074827999999999995
+      ],
+      "timeframe": "5m",
+      "event": "vah_up",
+      "trigger_level": 0.0069196,
+      "created_at": "2025-12-14T02:41:50.908075+00:00"
+    },
+    "VP-RIVER-1765681366-1bcc": {
+      "symbol": "RIVER",
+      "pair": "RIVER/USDT",
+      "direction": "SHORT",
+      "entry": 7.986,
+      "sl": 8.385610000000002,
+      "tp_targets": [
+        7.760279999999999,
+        7.647419999999999
+      ],
+      "timeframe": "5m",
+      "event": "val_down",
+      "trigger_level": 7.990600000000001,
+      "created_at": "2025-12-14T03:02:46.603864+00:00"
+    },
+    "VP-RIVER-1765681678-3579": {
+      "symbol": "RIVER",
+      "pair": "RIVER/USDT",
+      "direction": "SHORT",
+      "entry": 7.926,
+      "sl": 8.385610000000002,
+      "tp_targets": [
+        7.700279999999999,
+        7.58742
+      ],
+      "timeframe": "5m",
+      "event": "val_down",
+      "trigger_level": 7.990600000000001,
+      "created_at": "2025-12-14T03:07:58.979593+00:00"
+    },
+    "VP-ON-1765681681-2f7d": {
+      "symbol": "ON",
+      "pair": "ON/USDT",
+      "direction": "SHORT",
+      "entry": 0.10864,
+      "sl": 0.11000464,
+      "tp_targets": [
+        0.10796032,
+        0.10762047999999999
+      ],
+      "timeframe": "5m",
+      "event": "poc_down",
+      "trigger_level": 0.1094288,
+      "created_at": "2025-12-14T03:08:01.144004+00:00"
+    },
+    "VP-ON-1765681742-1c3e": {
+      "symbol": "ON",
+      "pair": "ON/USDT",
+      "direction": "SHORT",
+      "entry": 0.1085,
+      "sl": 0.11000464,
+      "tp_targets": [
+        0.10782032,
+        0.10748047999999999
+      ],
+      "timeframe": "5m",
+      "event": "val_down",
+      "trigger_level": 0.1088152,
+      "created_at": "2025-12-14T03:09:02.336238+00:00"
+    },
+    "VP-DOGE-1765682077-0a3b": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "SHORT",
+      "entry": 0.13885,
+      "sl": 0.13893802,
+      "tp_targets": [
+        0.13794256,
+        0.13748884
+      ],
+      "timeframe": "5m",
+      "event": "vah_down",
+      "trigger_level": 0.1388624,
+      "created_at": "2025-12-14T03:14:37.275985+00:00"
+    },
+    "VP-DOGE-1765682197-156b": {
+      "symbol": "DOGE",
+      "pair": "DOGE/USDT",
+      "direction": "SHORT",
+      "entry": 0.13874,
+      "sl": 0.13904857,
+      "tp_targets": [
+        0.138407024,
+        0.138240536
+      ],
+      "timeframe": "5m",
+      "event": "poc_down",
+      "trigger_level": 0.1387988,
+      "created_at": "2025-12-14T03:16:37.192775+00:00"
+    },
+    "VP-POWER-1765682254-a881": {
+      "symbol": "POWER",
+      "pair": "POWER/USDT",
+      "direction": "LONG",
+      "entry": 0.22772,
+      "sl": 0.22519213999999999,
+      "tp_targets": [
+        0.23914232000000002,
+        0.24485348
+      ],
+      "timeframe": "5m",
+      "event": "val_up",
+      "trigger_level": 0.22614399999999998,
+      "created_at": "2025-12-14T03:17:34.652060+00:00"
+    },
+    "VP-SUI-1765682256-ac91": {
+      "symbol": "SUI",
+      "pair": "SUI/USDT",
+      "direction": "SHORT",
+      "entry": 1.6077,
+      "sl": 1.6092964,
+      "tp_targets": [
+        1.5941591999999998,
+        1.5873887999999998
+      ],
+      "timeframe": "5m",
+      "event": "vah_down",
+      "trigger_level": 1.608168,
+      "created_at": "2025-12-14T03:17:36.349287+00:00"
+    },
+    "VP-ON-1765682377-c4c5": {
+      "symbol": "ON",
+      "pair": "ON/USDT",
+      "direction": "SHORT",
+      "entry": 0.10847,
+      "sl": 0.11000464,
+      "tp_targets": [
+        0.10779032,
+        0.10745047999999999
+      ],
+      "timeframe": "5m",
+      "event": "val_down",
+      "trigger_level": 0.1088152,
+      "created_at": "2025-12-14T03:19:37.509086+00:00"
+    },
+    "VP-FRANKLIN-1765682439-729f": {
+      "symbol": "FRANKLIN",
+      "pair": "FRANKLIN/USDT",
+      "direction": "LONG",
+      "entry": 0.00638,
+      "sl": 0.006298,
+      "tp_targets": [
+        0.0067352,
+        0.0069128
+      ],
+      "timeframe": "5m",
+      "event": "val_up",
+      "trigger_level": 0.0063276,
+      "created_at": "2025-12-14T03:20:39.555804+00:00"
+    }
+  }
+}

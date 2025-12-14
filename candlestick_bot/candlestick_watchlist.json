@@ -1,0 +1,57 @@
+[
+  {
+    "symbol": "APR",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "CLO",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "JELLYJELLY",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "ON",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "RIVER",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "NIGHT",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "ALMANAK",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "TRUTH",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "DOGE",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "WET",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "FRANKLIN",
+    "period": "5m",
+    "cooldown_minutes": 15
+  }
+]

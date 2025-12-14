@@ -1,0 +1,12 @@
+[
+  { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "PIPPIN", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "RIVER", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "NIGHT", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "ALMANAK", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "SUI", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "DOGE", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "FRANKLIN", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "ON", "period": "5m", "cooldown_minutes": 5 },
+  { "symbol": "WET", "period": "5m", "cooldown_minutes": 5 }
+]

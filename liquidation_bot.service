@@ -1,0 +1,19 @@
+[Unit]
+Description=Liquidation Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=behar
+WorkingDirectory=/home/behar/Desktop/azure_bots_backup_20251209
+ExecStart=/home/behar/Desktop/azure_bots_backup_20251209/venv/bin/python /home/behar/Desktop/azure_bots_backup_20251209/liquidation_bot/liquidation_bot.py --loop --interval 300
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/behar/Desktop/azure_bots_backup_20251209/liquidation_bot/logs/systemd.log
+StandardError=append:/home/behar/Desktop/azure_bots_backup_20251209/liquidation_bot/logs/systemd.log
+
+# Environment
+Environment="PATH=/home/behar/Desktop/azure_bots_backup_20251209/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

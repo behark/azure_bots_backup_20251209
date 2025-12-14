@@ -1,0 +1,13 @@
+[
+  { "symbol": "POWER", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "BLUAI", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "IRYS", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "VVV", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "ON", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "CLO", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "APR", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "KITE", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "LAB", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "MINA", "period": "15m", "cooldown_minutes": 30 },
+  { "symbol": "RLS", "period": "15m", "cooldown_minutes": 30 }
+]

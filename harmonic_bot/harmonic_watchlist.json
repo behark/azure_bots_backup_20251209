@@ -1,0 +1,87 @@
+[
+  {
+    "symbol": "APR",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "CLO",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "JELLYJELLY",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ON",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "POWER",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "RIVER",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "RLS",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "PIPPIN",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "NIGHT",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ALMANAK",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "SUI",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "TRUTH",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "LRC",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ASTER",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "DOGE",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "WET",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "FRANKLIN",
+    "period": "5m",
+    "cooldown_minutes": 3
+  }
+]

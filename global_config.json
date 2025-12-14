@@ -250,6 +250,75 @@
         { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
         { "symbol": "VVV",   "period": "5m", "cooldown_minutes": 5 }
       ]
+    },
+    "orb_bot": {
+      "enabled": true,
+      "max_open_signals": 55,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 60,
+      "risk": {
+        "sl_atr_multiplier": 1.5,
+        "tp1_atr_multiplier": 2.0,
+        "tp2_atr_multiplier": 3.0,
+        "min_risk_reward": 1.3
+      },
+      "symbols": [
+        { "symbol": "ALMANAK",    "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "APR",        "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "ASTER",      "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "CLO",        "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "DOGE",       "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "FRANKLIN",   "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "IRYS",       "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "JELLYJELLY", "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "LRC",        "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "LUNA",       "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "MON",        "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "ON",         "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "PIPPIN",     "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "POWER",      "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "RIVER",      "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "SUI",        "period": "1m", "cooldown_minutes": 60 },
+        { "symbol": "TRUTH",      "period": "1m", "cooldown_minutes": 60 }
+      ]
+    },
+    "volume_profile_bot": {
+      "enabled": true,
+      "max_open_signals": 55,
+      "interval_seconds": 300,
+      "default_cooldown_minutes": 5,
+      "risk": {
+        "sl_atr_multiplier": 1.5,
+        "tp1_atr_multiplier": 2.0,
+        "tp2_atr_multiplier": 3.0,
+        "min_risk_reward": 1.3
+      },
+      "symbols": [
+        { "symbol": "POWER",    "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "PIPPIN",   "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "RIVER",    "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "NIGHT",    "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "ALMANAK",  "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "SUI",      "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "DOGE",     "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "FRANKLIN", "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "ON",       "period": "5m", "cooldown_minutes": 5 },
+        { "symbol": "WET",      "period": "5m", "cooldown_minutes": 5 }
+      ]
+    },
+    "consensus_bot": {
+      "enabled": true,
+      "max_open_signals": 100,
+      "interval_seconds": 30,
+      "default_cooldown_minutes": 30,
+      "risk": {
+        "sl_atr_multiplier": 1.5,
+        "tp1_atr_multiplier": 2.0,
+        "tp2_atr_multiplier": 3.0,
+        "min_risk_reward": 1.3
+      },
+      "symbols": [],
+      "comment": "Consensus bot monitors signals from all other bots, does not track individual symbols"
     }
   }
 }

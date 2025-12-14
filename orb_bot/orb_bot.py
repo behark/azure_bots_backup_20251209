@@ -560,10 +560,23 @@ class ORBBot:
         # Initialize exchange
         api_key = os.getenv("MEXC_API_KEY", "")
         api_secret = os.getenv("MEXC_API_SECRET", "")
-        
+
+        # Validate API credentials
+        self.read_only_mode = False
         if not api_key or not api_secret:
-            logger.warning("API credentials not found - running in read-only mode")
-        
+            logger.warning(
+                "MEXC_API_KEY and/or MEXC_API_SECRET not found in environment. "
+                "Running in READ-ONLY mode. Trading operations will not be available. "
+                "Set these environment variables in .env file for full functionality."
+            )
+            self.read_only_mode = True
+        elif api_key.strip() == "" or api_secret.strip() == "":
+            logger.error(
+                "MEXC_API_KEY or MEXC_API_SECRET is empty. "
+                "Running in READ-ONLY mode. Set valid credentials for trading."
+            )
+            self.read_only_mode = True
+
         self.exchange = ccxt.mexc({
             'apiKey': api_key,
             'secret': api_secret,

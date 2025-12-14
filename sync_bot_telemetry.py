@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 MAX_RECORDS_PER_BOT = 4000
 DEFAULT_INTERVAL_SECONDS = 60
-DEFAULT_TELEMETRY_ROOT = Path("/home/behar/bots_telemetry")
+# Use environment variable or default to ~/bots_telemetry for portability
+import os
+DEFAULT_TELEMETRY_ROOT = Path(os.getenv("TELEMETRY_ROOT", str(Path.home() / "bots_telemetry")))
 
 
 @dataclass(frozen=True)

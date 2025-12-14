@@ -82,7 +82,7 @@ def analyze_suspects():
         sorted_bots = sorted(bot_stats.items(), key=lambda x: x[1]['pnl'])
 
         for bot, s in sorted_bots:
-            win_rate = (s['wins'] / s['total']) * 100
+            win_rate = (s['wins'] / s['total']) * 100 if s['total'] > 0 else 0.0
             pnl_str = f"{s['pnl']:+.2f}%"
 
             # Color coding

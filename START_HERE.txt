@@ -36,7 +36,7 @@ CONSENSUS BOT: 🔄 UPGRADED!
 
 STEP 1: Verify Telegram Setup
 ─────────────────────────────
-cd /home/behar/Desktop/azure_bots_backup_20251209
+cd ~/azure_bots_backup_20251209
 cat .env
 
 Make sure you have:
@@ -47,7 +47,7 @@ STEP 2: Start All Bots
 ───────────────────────
 # Copy and paste this entire block:
 
-cd /home/behar/Desktop/azure_bots_backup_20251209
+cd ~/azure_bots_backup_20251209
 screen -S funding -dm bash -c "./start_funding_bot.sh"
 screen -S liquidation -dm bash -c "./start_liquidation_bot.sh"
 screen -S volume -dm bash -c "./start_volume_vn_bot.sh"

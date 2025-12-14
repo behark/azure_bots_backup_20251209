@@ -4,6 +4,7 @@
 import fcntl
 import json
 import logging
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -20,16 +21,20 @@ class FileLockError(Exception):
 def file_lock(file_path: Path, timeout: float = 5.0):
     """
     Context manager for file locking using fcntl.
-    
+
     Usage:
         with file_lock(Path("state.json")):
             # read/write operations
+
+    Sets secure file permissions (0o600) on lock files for security.
     """
     lock_path = file_path.with_suffix(file_path.suffix + ".lock")
     lock_file = None
-    
+
     try:
+        # Create lock file with secure permissions (owner read/write only)
         lock_file = open(lock_path, 'w')
+        os.chmod(lock_path, 0o600)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         yield
     finally:
@@ -67,20 +72,25 @@ def safe_read_json(file_path: Path, default: Optional[Dict] = None) -> Dict[str,
 def safe_write_json(file_path: Path, data: Dict[str, Any], indent: int = 2) -> bool:
     """
     Safely write JSON file with file locking.
-    
+
     Args:
         file_path: Path to JSON file
         data: Data to write
         indent: JSON indentation level
-        
+
     Returns:
         True if successful, False otherwise
+
+    Sets secure permissions on directories (0o700) and files (0o600).
     """
     try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        
+        # Create parent directory with secure permissions (owner only)
+        file_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
         with file_lock(file_path):
             file_path.write_text(json.dumps(data, indent=indent))
+            # Set secure file permissions (owner read/write only)
+            os.chmod(file_path, 0o600)
         return True
     except (IOError, OSError) as e:
         logger.error("Failed to write %s: %s", file_path, e)

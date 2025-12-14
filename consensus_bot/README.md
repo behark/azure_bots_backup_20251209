@@ -160,7 +160,7 @@ python consensus_bot.py --loop --interval 30 --window 30
 
 ### Start the Bot:
 ```bash
-cd /home/behar/Desktop/azure_bots_backup_20251209
+cd ~/azure_bots_backup_20251209
 bash start_consensus_bot.sh
 ```
 

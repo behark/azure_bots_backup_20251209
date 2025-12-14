@@ -13,7 +13,7 @@
 
 ### Option 1: Run with startup scripts (current method)
 ```bash
-cd /home/behar/Desktop/azure_bots_backup_20251209
+cd ~/azure_bots_backup_20251209
 
 # Kill any existing bots
 pkill -f liquidation_bot.py
@@ -35,7 +35,7 @@ ps aux | grep -E "(liquidation_bot|funding_bot|volume_vn_bot)" | grep -v grep
 
 ### 1. Install Services
 ```bash
-cd /home/behar/Desktop/azure_bots_backup_20251209
+cd ~/azure_bots_backup_20251209
 
 # Copy service files to systemd
 sudo cp liquidation_bot.service /etc/systemd/system/
@@ -171,10 +171,10 @@ self.rate_limiter = RateLimiter(
 ### Bot not starting?
 ```bash
 # Check Python and venv
-/home/behar/Desktop/azure_bots_backup_20251209/venv/bin/python --version
+~/azure_bots_backup_20251209/venv/bin/python --version
 
 # Check dependencies
-/home/behar/Desktop/azure_bots_backup_20251209/venv/bin/pip list
+~/azure_bots_backup_20251209/venv/bin/pip list
 
 # Check logs
 tail -100 liquidation_bot/logs/liquidation_bot.log
@@ -183,14 +183,14 @@ tail -100 liquidation_bot/logs/liquidation_bot.log
 ### Not receiving Telegram messages?
 ```bash
 # Check .env file
-cat /home/behar/Desktop/azure_bots_backup_20251209/.env
+cat ~/azure_bots_backup_20251209/.env
 
 # Test Telegram credentials
 # (run in Python)
 python3 -c "
 import os
 from dotenv import load_dotenv
-load_dotenv('/home/behar/Desktop/azure_bots_backup_20251209/.env')
+load_dotenv('~/azure_bots_backup_20251209/.env')
 print('Token:', os.getenv('TELEGRAM_BOT_TOKEN_LIQUIDATION'))
 print('Chat ID:', os.getenv('TELEGRAM_CHAT_ID'))
 "

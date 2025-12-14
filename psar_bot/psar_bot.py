@@ -589,12 +589,8 @@ class PSARBot:
                 cooldown = int(cooldown_raw) if cooldown_raw is not None else self.default_cooldown
             except Exception:
                 cooldown = self.default_cooldown
-            
-            backoff_until = self.exchange_backoff.get("mexc")
-            if backoff_until and time.time() < backoff_until:
-                logger.debug("Backoff active for mexc; skipping %s", symbol)
-                continue
 
+            # Check backoff status before making API calls
             if self._backoff_active("mexc"):
                 logger.debug("Backoff active for mexc; skipping %s", symbol)
                 continue
@@ -608,10 +604,9 @@ class PSARBot:
                     self.rate_limiter.record_success(f"mexc_{symbol}")
             except Exception as exc:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
+                # Handle rate limit errors (consolidated check)
                 if self._is_rate_limit_error(exc):
                     self._register_backoff("mexc")
-                if self._is_rate_limit_error(exc):
-                    self.exchange_backoff["mexc"] = time.time() + 60
                     logger.warning("MEXC rate limit hit; backing off for 60s")
                 if self.rate_limiter:
                     self.rate_limiter.record_error(f"mexc_{symbol}")

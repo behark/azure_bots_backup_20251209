@@ -484,10 +484,9 @@ class STRATBot:
                     self.rate_limiter.record_success(f"mexc_{symbol}")
             except Exception as exc:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
+                # Handle rate limit errors (consolidated check)
                 if self._is_rate_limit_error(exc):
                     self._register_backoff("mexc")
-                if self._is_rate_limit_error(exc):
-                    self.exchange_backoff["mexc"] = time.time() + 60
                     logger.warning("MEXC rate limit hit; backing off for 60s")
                 if self.rate_limiter:
                     self.rate_limiter.record_error(f"mexc_{symbol}")

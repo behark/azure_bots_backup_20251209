@@ -17,6 +17,7 @@ Entry Types:
 
 import sys
 import os
+import signal
 import json
 import time
 import logging
@@ -65,6 +66,20 @@ else:
     except Exception:
         RateLimitHandler = None  # type: ignore[misc]
 
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    global shutdown_requested
+    shutdown_requested = True
+    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 class WatchItem(TypedDict, total=False):
     symbol: str
@@ -746,7 +761,7 @@ class FibSwingBot:
             self.health_monitor.send_startup_message()
         
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     # Check open signals
                     self.tracker.check_open_signals(self.notifier)

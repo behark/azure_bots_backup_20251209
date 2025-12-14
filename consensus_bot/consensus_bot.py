@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -732,7 +733,7 @@ class ConsensusBot:
                 logger.warning(f"Health monitor startup failed: {e}")
 
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     self._check_consensus()
                     if self.health_monitor:
@@ -741,6 +742,9 @@ class ConsensusBot:
                         except Exception as e:
                             logger.debug(f"Health monitor record_cycle failed: {e}")
                     if not loop:
+                        break
+
+                    if shutdown_requested:
                         break
                     time.sleep(self.check_interval)
                 except Exception as exc:

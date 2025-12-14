@@ -5,6 +5,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,20 @@ except ImportError as e:  # pragma: no cover - notifier is optional for local dr
     SignalStats = None  # type: ignore
     RateLimitHandler = None  # type: ignore
 
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    global shutdown_requested
+    shutdown_requested = True
+    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 LOG_DIR = BASE_DIR / "logs"
 STATE_FILE = BASE_DIR / "volume_vn_state.json"
@@ -766,7 +781,7 @@ class VolumeVNBOT:
             self.health_monitor.send_startup_message()
         
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     for item in self.watchlist:
                         symbol_val = item.get("symbol") if isinstance(item, dict) else None

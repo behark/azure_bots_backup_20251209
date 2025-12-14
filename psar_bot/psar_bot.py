@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -394,6 +395,20 @@ class MexcClient:
         return self.exchange.fetch_ticker(self._swap_symbol(symbol))
 
 
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    global shutdown_requested
+    shutdown_requested = True
+    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 @dataclass
 class PSARSignal:
     """Represents a PSAR trend signal."""
@@ -553,7 +568,7 @@ class PSARBot:
             self.health_monitor.send_startup_message()
         
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     self._run_cycle()
                     self._monitor_open_signals()
@@ -563,6 +578,9 @@ class PSARBot:
                     
                     if not loop:
                         break
+
+                    if shutdown_requested:
+                        break
                     logger.info("Cycle complete; sleeping %ds", self.interval)
                     time.sleep(self.interval)
                 except Exception as exc:
@@ -571,6 +589,8 @@ class PSARBot:
                         self.health_monitor.record_error(str(exc))
                     if not loop:
                         raise
+                    if shutdown_requested:
+                        break
                     time.sleep(10)
         finally:
             if self.health_monitor:

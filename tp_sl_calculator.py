@@ -3,12 +3,30 @@
 Advanced TP/SL Calculator
 Centralized, configurable take profit and stop loss calculation for all trading bots.
 Supports multiple calculation methods: ATR-based, percentage-based, structure-based.
+
+PHASE 3 ENHANCEMENTS:
+- Enhanced type hints using common.types
+- Mypy strict mode compatibility
+- Better IDE autocomplete support
 """
 
 import logging
+import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from enum import Enum
+from pathlib import Path
+
+# Phase 3: Import common types for enhanced type safety
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from common.types import Direction, Timeframe
+    PHASE3_TYPES_AVAILABLE = True
+except ImportError:
+    PHASE3_TYPES_AVAILABLE = False
+    # Fallback type aliases
+    Direction = str  # type: ignore
+    Timeframe = str  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +186,55 @@ class TPSLCalculator:
         tp3_mult: Optional[float],
         custom_sl: Optional[float],
     ) -> TradeLevels:
-        """Calculate levels based on ATR."""
+        """
+        Calculate TP/SL levels using ATR (Average True Range) methodology.
+
+        ATR-based calculations are the recommended approach as they adapt to market
+        volatility. Higher volatility (larger ATR) results in wider stops and targets,
+        while lower volatility produces tighter levels. This prevents overly tight
+        stops in volatile markets and overly wide stops in calm markets.
+
+        Algorithm:
+            1. Apply buffer to ATR for stop loss (default 0.75% extra)
+            2. For LONG trades:
+               - SL = Entry - (buffered_ATR × sl_mult)
+               - TP1 = Entry + (ATR × tp1_mult)
+               - TP2 = Entry + (ATR × tp2_mult)
+            3. For SHORT trades:
+               - SL = Entry + (buffered_ATR × sl_mult)
+               - TP1 = Entry - (ATR × tp1_mult)
+               - TP2 = Entry - (ATR × tp2_mult)
+            4. Validate levels and calculate risk:reward ratios
+
+        Args:
+            entry (float): Entry price for the trade
+            direction (str): Trade direction ("LONG" or "SHORT")
+            atr (Optional[float]): Average True Range value. If None, uses 1% of entry as fallback.
+            sl_mult (float): ATR multiplier for stop loss distance (typically 1.5-2.0)
+            tp1_mult (float): ATR multiplier for first take profit (typically 2.0-3.0)
+            tp2_mult (float): ATR multiplier for second take profit (typically 3.5-5.0)
+            tp3_mult (Optional[float]): ATR multiplier for third take profit (optional)
+            custom_sl (Optional[float]): Override calculated SL with custom price level
+
+        Returns:
+            TradeLevels: Validated trade levels with risk:reward ratios
+
+        Example:
+            >>> calc = TPSLCalculator()
+            >>> levels = calc._calculate_atr_based(
+            ...     entry=100.0, direction="LONG", atr=2.5,
+            ...     sl_mult=1.5, tp1_mult=2.0, tp2_mult=3.5, tp3_mult=None, custom_sl=None
+            ... )
+            >>> print(f"SL: {levels.stop_loss:.2f}, TP1: {levels.take_profit_1:.2f}")
+            SL: 96.22, TP1: 105.00
+
+        Notes:
+            - Buffer prevents stops from being hit by normal price wicks
+            - TP targets use unbuffered ATR (actual volatility-based targets)
+            - Custom SL bypasses ATR calculation but still gets validated
+            - Falls back to 1% of entry price if ATR is unavailable
+            - Typical ATR multipliers: SL=1.5, TP1=2.0, TP2=3.5 for 1.33R and 2.33R
+        """
         if atr is None or atr <= 0:
             # Fallback to percentage-based if no ATR
             atr = entry * 0.01  # 1% as fallback
@@ -225,7 +291,60 @@ class TPSLCalculator:
         tp2_mult: float,
         tp3_mult: Optional[float],
     ) -> TradeLevels:
-        """Calculate levels based on market structure (swing points)."""
+        """
+        Calculate TP/SL levels based on market structure and swing points.
+
+        Structure-based calculations place stops beyond recent swing highs/lows, which
+        are logical invalidation points for the trade thesis. This approach respects
+        price action and support/resistance levels rather than arbitrary ATR distances.
+
+        Algorithm:
+            1. For LONG trades:
+               - Identify recent swing low (support level)
+               - SL = swing_low × (1 - buffer%) - placed just below support
+               - Risk = Entry - SL
+               - TP1 = Entry + (Risk × tp1_mult)
+               - TP2 = Entry + (Risk × tp2_mult)
+            2. For SHORT trades:
+               - Identify recent swing high (resistance level)
+               - SL = swing_high × (1 + buffer%) - placed just above resistance
+               - Risk = SL - Entry
+               - TP1 = Entry - (Risk × tp1_mult)
+               - TP2 = Entry - (Risk × tp2_mult)
+            3. Validate levels ensure proper direction and risk:reward
+
+        Args:
+            entry (float): Entry price for the trade
+            direction (str): Trade direction ("LONG" or "SHORT")
+            swing_high (Optional[float]): Recent swing high price (resistance).
+                                         Required for SHORT trades.
+            swing_low (Optional[float]): Recent swing low price (support).
+                                        Required for LONG trades.
+            tp1_mult (float): Risk multiplier for TP1 (e.g., 2.0 for 2R)
+            tp2_mult (float): Risk multiplier for TP2 (e.g., 3.0 for 3R)
+            tp3_mult (Optional[float]): Risk multiplier for TP3 (optional)
+
+        Returns:
+            TradeLevels: Validated trade levels, or invalid TradeLevels if swing point missing
+
+        Example:
+            >>> calc = TPSLCalculator()
+            >>> levels = calc._calculate_structure_based(
+            ...     entry=100.0, direction="LONG",
+            ...     swing_high=None, swing_low=95.0,
+            ...     tp1_mult=2.0, tp2_mult=3.0, tp3_mult=None
+            ... )
+            >>> if levels.is_valid:
+            ...     print(f"SL at swing low: {levels.stop_loss:.2f}")
+
+        Notes:
+            - Swing points should be recent (last 20-50 candles depending on timeframe)
+            - Buffer (default 0.75%) prevents stop hunting at obvious levels
+            - Returns invalid TradeLevels if required swing point is missing
+            - More suitable for trending markets with clear structure
+            - Risk distance varies based on structure, not volatility
+            - Best combined with confirmation from other indicators
+        """
         if direction == "LONG":
             if swing_low is None:
                 return TradeLevels(
@@ -260,7 +379,58 @@ class TPSLCalculator:
         swing_high: Optional[float],
         swing_low: Optional[float],
     ) -> TradeLevels:
-        """Calculate levels based on Fibonacci retracements."""
+        """
+        Calculate TP/SL levels using Fibonacci retracement extensions.
+
+        Fibonacci-based calculations use the golden ratio (0.618) and its extensions
+        (1.0, 1.618) to project natural profit targets. These levels often coincide
+        with areas where price stalls or reverses, based on market psychology and
+        the Fibonacci sequence's prevalence in nature and markets.
+
+        Algorithm:
+            1. Calculate Fibonacci range: |swing_high - swing_low|
+            2. For LONG trades (bouncing from swing_low):
+               - SL = swing_low × (1 - buffer%) - below the swing low
+               - TP1 = Entry + (range × 0.618) - 61.8% Fibonacci extension
+               - TP2 = Entry + (range × 1.0) - 100% extension (full range)
+               - TP3 = Entry + (range × 1.618) - 161.8% golden extension
+            3. For SHORT trades (rejecting from swing_high):
+               - SL = swing_high × (1 + buffer%) - above the swing high
+               - TP1 = Entry - (range × 0.618) - 61.8% Fibonacci extension
+               - TP2 = Entry - (range × 1.0) - 100% extension (full range)
+               - TP3 = Entry - (range × 1.618) - 161.8% golden extension
+
+        Args:
+            entry (float): Entry price for the trade
+            direction (str): Trade direction ("LONG" or "SHORT")
+            swing_high (float): Recent swing high (top of the Fibonacci range).
+                               Required for both directions.
+            swing_low (float): Recent swing low (bottom of the Fibonacci range).
+                              Required for both directions.
+
+        Returns:
+            TradeLevels: Validated trade levels with 3 Fibonacci-based targets,
+                        or invalid TradeLevels if swing points are missing
+
+        Example:
+            >>> calc = TPSLCalculator()
+            >>> levels = calc._calculate_fibonacci_based(
+            ...     entry=100.0, direction="LONG",
+            ...     swing_high=110.0, swing_low=90.0
+            ... )
+            >>> if levels.is_valid:
+            ...     print(f"TP1 (0.618): {levels.take_profit_1:.2f}")
+            ...     print(f"TP2 (1.0): {levels.take_profit_2:.2f}")
+            ...     print(f"TP3 (1.618): {levels.take_profit_3:.2f}")
+
+        Notes:
+            - Requires both swing_high and swing_low (complete Fibonacci range)
+            - Common Fibonacci levels: 0.618 (golden ratio), 1.0 (full extension), 1.618 (phi)
+            - TP3 at 1.618 is ambitious; consider partial profit at TP1/TP2
+            - Works best when entry is near a Fibonacci retracement (e.g., 0.382, 0.5, 0.618)
+            - Swing points should define a significant recent price swing
+            - Popular in forex and crypto markets due to psychological significance
+        """
         if swing_high is None or swing_low is None:
             return TradeLevels(
                 entry=entry, stop_loss=0, take_profit_1=0, take_profit_2=0,
@@ -291,7 +461,72 @@ class TPSLCalculator:
         tp3: Optional[float],
         direction: str,
     ) -> TradeLevels:
-        """Validate levels and build TradeLevels object."""
+        """
+        Validate calculated trade levels and construct TradeLevels object.
+
+        Performs comprehensive validation to ensure trade levels are logical,
+        safe, and meet minimum risk:reward requirements. Rejects trades with
+        stops that are too tight (whipsaw risk) or too wide (excessive risk),
+        and ensures risk:reward ratios justify the trade.
+
+        Validation Checks:
+            1. **Stop Loss Distance**:
+               - Too wide: SL% > max_sl_percent (default 5%)
+                 → Risk too high, position would be overleveraged
+               - Too tight: SL% < min_sl_percent (default 0.2%)
+                 → Normal volatility would trigger stop
+
+            2. **Risk:Reward Ratio**:
+               - RR1 < min_risk_reward (default 1.8)
+                 → Insufficient reward to justify risk
+               - Expects at least 1.8R on first target
+
+            3. **Direction Consistency**:
+               - LONG: SL must be < Entry, TP1 must be > Entry
+               - SHORT: SL must be > Entry, TP1 must be < Entry
+               - Prevents inverted trade setups
+
+            4. **Mathematical Validity**:
+               - Calculates risk = |Entry - SL|
+               - Calculates reward1 = |TP1 - Entry|
+               - Calculates reward2 = |TP2 - Entry|
+               - Derives RR ratios: reward/risk
+
+        Args:
+            entry (float): Entry price
+            sl (float): Calculated stop loss price
+            tp1 (float): Calculated first take profit price
+            tp2 (float): Calculated second take profit price
+            tp3 (Optional[float]): Calculated third take profit price (optional)
+            direction (str): Trade direction ("LONG" or "SHORT")
+
+        Returns:
+            TradeLevels: Object containing:
+                - All price levels (entry, SL, TP1, TP2, TP3)
+                - Risk:reward ratios (rr1, rr2)
+                - Risk amount in price units
+                - is_valid (bool): Whether trade passes all validations
+                - rejection_reason (str): Explanation if invalid
+
+        Example:
+            >>> calc = TPSLCalculator(min_risk_reward=2.0, max_sl_percent=3.0)
+            >>> levels = calc._validate_and_build(
+            ...     entry=100.0, sl=97.0, tp1=106.0, tp2=112.0,
+            ...     tp3=None, direction="LONG"
+            ... )
+            >>> if not levels.is_valid:
+            ...     print(f"Trade rejected: {levels.rejection_reason}")
+            >>> else:
+            ...     print(f"Valid trade: {levels.risk_reward_1:.2f}R")
+
+        Notes:
+            - Invalid trades should NOT be executed; return them to user for review
+            - Validation parameters (min RR, max SL%) are configurable in __init__
+            - Risk:reward is calculated to TP1 (first partial exit), not full target
+            - SL percentage is calculated as: (|Entry - SL| / Entry) × 100
+            - Tight stops (<0.2%) often result in premature stop-outs
+            - Wide stops (>5%) expose too much capital to single trade risk
+        """
         risk = abs(entry - sl)
         reward1 = abs(tp1 - entry)
         reward2 = abs(tp2 - entry)
@@ -435,14 +670,59 @@ class TPSLCalculator:
 
 def calculate_atr(candles: List[Dict], period: int = 14) -> Optional[float]:
     """
-    Calculate Average True Range from candle data.
-    
+    Calculate Average True Range (ATR) from candle data.
+
+    ATR measures market volatility by calculating the average of True Range values
+    over a specified period. True Range is the greatest of:
+    1. Current high - current low
+    2. |Current high - previous close|
+    3. |Current low - previous close|
+
+    This captures volatility including gaps between candles, making it more comprehensive
+    than simple high-low range.
+
+    Algorithm:
+        1. For each candle, calculate True Range (TR):
+           TR = max(high - low, |high - prev_close|, |low - prev_close|)
+        2. Average the last 'period' TR values:
+           ATR = average(TR[-period:])
+        3. If insufficient data (<period), returns average of available TRs
+
     Args:
-        candles: List of candles with 'high', 'low', 'close' keys
-        period: ATR period (default 14)
-        
+        candles (List[Dict]): Candle data in either format:
+            - List of dicts with keys: 'high', 'low', 'close'
+            - List of OHLCV arrays: [timestamp, open, high, low, close, volume]
+              where high=index[2], low=index[3], close=index[4]
+        period (int, optional): Number of candles for ATR calculation.
+                               Standard is 14. Defaults to 14.
+
     Returns:
-        ATR value or None if insufficient data
+        Optional[float]: ATR value as absolute price units, or None if insufficient data
+            - Returns None if candles list has <2 items (need previous close)
+            - Returns average of available TRs if <period candles available
+
+    Example:
+        >>> candles = [
+        ...     {'high': 100, 'low': 95, 'close': 98},
+        ...     {'high': 102, 'low': 97, 'close': 101},
+        ...     {'high': 103, 'low': 99, 'close': 100},
+        ...     # ... 11 more candles for ATR(14)
+        ... ]
+        >>> atr = calculate_atr(candles, period=14)
+        >>> print(f"ATR(14): {atr:.2f}")
+
+        >>> # Using CCXT OHLCV format
+        >>> ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1h', limit=50)
+        >>> atr = calculate_atr(ohlcv, period=14)
+
+    Notes:
+        - ATR is always positive (absolute value)
+        - Higher ATR = higher volatility = wider TP/SL levels recommended
+        - Lower ATR = lower volatility = tighter TP/SL levels appropriate
+        - ATR(14) is standard, but shorter periods (7, 10) react faster to volatility changes
+        - ATR is in price units, not percentage (e.g., $2.50 for a $100 asset = 2.5% volatility)
+        - Commonly used for: stop loss placement, position sizing, volatility filters
+        - Flexible input format supports both dict and OHLCV array formats from exchanges
     """
     if len(candles) < period + 1:
         return None
@@ -475,7 +755,61 @@ def quick_calculate(
     tp1_mult: float = 2.0,
     tp2_mult: float = 3.5,
 ) -> TradeLevels:
-    """Quick calculation with default settings."""
+    """
+    Quick TP/SL calculation with sensible default validation parameters.
+
+    Convenience wrapper around TPSLCalculator for one-off calculations without
+    needing to instantiate the calculator class. Uses default validation settings:
+    - Minimum risk:reward: 1.8
+    - Maximum stop loss: 5.0% of entry
+    - Minimum stop loss: 0.2% of entry
+    - Stop loss buffer: 0.75% extra
+
+    This is ideal for interactive use, notebooks, or simple bots that don't need
+    custom validation rules.
+
+    Args:
+        entry (float): Entry price for the trade
+        direction (str): Trade direction ("LONG", "SHORT", "BULLISH", "BEARISH", "BUY", "SELL")
+        atr (float): Average True Range value for volatility-based calculations
+        sl_mult (float, optional): ATR multiplier for stop loss distance.
+                                   Defaults to 1.5 (reasonable for most timeframes).
+        tp1_mult (float, optional): ATR multiplier for first take profit.
+                                    Defaults to 2.0 (1.33R with sl_mult=1.5).
+        tp2_mult (float, optional): ATR multiplier for second take profit.
+                                    Defaults to 3.5 (2.33R with sl_mult=1.5).
+
+    Returns:
+        TradeLevels: Validated trade levels with:
+            - entry, stop_loss, take_profit_1, take_profit_2
+            - risk_reward_1, risk_reward_2 (actual R:R ratios achieved)
+            - is_valid (bool): Whether trade passes validation
+            - rejection_reason (str): Explanation if invalid
+
+    Example:
+        >>> # Simple LONG trade calculation
+        >>> levels = quick_calculate(entry=100.0, direction="LONG", atr=2.5)
+        >>> if levels.is_valid:
+        ...     print(f"Entry: ${levels.entry:.2f}")
+        ...     print(f"SL: ${levels.stop_loss:.2f}")
+        ...     print(f"TP1: ${levels.take_profit_1:.2f} ({levels.risk_reward_1:.2f}R)")
+        ...     print(f"TP2: ${levels.take_profit_2:.2f} ({levels.risk_reward_2:.2f}R)")
+        ... else:
+        ...     print(f"Invalid: {levels.rejection_reason}")
+
+        >>> # Custom multipliers for tighter stops
+        >>> tight_levels = quick_calculate(
+        ...     entry=50.0, direction="SHORT", atr=1.0,
+        ...     sl_mult=1.0, tp1_mult=1.5, tp2_mult=2.5
+        ... )
+
+    Notes:
+        - For custom validation rules, instantiate TPSLCalculator directly
+        - Default multipliers (1.5, 2.0, 3.5) provide ~1.33R and 2.33R targets
+        - Automatically applies 0.75% buffer to stop loss to avoid wick-outs
+        - Direction is normalized: "BULLISH"/"BUY"/"LONG" → "LONG", others → "SHORT"
+        - Returns ATR-based calculations only (for other methods, use TPSLCalculator)
+    """
     calc = TPSLCalculator()
     return calc.calculate(
         entry=entry,

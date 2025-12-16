@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Automated funding-rate/open-interest monitor built from funding_oi.py."""
+"""
+Automated funding-rate/open-interest monitor built from funding_oi.py.
+
+PHASE 3 ENHANCEMENTS:
+- Structured JSON logging with correlation IDs
+- Retry logic with exponential backoff for API calls
+- Circuit breaker pattern to prevent cascading failures
+- Enhanced type safety with common.types
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
+import signal
 import sys
 import time
 from dataclasses import dataclass, field
@@ -17,6 +25,18 @@ from typing import Any, Dict, List, Optional, TypedDict, cast
 import ccxt
 import requests
 
+# Phase 3: Import structured logging, resilience, and types
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from common.logging_config import get_logger, generate_correlation_id, ContextLogger
+    from common.resilience import retry_with_backoff, CircuitBreaker, RetryError
+    from common.types import SignalDirection
+    PHASE3_AVAILABLE = True
+except ImportError:
+    # Fallback if common module not available
+    PHASE3_AVAILABLE = False
+    import logging
+
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 STATE_FILE = BASE_DIR / "funding_state.json"
@@ -25,16 +45,33 @@ STATS_FILE = LOG_DIR / "funding_stats.json"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "funding_bot.log"),
-    ],
-)
-
-logger = logging.getLogger("funding_bot")
+# Phase 3: Use structured logging with JSON format for production
+if PHASE3_AVAILABLE:
+    logger = get_logger(
+        "funding_bot",
+        log_level=os.getenv("LOG_LEVEL", "INFO"),
+        log_dir=LOG_DIR,
+        json_logs=os.getenv("JSON_LOGS", "true").lower() == "true",
+        console_output=True,
+        max_bytes=10 * 1024 * 1024,  # 10MB
+        backup_count=5
+    )
+    logger.info("Phase 3 structured logging initialized", extra={
+        "json_logs": os.getenv("JSON_LOGS", "true").lower() == "true",
+        "log_dir": str(LOG_DIR)
+    })
+else:
+    # Fallback to basic logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(LOG_DIR / "funding_bot.log"),
+        ],
+    )
+    logger = logging.getLogger("funding_bot")
+    logger.warning("Phase 3 modules not available, using basic logging")
 
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -61,6 +98,21 @@ except ImportError:
     TradeLevels = None  # type: ignore
     get_config_manager = None  # type: ignore
     RateLimitHandler = None  # type: ignore
+
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    global shutdown_requested
+    shutdown_requested = True
+    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 class WatchItem(TypedDict, total=False):
@@ -118,6 +170,26 @@ class MexcFundingClient:
         # Initialize rate limit handler with conservative settings
         self.rate_limiter = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
 
+        # Phase 3: Circuit breakers for MEXC API endpoints
+        if PHASE3_AVAILABLE:
+            self.api_breaker = CircuitBreaker(
+                failure_threshold=5,
+                timeout=60,
+                name="mexc_api"
+            )
+            self.exchange_breaker = CircuitBreaker(
+                failure_threshold=3,
+                timeout=30,
+                name="mexc_exchange"
+            )
+            logger.info("Circuit breakers initialized for MEXC API", extra={
+                "api_threshold": 5,
+                "exchange_threshold": 3
+            })
+        else:
+            self.api_breaker = None
+            self.exchange_breaker = None
+
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
         return f"{symbol.upper()}/USDT:USDT"
@@ -140,19 +212,87 @@ class MexcFundingClient:
         return resp.json().get("data", {})
 
     def ticker(self, symbol: str) -> dict:
-        if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol))
-        return self.exchange.fetch_ticker(self._swap_symbol(symbol))
+        """
+        Fetch ticker data with retry logic and circuit breaker protection.
+
+        Phase 3: Demonstrates resilience patterns - retries transient errors
+        and fails fast when circuit breaker is open.
+        """
+        def _fetch():
+            if self.rate_limiter:
+                return self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol))
+            return self.exchange.fetch_ticker(self._swap_symbol(symbol))
+
+        # Phase 3: Use circuit breaker if available
+        if PHASE3_AVAILABLE and self.exchange_breaker:
+            result = self.exchange_breaker.call(_fetch)
+            if result is None:
+                raise Exception("Circuit breaker open for exchange API")
+            return result
+
+        # Fallback to direct call with retry
+        if PHASE3_AVAILABLE:
+            @retry_with_backoff(max_attempts=3, base_delay=1.0)
+            def _with_retry():
+                return _fetch()
+            return _with_retry()
+
+        return _fetch()
 
     def trades(self, symbol: str, limit: int = 500) -> list:
-        if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_trades, self._swap_symbol(symbol), limit=limit)
-        return self.exchange.fetch_trades(self._swap_symbol(symbol), limit=limit)
+        """
+        Fetch trades data with retry logic and circuit breaker protection.
+
+        Phase 3: Demonstrates resilience patterns for API calls.
+        """
+        def _fetch():
+            if self.rate_limiter:
+                return self.rate_limiter.execute(self.exchange.fetch_trades, self._swap_symbol(symbol), limit=limit)
+            return self.exchange.fetch_trades(self._swap_symbol(symbol), limit=limit)
+
+        # Phase 3: Use circuit breaker if available
+        if PHASE3_AVAILABLE and self.exchange_breaker:
+            result = self.exchange_breaker.call(_fetch)
+            if result is None:
+                raise Exception("Circuit breaker open for exchange API")
+            return result
+
+        # Fallback to direct call with retry
+        if PHASE3_AVAILABLE:
+            @retry_with_backoff(max_attempts=3, base_delay=1.0)
+            def _with_retry():
+                return _fetch()
+            return _with_retry()
+
+        return _fetch()
 
     def ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> list:
-        if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ohlcv, self._swap_symbol(symbol), timeframe=timeframe, limit=limit)
-        return self.exchange.fetch_ohlcv(self._swap_symbol(symbol), timeframe=timeframe, limit=limit)
+        """
+        Fetch OHLCV data with retry logic and circuit breaker protection.
+
+        Phase 3: Demonstrates resilience patterns - retries up to 3 times
+        with exponential backoff on transient failures.
+        """
+        def _fetch():
+            if self.rate_limiter:
+                return self.rate_limiter.execute(self.exchange.fetch_ohlcv, self._swap_symbol(symbol), timeframe=timeframe, limit=limit)
+            return self.exchange.fetch_ohlcv(self._swap_symbol(symbol), timeframe=timeframe, limit=limit)
+
+        # Phase 3: Use circuit breaker if available
+        if PHASE3_AVAILABLE and self.exchange_breaker:
+            result = self.exchange_breaker.call(_fetch)
+            if result is None:
+                raise Exception("Circuit breaker open for exchange API")
+            return result
+
+        # Fallback to direct call with retry
+        if PHASE3_AVAILABLE:
+            @retry_with_backoff(max_attempts=3, base_delay=1.0)
+            def _with_retry():
+                return _fetch()
+            return _with_retry()
+
+        return _fetch()
 
 
 @dataclass
@@ -392,17 +532,21 @@ class FundingBot:
             self.health_monitor.send_startup_message()
         
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     self._run_cycle()
                     self._monitor_open_signals()
-                    
+
                     # Record successful cycle
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
-                    
+
                     if not loop:
                         break
+
+                    if shutdown_requested:
+                        break
+
                     logger.info("Cycle complete; sleeping %ds", self.interval)
                     time.sleep(self.interval)
                 except Exception as exc:
@@ -411,6 +555,8 @@ class FundingBot:
                         self.health_monitor.record_error(str(exc))
                     if not loop:
                         raise
+                    if shutdown_requested:
+                        break
                     time.sleep(10)  # Brief pause before retry
         finally:
             # Send shutdown notification

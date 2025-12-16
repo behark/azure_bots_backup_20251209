@@ -3,12 +3,30 @@
 Advanced TP/SL Calculator
 Centralized, configurable take profit and stop loss calculation for all trading bots.
 Supports multiple calculation methods: ATR-based, percentage-based, structure-based.
+
+PHASE 3 ENHANCEMENTS:
+- Enhanced type hints using common.types
+- Mypy strict mode compatibility
+- Better IDE autocomplete support
 """
 
 import logging
+import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from enum import Enum
+from pathlib import Path
+
+# Phase 3: Import common types for enhanced type safety
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from common.types import Direction, Timeframe
+    PHASE3_TYPES_AVAILABLE = True
+except ImportError:
+    PHASE3_TYPES_AVAILABLE = False
+    # Fallback type aliases
+    Direction = str  # type: ignore
+    Timeframe = str  # type: ignore
 
 logger = logging.getLogger(__name__)
 

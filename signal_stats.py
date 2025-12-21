@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from file_lock import file_lock
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -51,16 +53,18 @@ class SignalStats:
         return counts
 
     def _load(self) -> Dict[str, object]:
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         if self.file_path.exists():
             try:
-                return json.loads(self.file_path.read_text())
+                with file_lock(self.file_path):
+                    return json.loads(self.file_path.read_text())
             except json.JSONDecodeError:
                 return {"open": {}, "history": []}
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         return {"open": {}, "history": []}
 
     def _save(self) -> None:
-        self.file_path.write_text(json.dumps(self.data, indent=2))
+        with file_lock(self.file_path):
+            self.file_path.write_text(json.dumps(self.data, indent=2))
 
     def record_open(
         self,

@@ -1,175 +1,43 @@
 [
   {
-    "symbol": "AIOT/USDT",
-    "timeframe": "1h",
+    "symbol": "POWER/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "ALCH/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ALMANAK/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "APR/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ASTER/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "CLO/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "DOGE/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "FHE/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "FRANKLIN/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "H/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ICNT/USDT",
-    "timeframe": "1h",
+    "symbol": "BLUAI/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
     "symbol": "IRYS/USDT",
-    "timeframe": "1h",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "JELLYJELLY/USDT",
-    "timeframe": "1h",
+    "symbol": "ON/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "LRC/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "NIGHT/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "POWER/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "RLS/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "RVV/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "SUI/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "TRUTH/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "LINK/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "AVAX/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "DOT/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ADA/USDT",
-    "timeframe": "1h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "DOGE/USDT",
-    "timeframe": "4h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "SUI/USDT",
-    "timeframe": "4h",
+    "symbol": "CLO/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
     "symbol": "APR/USDT",
-    "timeframe": "4h",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "LRC/USDT",
-    "timeframe": "4h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "AIOT/USDT",
-    "timeframe": "4h",
+    "symbol": "RLS/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   }

@@ -4,8 +4,6 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
-from pathlib import Path
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -196,80 +194,9 @@ class HealthMonitor:
             logger.error(f"Failed to send shutdown message: {e}")
 
 
-class RateLimiter:
-    """Simple rate limiter with exponential backoff."""
-    
-    def __init__(self, calls_per_minute: int = 60, backoff_file: Optional[Path] = None):
-        """
-        Initialize rate limiter.
-        
-        Args:
-            calls_per_minute: Maximum API calls per minute
-            backoff_file: File to persist backoff state
-        """
-        self.calls_per_minute = calls_per_minute
-        self.min_interval = 60.0 / calls_per_minute
-        self.last_call_time = 0
-        self.backoff_file = backoff_file
-        self.backoff_state = self._load_backoff_state()
-    
-    def _load_backoff_state(self) -> dict:
-        """Load backoff state from file."""
-        if not self.backoff_file or not self.backoff_file.exists():
-            return {}
-        try:
-            return json.loads(self.backoff_file.read_text())
-        except Exception:
-            return {}
-    
-    def _save_backoff_state(self) -> None:
-        """Save backoff state to file."""
-        if not self.backoff_file:
-            return
-        try:
-            self.backoff_file.write_text(json.dumps(self.backoff_state, indent=2))
-        except Exception as e:
-            logger.error(f"Failed to save backoff state: {e}")
-    
-    def wait_if_needed(self) -> None:
-        """Wait if necessary to respect rate limits."""
-        current_time = time.time()
-        time_since_last = current_time - self.last_call_time
-        
-        if time_since_last < self.min_interval:
-            sleep_time = self.min_interval - time_since_last
-            time.sleep(sleep_time)
-        
-        self.last_call_time = time.time()
-    
-    def get_backoff_delay(self, endpoint: str) -> float:
-        """Get current backoff delay for an endpoint."""
-        state = self.backoff_state.get(endpoint, {})
-        if not state:
-            return 0
-        
-        # Check if backoff expired
-        if time.time() > state.get('reset_time', 0):
-            self.backoff_state.pop(endpoint, None)
-            self._save_backoff_state()
-            return 0
-        
-        return state.get('delay', 0)
-    
-    def record_error(self, endpoint: str) -> None:
-        """Record API error and increase backoff."""
-        state = self.backoff_state.get(endpoint, {'failures': 0, 'delay': 1})
-        state['failures'] += 1
-        state['delay'] = min(state['delay'] * 2, 300)  # Max 5 minutes
-        state['reset_time'] = time.time() + state['delay']
-        
-        self.backoff_state[endpoint] = state
-        self._save_backoff_state()
-        
-        logger.warning(f"Endpoint {endpoint} backing off for {state['delay']}s")
-    
-    def record_success(self, endpoint: str) -> None:
-        """Record successful API call and reset backoff."""
-        if endpoint in self.backoff_state:
-            self.backoff_state.pop(endpoint)
-            self._save_backoff_state()
+# RateLimiter re-exported for backwards compatibility
+# New code should use: from rate_limit_handler import RateLimitHandler
+try:
+    from rate_limit_handler import RateLimitHandler as RateLimiter
+except ImportError:
+    RateLimiter = None  # type: ignore

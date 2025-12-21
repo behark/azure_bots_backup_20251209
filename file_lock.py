@@ -5,6 +5,7 @@ import fcntl
 import json
 import logging
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -20,22 +21,42 @@ class FileLockError(Exception):
 @contextmanager
 def file_lock(file_path: Path, timeout: float = 5.0):
     """
-    Context manager for file locking using fcntl.
+    Context manager for file locking using fcntl with timeout.
 
     Usage:
-        with file_lock(Path("state.json")):
+        with file_lock(Path("state.json"), timeout=5.0):
             # read/write operations
+
+    Args:
+        file_path: Path to the file to lock
+        timeout: Maximum seconds to wait for lock (default 5.0)
+
+    Raises:
+        FileLockError: If lock cannot be acquired within timeout
 
     Sets secure file permissions (0o600) on lock files for security.
     """
     lock_path = file_path.with_suffix(file_path.suffix + ".lock")
     lock_file = None
+    start_time = time.time()
 
     try:
         # Create lock file with secure permissions (owner read/write only)
         lock_file = open(lock_path, 'w')
         os.chmod(lock_path, 0o600)
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        # Try to acquire lock with timeout using non-blocking attempts
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break  # Lock acquired
+            except (IOError, OSError):
+                # Lock not available, check timeout
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    raise FileLockError(f"Could not acquire lock on {file_path} within {timeout}s")
+                time.sleep(0.05)  # Wait 50ms before retrying
+
         yield
     finally:
         if lock_file:

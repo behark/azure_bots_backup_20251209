@@ -7,6 +7,8 @@ from typing import Dict, Optional
 from datetime import datetime
 from pathlib import Path
 
+from file_lock import file_lock
+
 logger = logging.getLogger(__name__)
 
 def generate_signal_id(symbol: str, direction: str) -> str:
@@ -36,17 +38,12 @@ class TelegramNotifier:
     
     def save_signal_to_json(self, signal: Dict, signals_log_file: Optional[str] = None, signal_id: Optional[str] = None) -> bool:
         try:
-            log_file = signals_log_file or self.signals_log_file
-            signals = []
-            
-            if Path(log_file).exists():
-                with open(log_file, 'r') as f:
-                    signals = json.load(f)
-            
+            log_file = Path(signals_log_file or self.signals_log_file)
+
             # Generate signal_id if not provided
             if not signal_id:
                 signal_id = generate_signal_id(signal['symbol'], signal['action'])
-            
+
             signal_entry = {
                 "signal_id": signal_id,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -77,15 +74,18 @@ class TelegramNotifier:
                 signal_entry['time_stop_minutes'] = signal['time_stop_minutes']
             elif signal.get('time_stop_bars') is not None:
                 signal_entry['time_stop_bars'] = signal['time_stop_bars']
-            
-            signals.append(signal_entry)
-            
-            with open(log_file, 'w') as f:
-                json.dump(signals, f, indent=2)
-            
+
+            # Use file locking to prevent concurrent access issues
+            with file_lock(log_file):
+                signals = []
+                if log_file.exists():
+                    signals = json.loads(log_file.read_text())
+                signals.append(signal_entry)
+                log_file.write_text(json.dumps(signals, indent=2))
+
             logger.info(f"Signal saved to {log_file} with ID: {signal_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error saving signal to JSON: {e}")
             return False

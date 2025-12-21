@@ -1,92 +1,18 @@
 [
   {
-    "_comment": "TOP TIER - Highest Liquidity",
-    "symbol": "BTC/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ETH/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "SOL/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "_comment": "EXPANSION PAIRS FROM VOLUME BOT",
-    "symbol": "AIOT/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ALCH/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ALMANAK/USDT",
+    "symbol": "POWER/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "APR/USDT",
+    "symbol": "BLUAI/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "CLO/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "FHE/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "H/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ICNT/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "IRYS/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "JELLYJELLY/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "LRC/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "NIGHT/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
@@ -98,124 +24,20 @@
     "market_type": "swap"
   },
   {
-    "symbol": "POWR/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
+    "symbol": "CLO/USDT",
+    "timeframe": "15m",
+    "exchange": "mexc",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "APR/USDT",
+    "timeframe": "15m",
+    "exchange": "mexc",
     "market_type": "swap"
   },
   {
     "symbol": "RLS/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "RVV/USDT",
-    "timeframe": "5m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "TRUTH/USDT",
-    "timeframe": "15m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "WET/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "_comment": "HIGH TIER - Very Good Liquidity",
-    "symbol": "XRP/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "DOGE/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ADA/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "AVAX/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "LINK/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "_comment": "MID TIER - Good Liquidity",
-    "symbol": "DOT/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "UNI/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ATOM/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "LTC/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "APT/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ARB/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "OP/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "INJ/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "SUI/USDT",
-    "timeframe": "5m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "SEI/USDT",
-    "timeframe": "5m",
     "exchange": "mexc",
     "market_type": "swap"
   }

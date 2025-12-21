@@ -30,22 +30,20 @@ fi
 
 # Define bots with their configurations
 # Format: "bot_name:script_path:args"
+# Standardized: --interval 300 (5min cycle), --cooldown 30 (30min cooldown)
 declare -a BOTS=(
-    "candlestick_bot:candlestick_bot/candlestick_bot.py:"
-    "consensus_bot:consensus_bot/consensus_bot.py:--loop --interval 30 --window 30"
-    "diy_bot:diy_bot/diy_bot.py:"
-    "fib_reversal_bot:fib_reversal_bot/fib_reversal_bot.py:"
-    "fib_swing_bot:fib_swing_bot/fib_swing_bot.py:"
-    "funding_bot:funding_bot/funding_bot.py:--loop --interval 300 --cooldown 45"
-    "harmonic_bot:harmonic_bot/harmonic_bot.py:"
-    "liquidation_bot:liquidation_bot/liquidation_bot.py:--loop --interval 300 --cooldown 45"
-    "most_bot:most_bot/most_bot.py:"
-    "mtf_bot:mtf_bot/mtf_bot.py:"
-    "orb_bot:orb_bot/orb_bot.py:"
-    "psar_bot:psar_bot/psar_bot.py:"
-    "strat_bot:strat_bot/strat_bot.py:"
-    "volume_vn_bot:volume_bot/volume_vn_bot.py:"
-    "volume_profile_bot:volume_profile_bot/volume_profile_bot.py:"
+    "diy_bot:diy_bot/diy_bot.py:--interval 300"
+    "fib_swing_bot:fib_swing_bot/fib_swing_bot.py:--interval 300"
+    "funding_bot:funding_bot/funding_bot.py:--interval 300"
+    "harmonic_bot:harmonic_bot/harmonic_bot.py:--interval 300"
+    "liquidation_bot:liquidation_bot/liquidation_bot.py:--interval 300 --cooldown 30"
+    "most_bot:most_bot/most_bot.py:--interval 300 --cooldown 30"
+    "mtf_bot:mtf_bot/mtf_bot.py:--interval 300 --cooldown 30"
+    "orb_bot:orb_bot/orb_bot.py:--interval 300"
+    "psar_bot:psar_bot/psar_bot.py:--interval 300 --cooldown 30"
+    "strat_bot:strat_bot/strat_bot.py:--interval 300 --cooldown 30"
+    "volume_bot:volume_bot/volume_vn_bot.py:--interval 300"
+    "volume_profile_bot:volume_profile_bot/volume_profile_bot.py:--interval 300"
 )
 
 started=0

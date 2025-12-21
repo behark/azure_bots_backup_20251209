@@ -5,8 +5,8 @@
     "check_timeframe_for_duplicates": true
   },
   "execution": {
-    "cycle_interval_seconds": 120,
-    "symbol_delay_seconds": 3,
+    "cycle_interval_seconds": 300,
+    "symbol_delay_seconds": 8,
     "health_check_interval_seconds": 3600,
     "enable_startup_notification": true,
     "enable_shutdown_notification": true,
@@ -24,7 +24,7 @@
   "analysis": {
     "candle_limit": 200,
     "request_timeout_seconds": 30,
-    "timeframe_override": "1h",
+    "timeframe_override": "15m",
     "pattern_error_thresholds": {
       "Cypher": 0.12,
       "Shark": 0.12,
@@ -54,15 +54,15 @@
     "confidence_threshold": 0.35
   },
   "rate_limit": {
-    "calls_per_minute": 60,
+    "calls_per_minute": 20,
     "max_retries": 5,
-    "base_delay_seconds": 0.5,
+    "base_delay_seconds": 1.5,
     "backoff_multiplier": 2.0,
     "rate_limit_backoff_base": 60,
     "rate_limit_backoff_max": 300
   },
   "signal": {
-    "cooldown_minutes": 15,
+    "cooldown_minutes": 30,
     "max_signal_age_hours": 24,
     "result_notification_cooldown_minutes": 15,
     "no_signal_alert_hours": 6

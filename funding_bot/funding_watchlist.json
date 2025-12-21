@@ -1,91 +1,43 @@
 [
   {
-    "symbol": "AIOT/USDT",
-    "timeframe": "8h",
+    "symbol": "POWER/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "ALCH/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ASTER/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "CLO/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "DOGE/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "FHE/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "FRANKLIN/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "H/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ICNT/USDT",
-    "timeframe": "8h",
+    "symbol": "BLUAI/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
     "symbol": "IRYS/USDT",
-    "timeframe": "8h",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
     "symbol": "ON/USDT",
-    "timeframe": "8h",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "PIPPIN/USDT",
-    "timeframe": "8h",
+    "symbol": "CLO/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "RVV/USDT",
-    "timeframe": "8h",
+    "symbol": "APR/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   },
   {
-    "symbol": "SUI/USDT",
-    "timeframe": "8h",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "TRUTH/USDT",
-    "timeframe": "8h",
+    "symbol": "RLS/USDT",
+    "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
   }

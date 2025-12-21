@@ -1,86 +1,44 @@
 [
   {
-    "symbol": "ALMANAK/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "symbol": "POWER/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   },
   {
-    "symbol": "APR/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "ASTER/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "CLO/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "DOGE/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "FRANKLIN/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "symbol": "BLUAI/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   },
   {
     "symbol": "IRYS/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "JELLYJELLY/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "LRC/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   },
   {
     "symbol": "ON/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   },
   {
-    "symbol": "PIPPIN/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "symbol": "CLO/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   },
   {
-    "symbol": "POWER/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "symbol": "APR/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   },
   {
-    "symbol": "SUI/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
-    "orb_stages": [5, 15, 30]
-  },
-  {
-    "symbol": "TRUTH/USDT",
-    "period": "5m",
-    "cooldown_minutes": 60,
+    "symbol": "RLS/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
     "orb_stages": [5, 15, 30]
   }
 ]

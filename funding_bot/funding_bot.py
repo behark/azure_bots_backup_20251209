@@ -447,6 +447,12 @@ class FundingBot:
                     result = self.analyzer.analyze(symbol, funding_rate, oi, oi_change, price, ema)
                     
                     if result:
+                        # Check direction filter
+                        allowed_dirs = self.config.get("signal", {}).get("allowed_directions", ["BULLISH", "BEARISH"])
+                        if result['direction'] not in allowed_dirs:
+                            logger.debug(f"Skipping {result['direction']} signal for {symbol} - not in allowed_directions")
+                            continue
+
                         # 3. Targets
                         atr = price * 0.02 # Simple proxy if calc fails
                         targets = self.analyzer.calculate_targets(price, result['direction'], atr)

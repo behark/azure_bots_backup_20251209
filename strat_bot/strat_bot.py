@@ -17,9 +17,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import FrameType
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -50,28 +51,18 @@ except ImportError:
 
 sys.path.append(str(BASE_DIR.parent))
 
-# Safe imports with independent error handling
-from safe_import import safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-imports = [
-    ('notifier', 'TelegramNotifier', None),
-    ('signal_stats', 'SignalStats', None),
-    ('health_monitor', 'HealthMonitor', None),
-    ('health_monitor', 'RateLimiter', None),
-    ('tp_sl_calculator', 'TPSLCalculator', None),
-    ('trade_config', 'get_config_manager', None),
-    ('rate_limit_handler', 'RateLimitHandler', None),
-]
-
-components = safe_import_multiple(imports, logger_instance=logger)
-
-TelegramNotifier = components['TelegramNotifier']
-SignalStats = components['SignalStats']
-HealthMonitor = components['HealthMonitor']
-RateLimiter = components['RateLimiter']
-TPSLCalculator = components['TPSLCalculator']
-get_config_manager = components['get_config_manager']
-RateLimitHandler = components['RateLimitHandler']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -258,33 +249,33 @@ class STRATAnalyzer:
 
 class MexcClient:
     """MEXC exchange client wrapper."""
-    
-    def __init__(self):
-        self.exchange = ccxt.mexc({
+
+    def __init__(self) -> None:
+        self.exchange: Any = ccxt.binanceusdm({
             "enableRateLimit": True,
             "options": {"defaultType": "swap"}
-        })  # type: ignore[arg-type]
+        })
         self.exchange.load_markets()
-        self.rate_limiter = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
+        self.rate_limiter: Any = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
     
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
         return f"{symbol.upper()}/USDT:USDT"
     
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> list:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
         if self.rate_limiter:
-            return self.rate_limiter.execute(
+            return cast(List[Any], self.rate_limiter.execute(
                 self.exchange.fetch_ohlcv,
                 self._swap_symbol(symbol),
                 timeframe=timeframe,
                 limit=limit
-            )
-        return self.exchange.fetch_ohlcv(
+            ))
+        return cast(List[Any], self.exchange.fetch_ohlcv(
             self._swap_symbol(symbol),
             timeframe=timeframe,
             limit=limit
-        )
+        ))
     
     def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch ticker data."""
@@ -472,7 +463,7 @@ class STRATBot:
         self.analyzer = STRATAnalyzer()
         self.state = BotState(STATE_FILE)
         self.notifier = self._init_notifier()
-        self.stats = SignalStats("STRAT Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("STRAT Bot", STATS_FILE)
         self.health_monitor = (
             HealthMonitor("STRAT Bot", self.notifier, heartbeat_interval=3600)
             if HealthMonitor and self.notifier else None
@@ -481,7 +472,7 @@ class STRATBot:
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
         # Cache for OHLCV data to reduce API calls
-        self.ohlcv_cache: Dict[str, Tuple[list, float]] = {}  # {"SYMBOL-5m": (data, timestamp)}
+        self.ohlcv_cache: Dict[str, Tuple[List[Any], float]] = {}  # {"SYMBOL-5m": (data, timestamp)}
         self.cache_ttl = 60  # Cache TTL in seconds
         self.max_cache_size = 100  # Maximum cache entries
         # Graceful shutdown
@@ -489,7 +480,7 @@ class STRATBot:
         signal_module.signal(signal_module.SIGTERM, self._signal_handler)
         signal_module.signal(signal_module.SIGINT, self._signal_handler)
     
-    def _init_notifier(self):
+    def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
             return None
@@ -541,7 +532,7 @@ class STRATBot:
         self.exchange_delay[exchange] = new_delay
         logger.warning("%s rate limit; backing off for %.0fs", exchange, new_delay)
     
-    def _signal_handler(self, signum, frame) -> None:
+    def _signal_handler(self, signum: int, frame: Optional[FrameType]) -> None:
         """Handle shutdown signals gracefully."""
         logger.info("Received signal %d, initiating graceful shutdown...", signum)
         self.shutdown_requested = True
@@ -569,7 +560,7 @@ class STRATBot:
                 del self.ohlcv_cache[key]
             logger.debug("Cache cleanup: removed %d entries", len(keys_to_remove))
     
-    def _fetch_ohlcv_cached(self, symbol: str, timeframe: str, limit: int = 50) -> Optional[list]:
+    def _fetch_ohlcv_cached(self, symbol: str, timeframe: str, limit: int = 50) -> Optional[List[Any]]:
         """Fetch OHLCV with caching to reduce API calls."""
         cache_key = f"{symbol}-{timeframe}"
         now = time.time()
@@ -856,41 +847,35 @@ class STRATBot:
             logger.debug("%s: Invalid BEARISH setup - SL %.6f <= entry %.6f", symbol, stop_loss, entry)
             return None
         
-        # Calculate targets using ATR or risk-based approach
-        direction_factor = 1 if direction == "BULLISH" else -1
-        
-        if self.USE_ATR_TARGETS:
-            # ATR-based targets for dynamic sizing
-            tp1 = entry + direction_factor * atr * self.ATR_TP1_MULTIPLIER
-            tp2 = entry + direction_factor * atr * self.ATR_TP2_MULTIPLIER
-        else:
-            # Risk-based targets (original approach)
-            tp1 = entry + direction_factor * risk * 2
-            tp2 = entry + direction_factor * risk * 3
-        
-        # Validate minimum R:R ratio
-        reward1 = abs(tp1 - entry)
-        rr_ratio = reward1 / risk if risk > 0 else 0
-        if rr_ratio < self.MIN_RR_RATIO:
-            logger.debug("%s: R:R too low: 1:%.2f (min 1:%.2f)", symbol, rr_ratio, self.MIN_RR_RATIO)
+        # Calculate targets using centralized TPSLCalculator
+        # STRAT uses structure-based SL (setup bar high/low), so we pass custom_sl
+        calculator = TPSLCalculator(min_risk_reward=self.MIN_RR_RATIO)
+        dir_normalized = "LONG" if direction == "BULLISH" else "SHORT"
+        levels = calculator.calculate(
+            entry=entry,
+            direction=dir_normalized,
+            atr=atr,
+            tp1_multiplier=self.ATR_TP1_MULTIPLIER,
+            tp2_multiplier=self.ATR_TP2_MULTIPLIER,
+            custom_sl=stop_loss,  # Structure-based SL from setup bar
+        )
+
+        if not levels.is_valid:
+            logger.debug("%s: TPSLCalculator rejected - %s", symbol, levels.rejection_reason)
             return None
 
-        # Validate TP ordering
-        if direction == "BULLISH" and not (entry < tp1 < tp2):
-            logger.warning("Invalid TP order for BULLISH signal: entry=%f, tp1=%f, tp2=%f", entry, tp1, tp2)
-            return None
-        if direction == "BEARISH" and not (entry > tp1 > tp2):
-            logger.warning("Invalid TP order for BEARISH signal: entry=%f, tp1=%f, tp2=%f", entry, tp1, tp2)
-            return None
-        
-        # Add detailed debug logging for successful signal
-        logger.debug("%s %s STRAT signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f | Bars: %s",
-                   symbol, direction, entry, stop_loss, tp1, tp2, rr_ratio, bar_sequence if 'bar_sequence' in locals() else "N/A")
+        tp1 = levels.take_profit_1
+        tp2 = levels.take_profit_2
+        rr_ratio = levels.risk_reward_1
 
         closed_seq = bar_types[:-1]
         # Show last 6 bars for better context, or all if fewer
         display_count = min(6, len(closed_seq))
         bar_sequence = '-'.join(closed_seq[-display_count:]) if closed_seq else '1'
+
+        # Add detailed debug logging for successful signal
+        logger.debug("%s %s STRAT signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f | Bars: %s",
+                   symbol, direction, entry, stop_loss, tp1, tp2, rr_ratio, bar_sequence)
         
         return STRATSignal(
             symbol=symbol,
@@ -906,59 +891,44 @@ class STRATBot:
         )
     
     def _format_message(self, signal: STRATSignal) -> str:
-        """Format Telegram message for signal."""
-        direction = signal.direction
-        emoji = "🟢" if direction == "BULLISH" else "🔴"
-        
-        lines = [
-            f"{emoji} <b>{direction} STRAT PATTERN - {signal.symbol}/USDT</b>",
-            "",
-            f"📊 <b>Pattern:</b> {signal.pattern_name}",
-            f"📐 <b>Bar Sequence:</b> {signal.bar_sequence}",
-            f"💰 <b>Current Price:</b> <code>{signal.current_price:.6f}</code>",
-            "",
-            "<b>🎯 TRADE LEVELS:</b>",
-            f"🟢 Entry: <code>{signal.entry:.6f}</code>",
-            f"🛑 Stop Loss: <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 TP1: <code>{signal.take_profit_1:.6f}</code>",
-            f"🚀 TP2: <code>{signal.take_profit_2:.6f}</code>",
-        ]
-        
-        # Calculate R:R
-        risk = abs(signal.entry - signal.stop_loss)
-        reward1 = abs(signal.take_profit_1 - signal.entry)
-        reward2 = abs(signal.take_profit_2 - signal.entry)
-        
-        if risk > 0:
-            rr1 = reward1 / risk
-            rr2 = reward2 / risk
-            lines.append("")
-            lines.append(f"⚖️ <b>Risk/Reward:</b> 1:{rr1:.2f} (TP1) | 1:{rr2:.2f} (TP2)")
-
-        # Historical TP/SL stats
+        """Format Telegram message for signal using centralized template."""
+        # Get performance stats
+        perf_stats = None
         if self.stats is not None:
             symbol_key = f"{signal.symbol}/USDT"
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1 = counts.get("TP1", 0)
-            tp2 = counts.get("TP2", 0)
-            sl = counts.get("SL", 0)
-            total = tp1 + tp2 + sl
-            lines.append("")
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+
             if total > 0:
-                win_rate = (tp1 + tp2) / total * 100.0
-                lines.append(
-                    f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
-                    f"(Win rate: {win_rate:.1f}%)"
-                )
-            else:
-                lines.append("📈 <b>History:</b> No previous trades for this symbol")
-        
-        lines.extend([
-            "",
-            f"⏱️ {signal.timestamp}",
-        ])
-        
-        return "\n".join(lines)
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total,
+                }
+
+        # Build extra info with STRAT-specific data
+        extra_info = f"Bar Sequence: {signal.bar_sequence}"
+
+        return format_signal_message(
+            bot_name="STRAT",
+            symbol=f"{signal.symbol}/USDT",
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            tp2=signal.take_profit_2,
+            pattern_name=signal.pattern_name,
+            exchange="MEXC",
+            timeframe="15m",
+            current_price=signal.current_price,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
     
     def _monitor_open_signals(self) -> None:
         """Monitor open signals for TP/SL hits."""

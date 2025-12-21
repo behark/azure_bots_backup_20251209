@@ -15,8 +15,10 @@ Usage:
 
 import time
 import logging
-from typing import Callable, Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 from functools import wraps
+
+F = TypeVar('F', bound=Callable[..., Any])
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +46,9 @@ class RateLimitHandler:
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
         self.max_backoff = max_backoff
-        self.last_call_time = 0
-        
-    def _apply_base_delay(self):
+        self.last_call_time: float = 0.0
+
+    def _apply_base_delay(self) -> None:
         """Apply the base delay between API calls."""
         current_time = time.time()
         time_since_last_call = current_time - self.last_call_time
@@ -73,10 +75,10 @@ class RateLimitHandler:
         )
     
     def execute(
-        self, 
-        func: Callable, 
-        *args, 
-        **kwargs
+        self,
+        func: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any
     ) -> Any:
         """
         Execute a function with rate limiting and automatic retry.
@@ -95,7 +97,7 @@ class RateLimitHandler:
         # Apply base delay before making the call
         self._apply_base_delay()
         
-        last_error = RuntimeError(f"API call failed after {self.max_retries} attempts")
+        last_error: Exception = RuntimeError(f"API call failed after {self.max_retries} attempts")
         
         for attempt in range(self.max_retries):
             try:
@@ -141,8 +143,8 @@ class RateLimitHandler:
 
 class RateLimitedExchange:
     """Wrapper for exchange objects that adds rate limiting to all API calls."""
-    
-    def __init__(self, exchange, handler: Optional[RateLimitHandler] = None):
+
+    def __init__(self, exchange: Any, handler: Optional[RateLimitHandler] = None) -> None:
         """
         Initialize rate-limited exchange wrapper.
         
@@ -153,23 +155,23 @@ class RateLimitedExchange:
         self._exchange = exchange
         self._handler = handler or RateLimitHandler()
         
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         """
         Intercept method calls and wrap API methods with rate limiting.
         """
         attr = getattr(self._exchange, name)
-        
+
         # If it's a callable method that looks like an API call, wrap it
         if callable(attr) and (
-            name.startswith('fetch_') or 
+            name.startswith('fetch_') or
             name.startswith('create_') or
             name.startswith('cancel_') or
             name in ['load_markets', 'fetch_balance', 'fetch_ohlcv']
         ):
-            def wrapped(*args, **kwargs):
+            def wrapped(*args: Any, **kwargs: Any) -> Any:
                 return self._handler.execute(attr, *args, **kwargs)
             return wrapped
-        
+
         return attr
 
 
@@ -178,22 +180,22 @@ def rate_limited(
     max_retries: int = 5,
     backoff_factor: float = 2.0,
     max_backoff: float = 30.0
-):
+) -> Callable[[F], F]:
     """
     Decorator to add rate limiting to individual functions.
-    
+
     Usage:
         @rate_limited(base_delay=1.0, max_retries=3)
         def fetch_data():
             return exchange.fetch_ticker('BTC/USDT')
     """
     handler = RateLimitHandler(base_delay, max_retries, backoff_factor, max_backoff)
-    
-    def decorator(func):
+
+    def decorator(func: F) -> F:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             return handler.execute(func, *args, **kwargs)
-        return wrapper
+        return wrapper  # type: ignore[return-value]
     return decorator
 
 
@@ -201,7 +203,7 @@ def rate_limited(
 global_handler = RateLimitHandler()
 
 
-def safe_api_call(func: Callable, *args, **kwargs) -> Any:
+def safe_api_call(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """
     Simple function to make a rate-limited API call using the global handler.
     

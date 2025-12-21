@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("volume_vn.config")
 
@@ -228,7 +228,7 @@ class VolumeConfig:
         
         return len(errors) == 0, errors
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary."""
         return {
             'analysis': {

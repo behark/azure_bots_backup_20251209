@@ -23,9 +23,10 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import FrameType
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
-import ccxt  # type: ignore
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,7 +36,7 @@ if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
 
 try:
-    from dotenv import load_dotenv  # type: ignore
+    from dotenv import load_dotenv
 
     load_dotenv(BASE_DIR / ".env")
     load_dotenv(BASE_DIR.parent / ".env")
@@ -46,29 +47,20 @@ import volume_profile as vp  # noqa: E402  pylint: disable=wrong-import-position
 
 # Safe imports with independent error handling
 from safe_import import safe_import_multiple, safe_import
+from message_templates import format_signal_message, format_result_message
 
 
-# Import bot dependencies
-from typing import Optional, Any, Tuple
-bot_imports: list[Tuple[str, Optional[str], Any]] = [
-    ('notifier', 'TelegramNotifier', None),
-    ('health_monitor', 'HealthMonitor', None),
-    ('health_monitor', 'RateLimiter', None),
-    ('signal_stats', 'SignalStats', None),
-    ('tp_sl_calculator', 'TPSLCalculator', None),
-    ('trade_config', 'get_config_manager', None),
-    ('rate_limit_handler', 'RateLimitHandler', None),
-]
+# Required imports (fail fast if missing)
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-components = safe_import_multiple(bot_imports)
-
-TelegramNotifier = components['TelegramNotifier']
-HealthMonitor = components['HealthMonitor']
-RateLimiter = components['RateLimiter']
-SignalStats = components['SignalStats']
-TPSLCalculator = components['TPSLCalculator']
-get_config_manager = components['get_config_manager']
-RateLimitHandler = components['RateLimitHandler']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 # Import configuration module
 VolumeConfig = safe_import('config', 'VolumeConfig')
@@ -83,7 +75,7 @@ STATS_FILE = LOG_DIR / "volume_stats.json"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-def setup_logging(log_level: str = "INFO", enable_detailed: bool = False):
+def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> logging.Logger:
     """Setup enhanced logging with rotation and detailed formatting."""
     from logging.handlers import RotatingFileHandler
 
@@ -203,7 +195,7 @@ def ensure_watchlist() -> List[WatchItem]:
             return normalized
 
     WATCHLIST_FILE.write_text(json.dumps(DEFAULT_WATCHLIST, indent=2))
-    return cast(List[WatchItem], DEFAULT_WATCHLIST)
+    return DEFAULT_WATCHLIST
 
 
 def resolve_symbol(symbol: str, market_type: str = "swap") -> str:
@@ -242,14 +234,14 @@ class VolumeSignal:
 
 
 class VolumeAnalyzer:
-    def __init__(self, config: Optional['VolumeConfig'] = None):
-        self.config = config
-        self.candle_limit = config.analysis.candle_limit if config else 200
-        self.request_timeout = config.analysis.request_timeout_seconds if config else 30
-        self.clients = {}
-        self.rate_limiter = RateLimitHandler(
-            base_delay=config.rate_limit.base_delay_seconds if config else 0.5,
-            max_retries=config.rate_limit.max_retries if config else 5
+    def __init__(self, config: Optional[Any] = None) -> None:
+        self.config: Optional[Any] = config
+        self.candle_limit: int = getattr(getattr(config, 'analysis', None), 'candle_limit', 200) if config else 200
+        self.request_timeout: int = getattr(getattr(config, 'analysis', None), 'request_timeout_seconds', 30) if config else 30
+        self.clients: Dict[str, Any] = {}
+        self.rate_limiter: Optional[Any] = RateLimitHandler(
+            base_delay=getattr(getattr(config, 'rate_limit', None), 'base_delay_seconds', 0.5) if config else 0.5,
+            max_retries=getattr(getattr(config, 'rate_limit', None), 'max_retries', 5) if config else 5
         ) if RateLimitHandler else None
 
     def get_client(self, exchange_key: str, market_type: str) -> ccxt.Exchange:
@@ -270,12 +262,14 @@ class VolumeAnalyzer:
             
             # Add credentials if available
             if self.config:
-                creds = self.config.get_exchange_credentials(exchange_key)
-                if creds.is_configured:
-                    params['apiKey'] = creds.api_key
-                    params['secret'] = creds.secret
-            
-            self.clients[client_key] = cfg["factory"](params)  # type: ignore[call-arg]
+                get_creds = getattr(self.config, 'get_exchange_credentials', None)
+                if get_creds:
+                    creds = get_creds(exchange_key)
+                    if getattr(creds, 'is_configured', False):
+                        params['apiKey'] = getattr(creds, 'api_key', None)
+                        params['secret'] = getattr(creds, 'secret', None)
+
+            self.clients[client_key] = cfg["factory"](params)
         return self.clients[client_key]
     
     def validate_exchange_credentials(self, exchange_key: str, market_type: str = "swap") -> bool:
@@ -338,7 +332,7 @@ class VolumeAnalyzer:
         current_price = closes[-1]
         ema20 = sum(closes[-20:]) / 20
         vp_result_raw = vp.calculate_volume_profile(highs[-100:], lows[-100:], closes[-100:], volumes[-100:])
-        vp_result = cast(Dict[str, Any], vp_result_raw)
+        vp_result: Dict[str, Any] = vp_result_raw
         rsi = float(vp.calculate_rsi(np.array(closes)))
         
         # FIX: Issue #6 - Look-ahead bias: Use only CLOSED candles for pattern detection
@@ -350,7 +344,7 @@ class VolumeAnalyzer:
         if len(volumes) >= 21:
             avg_volume = sum(volumes[-21:-1]) / 20  # Use last 20 CLOSED candles
             last_closed_volume = volumes[-2]  # Use previous CLOSED candle
-            volume_spike_threshold = self.config.analysis.volume_spike_threshold if self.config else 1.5
+            volume_spike_threshold = getattr(getattr(self.config, 'analysis', None), 'volume_spike_threshold', 1.5) if self.config else 1.5
             volume_spike = last_closed_volume > avg_volume * volume_spike_threshold
         else:
             avg_volume = sum(volumes[:-1]) / max(1, len(volumes) - 1)
@@ -414,7 +408,7 @@ class VolumeAnalyzer:
         }
 
     @staticmethod
-    def _nearest_hvn(current_price: float, vp_result: Dict[str, Any], row_height: float):
+    def _nearest_hvn(current_price: float, vp_result: Dict[str, Any], row_height: float) -> Tuple[Optional[float], bool]:
         nearest: Optional[float] = None
         min_dist = float("inf")
         hvn_levels = vp_result.get("hvn_levels")
@@ -440,7 +434,7 @@ class VolumeAnalyzer:
         near_hvn: bool,
         vp_result: Dict[str, Any],
         recent_candles: List[Tuple[float, float, float]],
-    ) -> tuple:
+    ) -> Tuple[List[str], List[str]]:
         long_factors: List[str] = []
         short_factors: List[str] = []
 
@@ -494,9 +488,9 @@ class VolumeAnalyzer:
     ) -> bool:
         """Check if buying pressure is dominant (configurable thresholds)."""
         if sample_size is None:
-            sample_size = self.config.analysis.buying_pressure_sample_size if self.config else 3
+            sample_size = getattr(getattr(self.config, 'analysis', None), 'buying_pressure_sample_size', 3) if self.config else 3
         if threshold is None:
-            threshold = self.config.analysis.buying_pressure_threshold if self.config else 1.2
+            threshold = getattr(getattr(self.config, 'analysis', None), 'buying_pressure_threshold', 1.2) if self.config else 1.2
         
         if len(candles) < sample_size * 2:
             return False
@@ -525,7 +519,7 @@ class VolumeAnalyzer:
         long_factors: List[str],
         short_factors: List[str],
         symbol: str = "",
-    ):
+    ) -> Tuple[str, Optional[Dict[str, float]]]:
         if len(long_factors) >= 3 and len(long_factors) > len(short_factors):
             val = float(vp_result.get("val", current_price)) if isinstance(vp_result.get("val"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
@@ -535,49 +529,38 @@ class VolumeAnalyzer:
             # Default is now 1.5% to avoid premature stops
             custom_sl = min(raw_sl, current_price * (1 - 0.015))  # 1.5% stop loss
             
-            if TPSLCalculator is not None:
-                if get_config_manager is not None:
-                    try:
-                        config_mgr = get_config_manager()
-                        risk_config = config_mgr.get_effective_risk("volume_bot", symbol)
-                        tp1_mult = risk_config.tp1_atr_multiplier
-                        tp2_mult = risk_config.tp2_atr_multiplier
-                        min_rr = risk_config.min_risk_reward
-                    except Exception:
-                        tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
-                else:
-                    tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
-                
-                # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
-                risk = max(current_price - custom_sl, current_price * 0.01)
-                calculator = TPSLCalculator(min_risk_reward=min_rr)
-                levels = calculator.calculate(
-                    entry=current_price,
-                    direction="LONG",
-                    atr=risk,  # Use risk as ATR proxy
-                    tp1_multiplier=tp1_mult,
-                    tp2_multiplier=tp2_mult,
-                    custom_sl=custom_sl,
-                )
-                
-                if levels.is_valid:
-                    # For LONG: TP1 should be lower than TP2 (TP1 is closer to entry)
-                    tp1 = float(levels.take_profit_1)
-                    tp2 = float(levels.take_profit_2)
-                    # Ensure TP2 > TP1 > Entry for longs
-                    if tp2 <= tp1:
-                        tp2 = tp1 + risk  # Make TP2 further from entry
-                    return "LONG", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
+            try:
+                config_mgr = get_config_manager()
+                risk_config = config_mgr.get_effective_risk("volume_bot", symbol)
+                tp1_mult = risk_config.tp1_atr_multiplier
+                tp2_mult = risk_config.tp2_atr_multiplier
+                min_rr = risk_config.min_risk_reward
+            except Exception:
+                tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
 
-            # Fallback with improved risk sizing
+            # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(current_price - custom_sl, current_price * 0.01)
-            tp1 = current_price + risk * 2  # 2R for TP1
-            tp2 = current_price + risk * 3  # 3R for TP2
-            # Ensure TPs don't go above POC significantly (use POC as soft guide, not hard limit)
-            if poc > current_price and tp1 > poc * 1.05:  # If TP1 goes way above POC, adjust
-                tp1 = min(tp1, poc * 1.05)
-                tp2 = tp1 + risk
-            return "LONG", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
+            calculator = TPSLCalculator(min_risk_reward=min_rr)
+            levels = calculator.calculate(
+                entry=current_price,
+                direction="LONG",
+                atr=risk,  # Use risk as ATR proxy
+                tp1_multiplier=tp1_mult,
+                tp2_multiplier=tp2_mult,
+                custom_sl=custom_sl,
+            )
+
+            if levels.is_valid:
+                # For LONG: TP1 should be lower than TP2 (TP1 is closer to entry)
+                tp1 = float(levels.take_profit_1)
+                tp2 = float(levels.take_profit_2)
+                # Ensure TP2 > TP1 > Entry for longs
+                if tp2 <= tp1:
+                    tp2 = tp1 + risk  # Make TP2 further from entry
+                return "LONG", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
+
+            # If levels not valid, return None
+            return "NEUTRAL", None
 
         if len(short_factors) >= 3 and len(short_factors) > len(long_factors):
             vah = float(vp_result.get("vah", current_price)) if isinstance(vp_result.get("vah"), (int, float)) else current_price
@@ -588,58 +571,47 @@ class VolumeAnalyzer:
             # Default is now 1.5% to avoid premature stops
             custom_sl = max(raw_sl, current_price * (1 + 0.015))  # 1.5% stop loss
             
-            if TPSLCalculator is not None:
-                if get_config_manager is not None:
-                    try:
-                        config_mgr = get_config_manager()
-                        risk_config = config_mgr.get_effective_risk("volume_bot", symbol)
-                        tp1_mult = risk_config.tp1_atr_multiplier
-                        tp2_mult = risk_config.tp2_atr_multiplier
-                        min_rr = risk_config.min_risk_reward
-                    except Exception:
-                        tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
-                else:
-                    tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
-                
-                # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
-                risk = max(custom_sl - current_price, current_price * 0.01)
-                calculator = TPSLCalculator(min_risk_reward=min_rr)
-                levels = calculator.calculate(
-                    entry=current_price,
-                    direction="SHORT",
-                    atr=risk,
-                    tp1_multiplier=tp1_mult,
-                    tp2_multiplier=tp2_mult,
-                    custom_sl=custom_sl,
-                )
-                
-                if levels.is_valid:
-                    # For SHORT: TP1 should be higher than TP2 (TP1 is closer to entry)
-                    tp1 = float(levels.take_profit_1)
-                    tp2 = float(levels.take_profit_2)
-                    # Ensure TP2 < TP1 < Entry for shorts
-                    if tp2 >= tp1:
-                        tp2 = tp1 - risk  # Make TP2 further from entry
-                    return "SHORT", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
+            try:
+                config_mgr = get_config_manager()
+                risk_config = config_mgr.get_effective_risk("volume_bot", symbol)
+                tp1_mult = risk_config.tp1_atr_multiplier
+                tp2_mult = risk_config.tp2_atr_multiplier
+                min_rr = risk_config.min_risk_reward
+            except Exception:
+                tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
 
-            # Fallback with improved risk sizing
+            # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(custom_sl - current_price, current_price * 0.01)
-            tp1 = current_price - risk * 2  # 2R for TP1
-            tp2 = current_price - risk * 3  # 3R for TP2
-            # Ensure TPs don't go below POC significantly (use POC as soft guide, not hard limit)
-            if poc < current_price and tp1 < poc * 0.95:  # If TP1 goes way below POC, adjust
-                tp1 = max(tp1, poc * 0.95)
-                tp2 = tp1 - risk
-            return "SHORT", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
+            calculator = TPSLCalculator(min_risk_reward=min_rr)
+            levels = calculator.calculate(
+                entry=current_price,
+                direction="SHORT",
+                atr=risk,
+                tp1_multiplier=tp1_mult,
+                tp2_multiplier=tp2_mult,
+                custom_sl=custom_sl,
+            )
+
+            if levels.is_valid:
+                # For SHORT: TP1 should be higher than TP2 (TP1 is closer to entry)
+                tp1 = float(levels.take_profit_1)
+                tp2 = float(levels.take_profit_2)
+                # Ensure TP2 < TP1 < Entry for shorts
+                if tp2 >= tp1:
+                    tp2 = tp1 - risk  # Make TP2 further from entry
+                return "SHORT", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
+
+            # If levels not valid, return None
+            return "NEUTRAL", None
 
         return "NEUTRAL", None
 
 
 class SignalTracker:
-    def __init__(self, analyzer, stats=None, config=None):
+    def __init__(self, analyzer: VolumeAnalyzer, stats: Optional[Any] = None, config: Optional[Any] = None) -> None:
         self.analyzer = analyzer
-        self.stats = stats
-        self.config = config
+        self.stats: Optional[Any] = stats
+        self.config: Optional[Any] = config
         self.state_lock = threading.Lock()  # FIX: Issue #5 - Add thread lock
         self.state = self._load_state()
         # Sync existing open signals to stats on startup
@@ -1004,7 +976,7 @@ class SignalTracker:
             "avg_pnl": avg_pnl
         }
 
-    def check_open_signals(self, notifier) -> None:
+    def check_open_signals(self, notifier: Optional[Any]) -> None:
         # First, cleanup stale signals (older than 24 hours)
         stale_count = self.cleanup_stale_signals(max_age_hours=24)
         if stale_count > 0:
@@ -1136,7 +1108,7 @@ class SignalTracker:
 
 
 class VolumeVNBOT:
-    def __init__(self, cooldown_minutes=None, config=None):
+    def __init__(self, cooldown_minutes: Optional[int] = None, config: Optional[Any] = None) -> None:
         # Load configuration
         self.config = config if config else (load_config() if load_config else None)
         
@@ -1146,7 +1118,7 @@ class VolumeVNBOT:
             int(self.config.signal.cooldown_minutes) if self.config and hasattr(self.config, 'signal') and hasattr(self.config.signal, 'cooldown_minutes') and self.config.signal.cooldown_minutes is not None else 5
         )
         self.notifier = self._build_notifier()
-        self.stats = SignalStats("Volume Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("Volume Bot", STATS_FILE)
         self.tracker = SignalTracker(self.analyzer, stats=self.stats, config=self.config)
         
         heartbeat_interval = int(self.config.execution.health_check_interval_seconds) if self.config and hasattr(self.config, 'execution') and hasattr(self.config.execution, 'health_check_interval_seconds') and self.config.execution.health_check_interval_seconds is not None else 3600
@@ -1175,7 +1147,7 @@ class VolumeVNBOT:
             else:
                 logger.warning(f"No credentials configured for {exchange}")
 
-    def _build_notifier(self):
+    def _build_notifier(self) -> Optional[Any]:
         """Build Telegram notifier with validation (FIX: Security - Telegram validation)."""
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable; running in console-only mode")
@@ -1426,38 +1398,65 @@ class VolumeVNBOT:
             logger.info("Alert:\n%s", message)
 
     def _format_message(self, signal: VolumeSignal, snapshot: Dict[str, Any]) -> str:
-        emoji = "🟢" if signal.direction == "LONG" else "🔴"
+        """Format volume signal using centralized template."""
+        # Convert LONG/SHORT to BULLISH/BEARISH
+        direction = "BULLISH" if signal.direction == "LONG" else "BEARISH"
+
+        # Get volume profile metrics for extra info
         metrics = snapshot.get("volume_profile", {})
         poc = metrics.get("poc", 0.0) if isinstance(metrics, dict) else 0.0
         vah = metrics.get("vah", 0.0) if isinstance(metrics, dict) else 0.0
         val = metrics.get("val", 0.0) if isinstance(metrics, dict) else 0.0
-        perf_line = self._symbol_perf_line(signal.symbol)
-        tp_sl_line = self._symbol_tp_sl_line(signal.symbol)
+        extra_info = f"POC: {float(poc):.4f} | VAH: {float(vah):.4f} | VAL: {float(val):.4f}"
 
-        message = [
-            f"{emoji} <b>{signal.direction} {signal.symbol}</b>",
-            "",
-            f"💰 Entry: <code>{signal.entry:.6f}</code>",
-            f"🛑 Stop Loss: <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 Take Profit 1: <code>{signal.take_profit_primary:.6f}</code>",
-            f"🎯 Take Profit 2: <code>{signal.take_profit_secondary:.6f}</code>",
-            "",
-            f"🕒 Timeframe: {signal.timeframe} | 🏦 Exchange: {signal.exchange.upper()}",
-            f"📊 POC/VAH/VAL: <code>{float(poc):.6f}</code> / <code>{float(vah):.6f}</code> / <code>{float(val):.6f}</code>",
-        ]
+        # Get performance stats
+        perf_stats = None
+        symbol_key = signal.symbol if "/" in signal.symbol else f"{signal.symbol}/USDT"
+        if self.stats and isinstance(self.stats.data, dict):
+            history = self.stats.data.get("history", [])
+            if isinstance(history, list):
+                tp1 = tp2 = sl = 0
+                for entry in history:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("symbol") != symbol_key:
+                        continue
+                    result = str(entry.get("result", ""))
+                    if result == "TP1":
+                        tp1 += 1
+                    elif result == "TP2":
+                        tp2 += 1
+                    elif result == "SL":
+                        sl += 1
 
-        if perf_line:
-            message.append(perf_line)
+                total = tp1 + tp2 + sl
+                if total > 0:
+                    perf_stats = {
+                        "tp1": tp1,
+                        "tp2": tp2,
+                        "sl": sl,
+                        "wins": tp1 + tp2,
+                        "total": total,
+                    }
 
-        if tp_sl_line:
-            message.append(tp_sl_line)
+        # Format reasons
+        reasons = [html.escape(str(r)) for r in signal.rationale] if signal.rationale else None
 
-        if signal.rationale:
-            # HTML escape rationale to prevent Telegram parsing errors with < and > symbols
-            escaped_rationale = [html.escape(str(r)) for r in signal.rationale]
-            message.append("📝 Factors: " + ", ".join(escaped_rationale))
-
-        return "\n".join(message)
+        return format_signal_message(
+            bot_name="VOLUME",
+            symbol=symbol_key,
+            direction=direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_primary,
+            tp2=signal.take_profit_secondary,
+            reasons=reasons,
+            exchange=signal.exchange.upper(),
+            timeframe=signal.timeframe,
+            current_price=signal.entry,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
 
     def _symbol_perf_line(self, symbol: str) -> Optional[str]:
         history = self.stats.data.get("history", []) if self.stats and isinstance(self.stats.data, dict) else []
@@ -1687,11 +1686,11 @@ Examples:
             logger.critical("❌ Environment validation failed - exiting")
             logger.critical("Use --skip-validation to bypass (not recommended)")
             sys.exit(1)
-    
-    # Load configuration
-    config_file = Path(args.config) if args.config else None
-    config = load_config(config_file) if load_config else None
-    
+
+    # Reload configuration (config may have been loaded earlier for log settings)
+    config_path: Optional[Path] = Path(args.config) if args.config else None
+    config = load_config(config_path) if load_config else None
+
     if config:
         logger.info("Configuration loaded successfully")
         # Additional validation from config

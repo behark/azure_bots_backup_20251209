@@ -13,7 +13,7 @@ Benefits:
 - Reduced bugs from type mismatches
 """
 
-from typing import TypedDict, List, Optional, Literal
+from typing import Any, Dict, TypedDict, List, Optional, Literal
 from dataclasses import dataclass
 from enum import Enum
 
@@ -93,7 +93,7 @@ class BotConfig(TypedDict, total=False):
     interval_seconds: int
     default_cooldown_minutes: int
     symbols: List[SymbolConfig]
-    custom_params: dict
+    custom_params: Dict[str, Any]
 
 
 class GlobalConfig(TypedDict, total=False):
@@ -382,7 +382,7 @@ class TradingSignal:
     correlation_id: Optional[str] = None
     metadata: dict = None  # type: ignore
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate signal data after initialization."""
         if self.metadata is None:
             self.metadata = {}
@@ -403,7 +403,7 @@ class TradingSignal:
             if self.take_profit_1 >= self.entry:
                 raise ValueError("SHORT signal: take profit must be below entry")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert signal to dictionary for JSON serialization."""
         return {
             "symbol": self.symbol,

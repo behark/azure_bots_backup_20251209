@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any, Callable, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +85,10 @@ def safe_import(
 
 
 def safe_import_multiple(
-    imports: list[Tuple[str, Optional[str], Any]],
+    imports: Sequence[Tuple[str, Optional[str], Any]],
     logger_instance: Optional[logging.Logger] = None,
     silent: bool = False,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Safely import multiple modules/attributes at once.
 

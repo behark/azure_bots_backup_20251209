@@ -26,8 +26,9 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING, cast
+from types import FrameType
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 # Logging setup (must be before any logger use)
@@ -44,43 +45,25 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-if TYPE_CHECKING:
-    from notifier import TelegramNotifier
-    from signal_stats import SignalStats
-    from health_monitor import HealthMonitor, RateLimiter
-    from tp_sl_calculator import TPSLCalculator
-    from trade_config import get_config_manager
-    from rate_limit_handler import RateLimitHandler
-else:
-    # Safe imports with independent error handling
-    from safe_import import safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator, CalculationMethod
+from trade_config import get_config_manager
 
-    imports = [
-        ('notifier', 'TelegramNotifier', None),
-        ('signal_stats', 'SignalStats', None),
-        ('health_monitor', 'HealthMonitor', None),
-        ('health_monitor', 'RateLimiter', None),
-        ('tp_sl_calculator', 'TPSLCalculator', None),
-        ('trade_config', 'get_config_manager', None),
-        ('rate_limit_handler', 'RateLimitHandler', None),
-    ]
-
-    components = safe_import_multiple(imports, logger_instance=logger)
-
-    TelegramNotifier = components['TelegramNotifier']
-    SignalStats = components['SignalStats']
-    HealthMonitor = components['HealthMonitor']
-    RateLimiter = components['RateLimiter']
-    TPSLCalculator = components['TPSLCalculator']
-    get_config_manager = components['get_config_manager']
-    RateLimitHandler = components['RateLimitHandler']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 
 # Graceful shutdown handling
 shutdown_requested = False
 
 
-def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:  # pragma: no cover - signal path
     """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
     global shutdown_requested
     shutdown_requested = True
@@ -126,7 +109,7 @@ class FibSignal:
     created_at: str
     exchange: str = "mexc"
     
-    def as_dict(self) -> Dict:
+    def as_dict(self) -> Dict[str, Any]:
         return {
             "signal_id": self.signal_id,
             "symbol": self.symbol,
@@ -172,14 +155,14 @@ class FibSwingDetector:
         if index < self.lookback or index >= len(highs) - self.lookback:
             return False
         window = highs[index - self.lookback : index + self.lookback + 1]
-        return highs[index] == max(window)
+        return bool(highs[index] == max(window))
     
     def find_swing_low(self, lows: np.ndarray, index: int) -> bool:
         """Check if index is a swing low"""
         if index < self.lookback or index >= len(lows) - self.lookback:
             return False
         window = lows[index - self.lookback : index + self.lookback + 1]
-        return lows[index] == min(window)
+        return bool(lows[index] == min(window))
     
     def detect_swing_points(
         self, highs: np.ndarray, lows: np.ndarray
@@ -250,10 +233,10 @@ class FibSignalEvaluator:
         self.detector = FibSwingDetector()
     
     def analyze(
-        self, 
-        symbol: str, 
-        timeframe: str, 
-        ohlcv: List
+        self,
+        symbol: str,
+        timeframe: str,
+        ohlcv: List[Any]
     ) -> Optional[FibSignal]:
         """Analyze market data and generate Fibonacci signal if conditions met"""
         
@@ -355,37 +338,31 @@ class FibSignalEvaluator:
         if quality == "WEAK" and not high_volume:
             return None
         
-        # Calculate trade setup
+        # Calculate trade setup using centralized TPSLCalculator
         direction = signal_direction
-        if TPSLCalculator is not None:
-            from tp_sl_calculator import CalculationMethod
-            if get_config_manager is not None:
-                config_mgr = get_config_manager()
-                risk_config = config_mgr.get_effective_risk("fib_swing_bot", symbol)
-                min_rr = risk_config.min_risk_reward
-            else:
-                min_rr = 2.0
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("fib_swing_bot", symbol)
+        min_rr = risk_config.min_risk_reward
 
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
-            levels = calculator.calculate(
-                entry=current_price,
-                direction=direction,
-                swing_high=swing_high if direction == "SHORT" else None,
-                swing_low=swing_low if direction == "LONG" else None,
-                method=CalculationMethod.STRUCTURE,
-            )
+        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        levels = calculator.calculate(
+            entry=current_price,
+            direction=direction,
+            swing_high=swing_high if direction == "SHORT" else None,
+            swing_low=swing_low if direction == "LONG" else None,
+            method=CalculationMethod.STRUCTURE,
+        )
 
-            if levels.is_valid:
-                stop_loss = levels.stop_loss
-                tp1 = levels.take_profit_1
-                tp2 = levels.take_profit_2
-                tp3 = levels.take_profit_3 or (
-                    current_price + (levels.take_profit_2 - current_price) * (1 if direction == "LONG" else -1)
-                )
-            else:
-                stop_loss, tp1, tp2, tp3 = self._fallback_levels(direction, current_price, swing_high, swing_low)
-        else:
-            stop_loss, tp1, tp2, tp3 = self._fallback_levels(direction, current_price, swing_high, swing_low)
+        if not levels.is_valid:
+            logger.debug("%s: TPSLCalculator rejected - %s", symbol, levels.rejection_reason)
+            return None
+
+        stop_loss = levels.stop_loss
+        tp1 = levels.take_profit_1
+        tp2 = levels.take_profit_2
+        tp3 = levels.take_profit_3 or (
+            current_price + (levels.take_profit_2 - current_price) * (1 if direction == "LONG" else -1)
+        )
         
         # Create signal
         signal_id = f"{symbol}-{timeframe}-{datetime.utcnow().isoformat()}"
@@ -423,7 +400,7 @@ class FibSignalEvaluator:
             return "WEAK"
         return "STANDARD"
 
-    def _fallback_levels(self, direction: str, entry: float, swing_high: float, swing_low: float):
+    def _fallback_levels(self, direction: str, entry: float, swing_high: float, swing_low: float) -> Tuple[float, float, float, float]:
         diff = abs(swing_high - swing_low)
         if direction == "LONG":
             stop_loss = swing_low - diff * 0.02
@@ -569,7 +546,7 @@ class SignalTracker:
         if not signals:
             return
         
-        exchange = ccxt.mexc({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         updated = False
         
         for signal_id, signal_data in list(signals.items()):
@@ -676,12 +653,12 @@ class FibSwingBot:
         self.interval = interval
         self.watchlist: List[WatchItem] = self._load_watchlist()
         self.notifier = self._build_notifier()
-        self.stats = SignalStats("Fib Swing Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("Fib Swing Bot", STATS_FILE)
         self.tracker = SignalTracker(self.stats)
         self.evaluator = FibSignalEvaluator(confirmation_candles=5)
         self.health_monitor = self._build_health_monitor()
         self.rate_limiter = RateLimiter(calls_per_minute=30) if RateLimiter else None
-        self.exchange = ccxt.mexc({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        self.exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         self.rate_limiter_handler = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
         
         logger.info("Fib Swing Bot initialized with %d symbols", len(self.watchlist))
@@ -728,7 +705,7 @@ class FibSwingBot:
         logger.warning("Telegram credentials not found for Fib bot")
         return None
     
-    def _build_health_monitor(self) -> Optional[HealthMonitor]:
+    def _build_health_monitor(self) -> Optional[Any]:
         """Build health monitor"""
         if self.notifier and HealthMonitor:
             return HealthMonitor(
@@ -739,79 +716,48 @@ class FibSwingBot:
         return None
     
     def _format_signal_message(self, signal: FibSignal) -> str:
-        """Format Fibonacci signal for Telegram"""
-        quality_emoji = {
-            "PREMIUM": "🟡⭐⭐⭐",
-            "CONFIRMED": "🟢⭐⭐",
-            "STANDARD": "🔵⭐"
-        }
-        
-        emoji = quality_emoji.get(signal.quality, "🔵")
-        
-        risk_pct = abs((signal.stop_loss - signal.entry) / signal.entry) * 100
-        tp1_pct = ((signal.tp1 - signal.entry) / signal.entry) * 100
-        tp2_pct = ((signal.tp2 - signal.entry) / signal.entry) * 100
-        tp3_pct = ((signal.tp3 - signal.entry) / signal.entry) * 100
-        
-        lines = [
-            f"{emoji} <b>{signal.quality} FIBONACCI ENTRY</b> {emoji}",
-            f"<b>{signal.symbol}/USDT</b> | {signal.timeframe}",
-            "",
-            "📐 <b>FIBONACCI SETUP:</b>",
-            f"Swing High: <code>${signal.swing_high:.6f}</code>",
-            f"Swing Low:  <code>${signal.swing_low:.6f}</code> {'✅' if signal.swing_confirmed else '⏳'} {'CONFIRMED' if signal.swing_confirmed else f'{signal.bars_since_swing} bars'}",
-            "",
-            "🎯 <b>ENTRY ZONE:</b>",
-            f"Current Price: <code>${signal.entry:.6f}</code>",
-        ]
-        
-        if signal.fib_level != "N/A":
-            lines.append(f"Fib Level: <b>{signal.fib_level}</b> (${signal.fib_price:.6f}) 💎")
-        
-        lines.extend([
-            "",
-            "📈 <b>TRADE SETUP:</b>",
-            f"Entry:     <code>${signal.entry:.6f}</code>",
-            f"Stop Loss: <code>${signal.stop_loss:.6f}</code> ({-risk_pct:.2f}%)",
-            f"TP1 (1R):  <code>${signal.tp1:.6f}</code> (+{tp1_pct:.2f}%)",
-            f"TP2 (2R):  <code>${signal.tp2:.6f}</code> (+{tp2_pct:.2f}%)",
-            f"TP3 (3R):  <code>${signal.tp3:.6f}</code> (+{tp3_pct:.2f}%)",
-            "",
-            "✅ <b>CONDITIONS MET:</b>",
-        ])
-        
-        if signal.uptrend:
-            lines.append("✅ Uptrend (EMA20 > EMA50)")
-        if signal.fib_level != "N/A":
-            lines.append(f"✅ At Fibonacci {signal.fib_level} level")
-        if signal.swing_confirmed:
-            lines.append(f"✅ Swing low confirmed ({signal.bars_since_swing} bars)")
-        if signal.high_volume:
-            lines.append("✅ High volume")
-        
-        lines.extend([
-            "",
-            f"Risk:Reward: 1:2 (TP2) | Quality: <b>{signal.quality}</b>",
-            f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
-        ])
-
-        # Historical TP/SL stats per symbol
+        """Format Fibonacci signal for Telegram using centralized template."""
+        # Get performance stats
+        perf_stats = None
         if self.stats is not None:
             symbol_key = f"{signal.symbol}/USDT"
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1 = counts.get("TP1", 0)
-            tp2 = counts.get("TP2", 0)
-            sl = counts.get("SL", 0)
-            total = tp1 + tp2 + sl
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+
             if total > 0:
-                win_rate = (tp1 + tp2) / total * 100.0
-                lines.append("")
-                lines.append(
-                    f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
-                    f"(Win rate: {win_rate:.1f}%)"
-                )
-        
-        return "\n".join(lines)
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total,
+                }
+
+        # Build extra info with Fibonacci-specific data
+        fib_info = f"Fib: {signal.fib_level}" if signal.fib_level != "N/A" else ""
+        swing_info = f"Swing: ${signal.swing_low:.4f}-${signal.swing_high:.4f}"
+        quality_info = f"Quality: {signal.quality}"
+        extra_info = " | ".join(filter(None, [fib_info, swing_info, quality_info]))
+
+        return format_signal_message(
+            bot_name="FIB SWING",
+            symbol=f"{signal.symbol}/USDT",
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            tp3=signal.tp3,
+            pattern_name=f"{signal.quality} Fibonacci Entry",
+            exchange="MEXC",
+            timeframe=signal.timeframe,
+            current_price=signal.entry,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
     
     def run(self, run_once: bool = False) -> None:
         """Main bot loop"""
@@ -931,14 +877,14 @@ class FibSwingBot:
                 self.health_monitor.send_shutdown_message()
 
 
-def main():
+def main() -> None:
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Fibonacci Swing Bot")
     parser.add_argument("--once", action="store_true", help="Run only one cycle")
     parser.add_argument("--interval", type=int, default=60, help="Check interval in seconds")
     args = parser.parse_args()
-    
+
     watchlist_file = Path(__file__).parent / "fib_watchlist.json"
     bot = FibSwingBot(watchlist_file, interval=args.interval)
     bot.run(run_once=args.once)

@@ -11,12 +11,13 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean, pstdev
+from types import FrameType
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -38,7 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger("liquidation_bot")
 
 try:
-    from dotenv import load_dotenv  # type: ignore
+    from dotenv import load_dotenv
 
     load_dotenv(BASE_DIR / ".env")
     load_dotenv(BASE_DIR.parent / ".env")
@@ -50,35 +51,25 @@ if str(BASE_DIR.parent) not in sys.path:
     sys.path.append(str(BASE_DIR.parent))
     sys_path_added = True
 
-# Safe imports with independent error handling
-from safe_import import safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-imports = [
-    ('notifier', 'TelegramNotifier', None),
-    ('signal_stats', 'SignalStats', None),
-    ('health_monitor', 'HealthMonitor', None),
-    ('health_monitor', 'RateLimiter', None),
-    ('tp_sl_calculator', 'TPSLCalculator', None),
-    ('trade_config', 'get_config_manager', None),
-    ('rate_limit_handler', 'RateLimitHandler', None),
-]
-
-components = safe_import_multiple(imports, logger_instance=logger)
-
-TelegramNotifier = components['TelegramNotifier']
-SignalStats = components['SignalStats']
-HealthMonitor = components['HealthMonitor']
-RateLimiter = components['RateLimiter']
-TPSLCalculator = components['TPSLCalculator']
-get_config_manager = components['get_config_manager']
-RateLimitHandler = components['RateLimitHandler']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 
 # Graceful shutdown handling
 shutdown_requested = False
 
 
-def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:  # pragma: no cover - signal path
     """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
     global shutdown_requested
     shutdown_requested = True
@@ -133,8 +124,8 @@ def load_watchlist() -> List[WatchItem]:
 
 
 class MexcOrderflowClient:
-    def __init__(self):
-        self.exchange = ccxt.mexc({"enableRateLimit": True, "options": {"defaultType": "swap"}})  # type: ignore[arg-type]
+    def __init__(self) -> None:
+        self.exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         self.exchange.load_markets()
         # Initialize rate limit handler
         self.rate_limiter = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
@@ -143,25 +134,25 @@ class MexcOrderflowClient:
     def _symbol(symbol: str) -> str:
         return f"{symbol}/USDT:USDT"
 
-    def ticker(self, symbol: str) -> dict:
+    def ticker(self, symbol: str) -> Dict[str, Any]:
         if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ticker, self._symbol(symbol))
-        return self.exchange.fetch_ticker(self._symbol(symbol))
+            return cast(Dict[str, Any], self.rate_limiter.execute(self.exchange.fetch_ticker, self._symbol(symbol)))
+        return cast(Dict[str, Any], self.exchange.fetch_ticker(self._symbol(symbol)))
 
-    def orderbook(self, symbol: str, limit: int = 50) -> dict:
+    def orderbook(self, symbol: str, limit: int = 50) -> Dict[str, Any]:
         if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_order_book, self._symbol(symbol), limit=limit)
-        return self.exchange.fetch_order_book(self._symbol(symbol), limit=limit)
+            return cast(Dict[str, Any], self.rate_limiter.execute(self.exchange.fetch_order_book, self._symbol(symbol), limit=limit))
+        return cast(Dict[str, Any], self.exchange.fetch_order_book(self._symbol(symbol), limit=limit))
 
-    def trades(self, symbol: str, limit: int = 1000) -> list:
+    def trades(self, symbol: str, limit: int = 1000) -> List[Any]:
         if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_trades, self._symbol(symbol), limit=limit)
-        return self.exchange.fetch_trades(self._symbol(symbol), limit=limit)
+            return cast(List[Any], self.rate_limiter.execute(self.exchange.fetch_trades, self._symbol(symbol), limit=limit))
+        return cast(List[Any], self.exchange.fetch_trades(self._symbol(symbol), limit=limit))
 
-    def ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> list:
+    def ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ohlcv, self._symbol(symbol), timeframe=timeframe, limit=limit)
-        return self.exchange.fetch_ohlcv(self._symbol(symbol), timeframe=timeframe, limit=limit)
+            return cast(List[Any], self.rate_limiter.execute(self.exchange.fetch_ohlcv, self._symbol(symbol), timeframe=timeframe, limit=limit))
+        return cast(List[Any], self.exchange.fetch_ohlcv(self._symbol(symbol), timeframe=timeframe, limit=limit))
 
 
 @dataclass
@@ -173,9 +164,9 @@ class LiquidationSnapshot:
     volume_24h: Optional[float] = None
     high_24h: Optional[float] = None
     low_24h: Optional[float] = None
-    liquidations: List[dict] = field(default_factory=list)
-    orderbook: Optional[dict] = None
-    trades: List[dict] = field(default_factory=list)
+    liquidations: List[Dict[str, Any]] = field(default_factory=list)
+    orderbook: Optional[Dict[str, Any]] = None
+    trades: List[Dict[str, Any]] = field(default_factory=list)
     long_liq_value: float = 0.0
     short_liq_value: float = 0.0
     bid_value: float = 0.0
@@ -342,6 +333,50 @@ class LiquidationState:
             self.data["open_signals"] = signals
         return cast(Dict[str, Dict[str, Any]], signals)
 
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and move to closed_signals."""
+        signals = self.iter_signals()
+        closed = self.data.setdefault("closed_signals", {})
+        if not isinstance(closed, dict):
+            closed = {}
+            self.data["closed_signals"] = closed
+
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove: List[str] = []
+
+        for signal_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                signal_ids_to_remove.append(signal_id)
+                continue
+
+            created_at_str = payload.get("created_at")
+            if not isinstance(created_at_str, str):
+                signal_ids_to_remove.append(signal_id)
+                continue
+
+            try:
+                created_time = self._parse_ts(created_at_str)
+                age = current_time - created_time
+
+                if age >= timedelta(hours=max_age_hours):
+                    # Move to closed signals with timeout status
+                    closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(signal_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(signal_id)
+
+        for signal_id in signal_ids_to_remove:
+            if signal_id in signals:
+                signals.pop(signal_id)
+
+        if removed_count > 0:
+            self.save()
+
+        return removed_count
+
 
 class LiquidationBot:
     def __init__(self, interval: int = 60):
@@ -351,13 +386,13 @@ class LiquidationBot:
         self.evaluator = LiquidationEvaluator()
         self.state = LiquidationState(STATE_FILE)
         self.notifier = self._init_notifier()
-        self.stats = SignalStats("Liquidation Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("Liquidation Bot", STATS_FILE)
         self.atr_cache: Dict[str, tuple[float, float]] = {}
         self.health_monitor = HealthMonitor("Liquidation Bot", self.notifier, heartbeat_interval=3600) if HealthMonitor else None
         self.rate_limiter = RateLimiter(calls_per_minute=60, backoff_file=LOG_DIR / "rate_limiter.json") if RateLimiter else None
         self.large_trade_multiplier = float(os.getenv("LIQ_LARGE_TRADE_MULTIPLIER", "20"))
 
-    def _init_notifier(self):
+    def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
             return None
@@ -575,7 +610,7 @@ class LiquidationBot:
 
         buy_volume = sell_volume = 0.0
         long_liq_value = short_liq_value = 0.0
-        inferred_liqs: List[dict] = []
+        inferred_liqs: List[Dict[str, Any]] = []
 
         for trade in parsed_trades:
             value = trade["value"]
@@ -622,44 +657,31 @@ class LiquidationBot:
         fallback = price * 0.0075
         atr = atr or fallback
 
-        if TPSLCalculator is not None:
-            if get_config_manager is not None:
-                config_mgr = get_config_manager()
-                risk_config = config_mgr.get_effective_risk("liquidation_bot", snapshot.symbol)
-                sl_mult = risk_config.sl_atr_multiplier
-                tp1_mult = risk_config.tp1_atr_multiplier
-                tp2_mult = risk_config.tp2_atr_multiplier
-                min_rr = risk_config.min_risk_reward
-            else:
-                sl_mult, tp1_mult, tp2_mult, min_rr = 1.8, 3.0, 5.0, 1.5
+        # Get risk config and calculate TP/SL using centralized calculator
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("liquidation_bot", snapshot.symbol)
+        sl_mult = risk_config.sl_atr_multiplier
+        tp1_mult = risk_config.tp1_atr_multiplier
+        tp2_mult = risk_config.tp2_atr_multiplier
+        min_rr = risk_config.min_risk_reward
 
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
-            levels = calculator.calculate(
-                entry=price,
-                direction=direction,
-                atr=atr,
-                sl_multiplier=sl_mult,
-                tp1_multiplier=tp1_mult,
-                tp2_multiplier=tp2_mult,
-            )
+        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        levels = calculator.calculate(
+            entry=price,
+            direction=direction,
+            atr=atr,
+            sl_multiplier=sl_mult,
+            tp1_multiplier=tp1_mult,
+            tp2_multiplier=tp2_mult,
+        )
 
-            if not levels.is_valid:
-                logger.info("Signal rejected for %s: %s", snapshot.symbol, levels.rejection_reason)
-                return None
+        if not levels.is_valid:
+            logger.info("Signal rejected for %s: %s", snapshot.symbol, levels.rejection_reason)
+            return None
 
-            sl = levels.stop_loss
-            tp1 = levels.take_profit_1
-            tp2 = levels.take_profit_2
-        else:
-            risk = max(atr, price * 0.003)
-            if direction == "BULLISH":
-                sl = price - 1.8 * risk
-                tp1 = price + 3 * risk
-                tp2 = price + 5 * risk
-            else:
-                sl = price + 1.8 * risk
-                tp1 = price - 3 * risk
-                tp2 = price - 5 * risk
+        sl = levels.stop_loss
+        tp1 = levels.take_profit_1
+        tp2 = levels.take_profit_2
 
         signal_id = f"{snapshot.symbol}-{snapshot.timestamp}"
         return {
@@ -714,64 +736,69 @@ class LiquidationBot:
         evaluation: Dict[str, object],
         trade_levels: Optional[Dict[str, object]] = None,
     ) -> str:
-        direction = evaluation["direction"]
-        emoji = "🟢" if direction == "BULLISH" else "🔴" if direction == "BEARISH" else "⚪"
-        lines = [f"{emoji} <b>{direction} LIQUIDATION ALERT - {snapshot.symbol}/USDT</b>", ""]
+        direction = str(evaluation.get("direction", "NEUTRAL"))
+        if direction not in ("BULLISH", "BEARISH"):
+            direction = "BULLISH"  # fallback
 
-        # Historical TP/SL stats per symbol
-        if self.stats is not None:
-            symbol_key = f"{snapshot.symbol}/USDT"
-            counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1 = counts.get("TP1", 0)
-            tp2 = counts.get("TP2", 0)
-            sl = counts.get("SL", 0)
-            total = tp1 + tp2 + sl
-            if total > 0:
-                win_rate = (tp1 + tp2) / total * 100.0
-                lines.append(
-                    f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
-                    f"(Win rate: {win_rate:.1f}%)"
-                )
-                lines.append("")
-
-        if isinstance(snapshot.price, (int, float)) and isinstance(snapshot.price_change_pct, (int, float)):
-            trend_emoji = "🟢" if snapshot.price_change_pct >= 0 else "🔴"
-            lines.append(
-                f"💰 Price: <code>{float(snapshot.price):.6f}</code> {trend_emoji} ({float(snapshot.price_change_pct):+.2f}%)"
-            )
+        # Build extra info with liquidation-specific data
+        extra_lines = []
         if snapshot.long_liq_value or snapshot.short_liq_value:
-            lines.append(
-                f"💥 Liquidations: Longs ${snapshot.long_liq_value:,.0f} | Shorts ${snapshot.short_liq_value:,.0f}"
-            )
+            extra_lines.append(f"Liqs: Longs ${snapshot.long_liq_value:,.0f} | Shorts ${snapshot.short_liq_value:,.0f}")
         if snapshot.bid_value or snapshot.ask_value:
             ratio = (snapshot.bid_value / snapshot.ask_value) if snapshot.ask_value else 0
-            lines.append(
-                f"📊 Orderbook: Bids ${snapshot.bid_value:,.0f} / Asks ${snapshot.ask_value:,.0f} (ratio {ratio:.2f})"
-            )
+            extra_lines.append(f"Orderbook ratio: {ratio:.2f}")
         if snapshot.buy_volume or snapshot.sell_volume:
             total = snapshot.buy_volume + snapshot.sell_volume
             if total > 0:
                 buy_pct = snapshot.buy_volume / total * 100
-                lines.append(f"🫧 Flow: Buy {buy_pct:.1f}% / Sell {100 - buy_pct:.1f}%")
+                extra_lines.append(f"Flow: Buy {buy_pct:.1f}%")
 
+        extra_info = " | ".join(extra_lines) if extra_lines else None
+
+        # Get reasons from evaluation
         reasons_val = evaluation.get("reasons", [])
-        reasons: List[str] = [r for r in reasons_val if isinstance(r, str)] if isinstance(reasons_val, list) else []
-        if reasons:
-            lines.append("")
-            lines.append("📝 Factors: " + "; ".join(reasons))
+        reasons = [r for r in reasons_val if isinstance(r, str)] if isinstance(reasons_val, list) else []
 
-        if trade_levels:
-            lines.append("")
-            lines.append(
-                "🎯 Targets: "
-                f"TP1 <code>{trade_levels['take_profit_1']:.6f}</code> | "
-                f"TP2 <code>{trade_levels['take_profit_2']:.6f}</code>"
-            )
-            lines.append(f"🛑 Stop: <code>{trade_levels['stop_loss']:.6f}</code>")
+        # Get performance stats
+        perf_stats = None
+        if self.stats is not None:
+            symbol_key = f"{snapshot.symbol}/USDT"
+            counts = self.stats.symbol_tp_sl_counts(symbol_key)
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total_count = tp1_count + tp2_count + sl_count
+            if total_count > 0:
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total_count,
+                }
 
-        lines.append("")
-        lines.append(f"⏱️ Updated {snapshot.timestamp}")
-        return "\n".join(lines)
+        # Build signal message using centralized template
+        entry = float(cast(float, trade_levels.get("entry", snapshot.price or 0))) if trade_levels else float(snapshot.price or 0)
+        sl = float(cast(float, trade_levels.get("stop_loss", entry * 0.98))) if trade_levels else entry * 0.98
+        tp1 = float(cast(float, trade_levels.get("take_profit_1", entry * 1.03))) if trade_levels else entry * 1.03
+        tp2 = float(cast(float, trade_levels.get("take_profit_2", entry * 1.05))) if trade_levels else entry * 1.05
+        timeframe = str(trade_levels.get("timeframe", "15m")) if trade_levels else "15m"
+
+        return format_signal_message(
+            bot_name="LIQUIDATION",
+            symbol=f"{snapshot.symbol}/USDT",
+            direction=direction,
+            entry=entry,
+            stop_loss=sl,
+            tp1=tp1,
+            tp2=tp2,
+            reasons=reasons if reasons else None,
+            exchange="MEXC",
+            timeframe=timeframe,
+            current_price=float(snapshot.price) if snapshot.price else None,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
 
     def _dispatch(self, message: str) -> None:
         if self.notifier:
@@ -866,7 +893,8 @@ class LiquidationBot:
                 result = "SL"
 
             if result:
-                summary_message = None
+                # Get updated performance stats
+                perf_stats = None
                 if self.stats:
                     stats_record = self.stats.record_close(
                         signal_id,
@@ -874,22 +902,40 @@ class LiquidationBot:
                         result=result,
                     )
                     if stats_record:
-                        summary_message = self.stats.build_summary_message(stats_record)
-                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%", 
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%",
                                    signal_id, symbol, entry, price, result, stats_record.pnl_pct)
+                        # Build perf stats for result message
+                        symbol_key = f"{symbol}/USDT"
+                        counts = self.stats.symbol_tp_sl_counts(symbol_key)
+                        tp1_count = counts.get("TP1", 0)
+                        tp2_count = counts.get("TP2", 0)
+                        sl_count = counts.get("SL", 0)
+                        total_count = tp1_count + tp2_count + sl_count
+                        if total_count > 0:
+                            perf_stats = {
+                                "tp1": tp1_count,
+                                "tp2": tp2_count,
+                                "sl": sl_count,
+                                "wins": tp1_count + tp2_count,
+                                "total": total_count,
+                            }
                     else:
                         self.stats.discard(signal_id)
 
-                if summary_message:
-                    self._dispatch(summary_message)
-                else:
-                    message = (
-                        f"🎯 {symbol}/USDT {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
-                        f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
-                    )
-                    self._dispatch(message)
-
+                # Use centralized result template
+                message = format_result_message(
+                    symbol=f"{symbol}/USDT",
+                    direction=direction,
+                    result=result,
+                    entry=entry,
+                    exit_price=price,
+                    stop_loss=sl,
+                    tp1=tp1,
+                    tp2=tp2,
+                    signal_id=signal_id,
+                    performance_stats=perf_stats,
+                )
+                self._dispatch(message)
                 self.state.remove_signal(signal_id)
 
 

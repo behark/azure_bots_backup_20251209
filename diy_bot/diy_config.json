@@ -4,7 +4,7 @@
   "_last_updated": "2025-12-20",
   "exchange_settings": {
     "_description": "Which exchange to use for trading data",
-    "active_exchange": "mexc",
+    "active_exchange": "binance",
     "check_exchange_for_duplicates": false,
     "check_timeframe_for_duplicates": false
   },

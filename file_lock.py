@@ -8,7 +8,7 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Generator, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class FileLockError(Exception):
 
 
 @contextmanager
-def file_lock(file_path: Path, timeout: float = 5.0):
+def file_lock(file_path: Path, timeout: float = 5.0) -> Generator[None, None, None]:
     """
     Context manager for file locking using fcntl with timeout.
 
@@ -64,7 +64,7 @@ def file_lock(file_path: Path, timeout: float = 5.0):
             lock_file.close()
 
 
-def safe_read_json(file_path: Path, default: Optional[Dict] = None) -> Dict[str, Any]:
+def safe_read_json(file_path: Path, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Safely read JSON file with file locking.
     
@@ -84,7 +84,7 @@ def safe_read_json(file_path: Path, default: Optional[Dict] = None) -> Dict[str,
     try:
         with file_lock(file_path):
             data = json.loads(file_path.read_text())
-            return data
+            return cast(Dict[str, Any], data)
     except (json.JSONDecodeError, IOError) as e:
         logger.warning("Failed to read %s: %s", file_path, e)
         return default
@@ -146,11 +146,14 @@ class SafeStateManager:
         """Update a specific key in the state."""
         if self._cache is None:
             self.load()
-        self._cache[key] = value
+        if self._cache is not None:
+            self._cache[key] = value
         return self.save()
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get a specific key from the state."""
         if self._cache is None:
             self.load()
-        return self._cache.get(key, default)
+        if self._cache is not None:
+            return self._cache.get(key, default)
+        return default

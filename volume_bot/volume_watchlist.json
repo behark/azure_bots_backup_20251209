@@ -14,19 +14,19 @@
   {
     "symbol": "ALMANAK/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "APR/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "CLO/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
@@ -56,25 +56,25 @@
   {
     "symbol": "JELLYJELLY/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "LRC/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "NIGHT/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "ON/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
@@ -86,13 +86,13 @@
   {
     "symbol": "RIVER/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "RLS/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
@@ -110,13 +110,31 @@
   {
     "symbol": "TRUTH/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
     "market_type": "swap"
   },
   {
     "symbol": "WET/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "SOON/USDT",
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ASR/USDT",
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ZKJ/USDT",
+    "timeframe": "15m",
+    "exchange": "binance",
     "market_type": "swap"
   }
 ]

@@ -40,26 +40,28 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
 
-# Safe imports
-from safe_import import safe_import, safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-TelegramNotifier = safe_import('notifier', 'TelegramNotifier')
-SignalStats = safe_import('signal_stats', 'SignalStats')
+# Optional imports (safe fallback)
+from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = safe_import('health_monitor', 'RateLimiter')
-TPSLCalculator = safe_import('tp_sl_calculator', 'TPSLCalculator')
-get_config_manager = safe_import('trade_config', 'get_config_manager')
+RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 def load_json_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return cast(Dict[str, Any], json.loads(path.read_text()))
     except Exception:
         return {}
 
-def setup_logging(log_level: str = "INFO", enable_detailed: bool = False):
+def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> logging.Logger:
     """Setup enhanced logging."""
     from logging.handlers import RotatingFileHandler
     detailed_format = "%(asctime)s | %(levelname)-8s | [%(name)s:%(funcName)s:%(lineno)d] | %(message)s"
@@ -178,7 +180,7 @@ class FundingAnalyzer:
             if oi_change >= limit:
                 reasons.append(f"Strong OI Increase (+{oi_change:.1f}%)")
                 if abs(score) >= 2:
-                    score = score * 1.5
+                    score = int(score * 1.5)
         
         if score >= 2:
             direction = "BULLISH"
@@ -194,40 +196,44 @@ class FundingAnalyzer:
             "score": score
         }
 
-    def calculate_targets(self, entry: float, direction: str, atr: float) -> Dict[str, float]:
-        risk = atr * 1.5
-        if direction == "BULLISH":
-            sl = entry - risk
-            tp1 = entry + (risk * 2)
-            tp2 = entry + (risk * 3)
-        else:
-            sl = entry + risk
-            tp1 = entry - (risk * 2)
-            tp2 = entry - (risk * 3)
-        return {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2}
+    def calculate_targets(self, entry: float, direction: str, atr: float) -> Optional[Dict[str, float]]:
+        """Calculate TP/SL using centralized TPSLCalculator."""
+        calculator = TPSLCalculator(min_risk_reward=1.8)
+        dir_normalized = "LONG" if direction == "BULLISH" else "SHORT"
+        levels = calculator.calculate(
+            entry=entry,
+            direction=dir_normalized,
+            atr=atr,
+            sl_multiplier=1.5,
+            tp1_multiplier=2.0,
+            tp2_multiplier=3.0,
+        )
+        if not levels.is_valid:
+            return None
+        return {"entry": entry, "sl": levels.stop_loss, "tp1": levels.take_profit_1, "tp2": levels.take_profit_2}
 
 class SignalTracker:
     """Robust signal tracker with file locking."""
-    
-    def __init__(self, stats=None, config=None):
+
+    def __init__(self, stats: Optional[Any] = None, config: Optional[Dict[str, Any]] = None) -> None:
         self.stats = stats
-        self.config = config or {}
+        self.config: Dict[str, Any] = config or {}
         self.state_lock = threading.Lock()
         self.state = self._load_state()
 
-    def _empty_state(self):
+    def _empty_state(self) -> Dict[str, Any]:
         return {"last_alerts": {}, "open_signals": {}, "signal_history": {}, "last_result_notifications": {}}
 
-    def _load_state(self):
+    def _load_state(self) -> Dict[str, Any]:
         if STATE_FILE.exists():
             try:
                 with open(STATE_FILE, 'r') as f:
-                    return json.load(f)
+                    return cast(Dict[str, Any], json.load(f))
             except Exception:
                 return self._empty_state()
         return self._empty_state()
 
-    def _save_state(self):
+    def _save_state(self) -> None:
         with self.state_lock:
             temp_file = STATE_FILE.with_suffix('.tmp')
             try:
@@ -239,7 +245,7 @@ class SignalTracker:
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
 
-    def should_alert(self, symbol, exchange, cooldown_mins, funding_ts=None):
+    def should_alert(self, symbol: str, exchange: str, cooldown_mins: int, funding_ts: Optional[int] = None) -> bool:
         """Check if we should alert, using either cooldown or funding timestamp."""
         if funding_ts:
             history = self.state.setdefault("signal_history", {})
@@ -256,7 +262,7 @@ class SignalTracker:
             return (datetime.now(timezone.utc) - last) >= timedelta(minutes=cooldown_mins)
         except Exception: return True
 
-    def add_signal(self, signal: FundingSignal):
+    def add_signal(self, signal: FundingSignal) -> None:
         # Mark history for deduplication
         if signal.funding_timestamp:
             history = self.state.setdefault("signal_history", {})
@@ -282,7 +288,7 @@ class SignalTracker:
                 extra={"exchange": signal.exchange}
             )
 
-    def check_open_signals(self, client_map, notifier):
+    def check_open_signals(self, client_map: Dict[str, Any], notifier: Optional[Any]) -> None:
         """Check open signals for TP/SL hits."""
         signals = self.state.get("open_signals", {})
         if not signals:
@@ -356,7 +362,7 @@ class SignalTracker:
         if updated:
             self._save_state()
 
-    def check_reversal(self, symbol, new_direction, notifier):
+    def check_reversal(self, symbol: str, new_direction: str, notifier: Optional[Any]) -> None:
         signals = self.state.get("open_signals", {})
         for sig_id, payload in signals.items():
             if payload.get("symbol") == symbol:
@@ -372,7 +378,7 @@ class FundingBot:
         self.config = load_json_config(config_path)
         self.watchlist = self._load_watchlist()
         self.analyzer = FundingAnalyzer(self.config)
-        self.tracker = SignalTracker(SignalStats("Funding Bot", STATS_FILE) if SignalStats else None, self.config)
+        self.tracker = SignalTracker(SignalStats("Funding Bot", STATS_FILE), self.config)
         self.notifier = self._init_notifier()
         
         # Init Health Monitor
@@ -386,29 +392,32 @@ class FundingBot:
             except Exception as e:
                 logger.error(f"Failed to init {name}: {e}")
 
-    def _load_watchlist(self):
+    def _load_watchlist(self) -> List[Dict[str, Any]]:
         if not WATCHLIST_FILE.exists(): return []
         try:
-            return json.loads(WATCHLIST_FILE.read_text())
+            return cast(List[Dict[str, Any]], json.loads(WATCHLIST_FILE.read_text()))
         except Exception: return []
 
-    def _init_notifier(self):
-        if not TelegramNotifier: return None
+    def _init_notifier(self) -> Optional[Any]:
+        if TelegramNotifier is None: return None
         token = os.getenv("TELEGRAM_BOT_TOKEN_FUNDING") or os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         return TelegramNotifier(bot_token=token, chat_id=chat_id, signals_log_file=str(LOG_DIR/"funding_signals.json")) if token and chat_id else None
 
-    def run(self, run_once: bool = False):
+    def run(self, run_once: bool = False) -> None:
         logger.info("Starting Refactored Funding Bot...")
         if self.health_monitor: self.health_monitor.send_startup_message()
         
         while True:
             try:
                 for item in self.watchlist:
-                    symbol = item.get("symbol")
-                    exchange = item.get("exchange", "mexc")
-                    timeframe = item.get("timeframe", "8h")
-                    
+                    symbol_raw = item.get("symbol")
+                    if not symbol_raw or not isinstance(symbol_raw, str):
+                        continue
+                    symbol: str = symbol_raw
+                    exchange: str = str(item.get("exchange", "mexc"))
+                    timeframe: str = str(item.get("timeframe", "8h"))
+
                     client = self.clients.get(exchange)
                     if not client: continue
                     
@@ -456,7 +465,9 @@ class FundingBot:
                         # 3. Targets
                         atr = price * 0.02 # Simple proxy if calc fails
                         targets = self.analyzer.calculate_targets(price, result['direction'], atr)
-                        
+                        if targets is None:
+                            continue
+
                         signal = FundingSignal(
                             symbol=symbol, direction=result['direction'],
                             funding_rate=funding_rate, predicted_price=0,
@@ -489,21 +500,21 @@ class FundingBot:
         
         if self.health_monitor: self.health_monitor.send_shutdown_message()
 
-    def _send_alert(self, signal):
-        emoji = "🟢" if signal.direction == "BULLISH" else "🔴"
-        safe_sym = html.escape(signal.symbol)
-        reasons = ", ".join(signal.reasons)
-        msg = (
-            f"{emoji} <b>{signal.direction} FUNDING - {safe_sym}</b>\n\n"
-            f"💰 Entry: {signal.entry:.6f}\n"
-            f"📊 Rate: {signal.funding_rate*100:.4f}%\n"
-            f"🛑 Stop: {signal.stop_loss:.6f}\n"
-            f"🎯 TP1: {signal.take_profit_1:.6f}\n"
-            f"📝 {reasons}"
+    def _send_alert(self, signal: FundingSignal) -> None:
+        msg = format_signal_message(
+            bot_name="FUNDING",
+            symbol=signal.symbol,
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            funding_rate=signal.funding_rate,
+            reasons=signal.reasons,
+            timeframe="15m",
         )
         if self.notifier: self.notifier.send_message(msg)
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="funding_config.json")
     parser.add_argument("--once", action="store_true")

@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-import ccxt  # type: ignore
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -43,15 +43,17 @@ except ImportError:
 if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
 
-# Safe imports
-from safe_import import safe_import, safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-TelegramNotifier = safe_import('notifier', 'TelegramNotifier')
-SignalStats = safe_import('signal_stats', 'SignalStats')
+# Optional imports (safe fallback)
+from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = safe_import('health_monitor', 'RateLimiter')
-TPSLCalculator = safe_import('tp_sl_calculator', 'TPSLCalculator')
-get_config_manager = safe_import('trade_config', 'get_config_manager')
+RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 # Import configuration module (Same config structure as Volume Bot)
@@ -60,11 +62,11 @@ def load_json_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return cast(Dict[str, Any], json.loads(path.read_text()))
     except Exception:
         return {}
 
-def setup_logging(log_level: str = "INFO", enable_detailed: bool = False):
+def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> logging.Logger:
     """Setup enhanced logging with rotation and detailed formatting."""
     from logging.handlers import RotatingFileHandler
     detailed_format = "%(asctime)s | %(levelname)-8s | [%(name)s:%(funcName)s:%(lineno)d] | %(message)s"
@@ -208,9 +210,9 @@ class HarmonicPatternDetector:
         down = -seed[seed < 0].sum() / period
         if down == 0: return 100.0
         rs = up / down
-        return 100 - (100 / (1 + rs))
+        return float(100 - (100 / (1 + rs)))
 
-    def find_pivots(self, highs, lows, closes, opens, atr):
+    def find_pivots(self, highs: List[float], lows: List[float], closes: List[float], opens: List[float], atr: float) -> List[Tuple[int, float, str]]:
         # Increased ZigZag multiplier (Pro Upgrade)
         mult = self.config.get("analysis", {}).get("zigzag_atr_multiplier", 3.0)
         atr_threshold = max(atr * mult, 1e-8)
@@ -229,8 +231,8 @@ class HarmonicPatternDetector:
         segments = np.split(np.arange(n, dtype=int), change_points)
         segments = [seg for seg in segments if seg.size > 0]
         if len(segments) < 2: return []
-        
-        pivots = []
+
+        pivots: List[Tuple[int, float, str]] = []
         segment_dirs = [int(candle_dirs[seg[0]]) for seg in segments]
         for seg_idx in range(1, len(segments)):
             prev_seg = segments[seg_idx - 1]
@@ -247,7 +249,7 @@ class HarmonicPatternDetector:
                 pivots.append((int(local_idx), price, pivot_type))
         return pivots
 
-    def detect(self, ohlcv, symbol, timeframe, current_price, exchange="mexc") -> Optional[HarmonicSignal]:
+    def detect(self, ohlcv: List[List[Any]], symbol: str, timeframe: str, current_price: float, exchange: str = "mexc") -> Optional[HarmonicSignal]:
         # Validate OHLCV data
         if not ohlcv or not isinstance(ohlcv, list):
             logger.debug(f"Invalid OHLCV data for {symbol}: empty or not a list")
@@ -399,7 +401,7 @@ class HarmonicPatternDetector:
             prz_high=targets.get("prz_high", 0)
         )
 
-    def _get_ratios(self, x, a, b, c, d):
+    def _get_ratios(self, x: float, a: float, b: float, c: float, d: float) -> Optional[Tuple[float, float, float, float]]:
         # Check denominators: XAB uses (x-a), ABC uses (a-b), BCD uses (b-c), XAD uses (x-a)
         if x == a or a == b or b == c: return None
         xab = abs(b - a) / abs(x - a)
@@ -447,9 +449,9 @@ class HarmonicPatternDetector:
             prz_conf * 0.20
         )
 
-        return round(min(1.0, max(0.0, confidence)), 3)
+        return float(round(min(1.0, max(0.0, confidence)), 3))
 
-    def _calculate_targets(self, c, d, direction, atr, symbol):
+    def _calculate_targets(self, c: float, d: float, direction: str, atr: float, symbol: str) -> Dict[str, float]:
         # Get config values
         entry_buffer_mult = self.config.get("analysis", {}).get("entry_buffer_atr_multiplier", 0.05)
         sl_fib_mult = self.config.get("analysis", {}).get("sl_fib_range_multiplier", 0.5)
@@ -503,13 +505,13 @@ class SignalTracker:
 
     STATE_VERSION = 2  # Increment when state format changes (Fix 1.10)
 
-    def __init__(self, stats=None, config=None):
+    def __init__(self, stats: Optional[Any] = None, config: Optional[Dict[str, Any]] = None) -> None:
         self.stats = stats
-        self.config = config or {}
+        self.config: Dict[str, Any] = config or {}
         self.state_lock = threading.Lock()
         self.state = self._load_state()
 
-    def _empty_state(self):
+    def _empty_state(self) -> Dict[str, Any]:
         return {
             "version": self.STATE_VERSION,  # Fix 1.10: Add version field
             "last_alerts": {},
@@ -518,11 +520,11 @@ class SignalTracker:
             "last_result_notifications": {}
         }
 
-    def _load_state(self):
+    def _load_state(self) -> Dict[str, Any]:
         if STATE_FILE.exists():
             try:
                 with open(STATE_FILE, 'r') as f:
-                    loaded_state = json.load(f)
+                    loaded_state = cast(Dict[str, Any], json.load(f))
 
                 # Fix 1.10: Version validation and migration
                 loaded_version = loaded_state.get("version", 1)
@@ -557,7 +559,7 @@ class SignalTracker:
                 return self._empty_state()
         return self._empty_state()
 
-    def _save_state(self):
+    def _save_state(self) -> None:
         with self.state_lock:
             temp_file = STATE_FILE.with_suffix('.tmp')
             try:
@@ -569,7 +571,7 @@ class SignalTracker:
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
 
-    def is_duplicate(self, symbol, pattern, d_ts, exchange="mexc", timeframe="1h"):
+    def is_duplicate(self, symbol: str, pattern: str, d_ts: str, exchange: str = "mexc", timeframe: str = "1h") -> bool:
         """Check duplicate using D-Timestamp with exchange+timeframe scope (Fix 1.6)."""
         history = self.state.setdefault("signal_history", {})
         # Include exchange and timeframe in key to allow same pattern on different TFs/exchanges
@@ -584,7 +586,7 @@ class SignalTracker:
         key = "|".join(key_parts)
         return d_ts in history.get(key, [])
 
-    def add_signal(self, signal: HarmonicSignal):
+    def add_signal(self, signal: HarmonicSignal) -> None:
         # Mark history with exchange+timeframe aware key (Fix 1.6)
         history = self.state.setdefault("signal_history", {})
         check_exchange = self.config.get("exchange_settings", {}).get("check_exchange_for_duplicates", True)
@@ -612,7 +614,7 @@ class SignalTracker:
         if self.stats:
             self.stats.record_open(sig_id, signal.symbol, signal.direction, signal.entry, signal.timestamp)
 
-    def check_open_signals(self, client_map, notifier, rate_limiter=None):
+    def check_open_signals(self, client_map: Dict[str, Any], notifier: Optional[Any], rate_limiter: Optional[Any] = None) -> None:
         """Check open signals with rate limiting support (Fix 2.1)."""
         signals = self.state.get("open_signals", {})
         if not signals: return
@@ -793,7 +795,7 @@ class SignalTracker:
         
         if updated: self._save_state()
 
-    def should_alert(self, symbol, pattern, cooldown_minutes):
+    def should_alert(self, symbol: str, pattern: str, cooldown_minutes: int) -> bool:
         """Check if enough time has passed since last alert for this symbol-pattern pair."""
         last_alerts = self.state.setdefault("last_alerts", {})
         key = f"{symbol}|{pattern}"
@@ -809,14 +811,14 @@ class SignalTracker:
         except Exception:
             return True
 
-    def mark_alert(self, symbol, pattern):
+    def mark_alert(self, symbol: str, pattern: str) -> None:
         """Mark that we just sent an alert for this symbol-pattern pair."""
         last_alerts = self.state.setdefault("last_alerts", {})
         key = f"{symbol}|{pattern}"
         last_alerts[key] = datetime.now(timezone.utc).isoformat()
         self._save_state()
 
-    def cleanup_stale_signals(self, max_age_hours=24):
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
         """Remove signals older than max_age_hours and archive to stats (from Volume Bot)."""
         signals = self.state.get("open_signals", {})
         if not signals:
@@ -897,7 +899,7 @@ class SignalTracker:
         last_notifs[symbol] = datetime.now(timezone.utc).isoformat()
         self._save_state()
 
-    def check_reversal(self, symbol, new_direction, notifier):
+    def check_reversal(self, symbol: str, new_direction: str, notifier: Optional[Any]) -> None:
         signals = self.state.get("open_signals", {})
         for sig_id, payload in signals.items():
             if payload.get("symbol") == symbol:
@@ -924,7 +926,7 @@ class HarmonicBot:
         # Init components
         self.watchlist = self._load_watchlist()
         self.analyzer = HarmonicPatternDetector(self.config)
-        self.stats = SignalStats("Harmonic Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("Harmonic Bot", STATS_FILE)
         self.tracker = SignalTracker(self.stats, self.config)
         self.notifier = self._init_notifier()
 
@@ -982,7 +984,9 @@ class HarmonicBot:
         if not isinstance(signals, dict):
             return
 
-        stats_open = self.stats.data.get("open", {}) if isinstance(self.stats.data.get("open", {}), dict) else {}
+        stats_data = self.stats.data if isinstance(self.stats.data, dict) else {}
+        stats_open_raw = stats_data.get("open", {})
+        stats_open: Dict[str, Any] = stats_open_raw if isinstance(stats_open_raw, dict) else {}
         synced = 0
 
         for signal_id, payload in signals.items():
@@ -1049,7 +1053,7 @@ class HarmonicBot:
 
         return count
 
-    def _load_watchlist(self):
+    def _load_watchlist(self) -> List[Dict[str, Any]]:
         """Load and validate watchlist entries (Fix 2.3)."""
         if not WATCHLIST_FILE.exists():
             logger.warning("Watchlist file not found")
@@ -1100,13 +1104,13 @@ class HarmonicBot:
         logger.info(f"Loaded {len(valid_entries)} valid watchlist entries")
         return valid_entries
 
-    def _init_notifier(self):
-        if not TelegramNotifier: return None
+    def _init_notifier(self) -> Optional[Any]:
+        if TelegramNotifier is None: return None
         token = os.getenv("TELEGRAM_BOT_TOKEN_HARMONIC") or os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         return TelegramNotifier(bot_token=token, chat_id=chat_id, signals_log_file=str(LOG_DIR/"signals.json")) if token and chat_id else None
 
-    def run(self, run_once: bool = False, track_only: bool = False):
+    def run(self, run_once: bool = False, track_only: bool = False) -> None:
         logger.info("Starting Refactored Harmonic Bot...")
 
         # Get configuration values
@@ -1141,9 +1145,14 @@ class HarmonicBot:
                 try:
                     signals_this_cycle = 0  # Track signals per cycle
                     for item in self.watchlist:
-                        symbol = item.get("symbol")
-                        exchange = item.get("exchange", "mexc")
-                        timeframe = item.get("timeframe", "1h")
+                        symbol_raw = item.get("symbol")
+                        if not isinstance(symbol_raw, str) or not symbol_raw:
+                            continue
+                        symbol: str = symbol_raw
+                        exchange_raw = item.get("exchange", "mexc")
+                        exchange: str = exchange_raw if isinstance(exchange_raw, str) else "mexc"
+                        timeframe_raw = item.get("timeframe", "1h")
+                        timeframe: str = timeframe_raw if isinstance(timeframe_raw, str) else "1h"
 
                         # Check exchange backoff (from Volume Bot)
                         if self._backoff_active(exchange):
@@ -1159,9 +1168,13 @@ class HarmonicBot:
                             if self.rate_limiter:
                                 self.rate_limiter.wait_if_needed()
 
-                            ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=200)
-                            ticker = client.fetch_ticker(resolve_symbol(symbol))
-                            price = ticker.get("last")
+                            ohlcv = cast(List[List[Any]], client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=200))
+                            ticker = cast(Dict[str, Any], client.fetch_ticker(resolve_symbol(symbol)))
+                            price_raw = ticker.get("last")
+                            if not isinstance(price_raw, (int, float)):
+                                logger.debug(f"Invalid price for {symbol}: {price_raw}")
+                                continue
+                            price: float = float(price_raw)
 
                             # Record success if rate limiter is available
                             if self.rate_limiter:
@@ -1329,40 +1342,23 @@ class HarmonicBot:
             "avg_pnl": avg_pnl
         }
 
-    def _send_alert(self, signal):
-        emoji = "🟢" if signal.direction == "BULLISH" else "🔴"
-        safe_sym = html.escape(signal.symbol)
-        safe_pattern = html.escape(signal.pattern_name)
-        safe_direction = html.escape(signal.direction)
-        safe_exchange = html.escape(signal.exchange.upper())
-        safe_timeframe = html.escape(signal.timeframe)
-
+    def _send_alert(self, signal: HarmonicSignal) -> None:
         # Get symbol performance stats
         symbol_stats = self._get_symbol_performance(signal.symbol)
 
-        lines = [
-            f"{emoji} <b>{safe_direction} {safe_pattern} - {safe_sym}</b>",
-            "",
-            f"💰 <b>Entry:</b> <code>{signal.entry:.6f}</code>",
-            f"🛑 <b>Stop:</b> <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 <b>TP1:</b> <code>{signal.take_profit_1:.6f}</code>",
-            f"🚀 <b>TP2:</b> <code>{signal.take_profit_2:.6f}</code>",
-            "",
-            f"🏦 {safe_exchange} | ⏰ {safe_timeframe}"
-        ]
-
-        # Add symbol performance section
-        if symbol_stats["total"] > 0:
-            win_rate = (symbol_stats["wins"] / symbol_stats["total"]) * 100
-            lines.extend([
-                "",
-                f"📈 <b>{safe_sym} Performance History:</b>",
-                f"   TP1: {symbol_stats['tp1']} | TP2: {symbol_stats['tp2']} | SL: {symbol_stats['sl']}",
-                f"   Win Rate: <b>{win_rate:.1f}%</b> ({symbol_stats['wins']}/{symbol_stats['total']})",
-                f"   Avg PnL: <b>{symbol_stats['avg_pnl']:+.2f}%</b>",
-            ])
-
-        msg = "\n".join(lines)
+        msg = format_signal_message(
+            bot_name="HARMONIC",
+            symbol=signal.symbol,
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            tp2=signal.take_profit_2,
+            pattern_name=signal.pattern_name,
+            exchange=signal.exchange.upper(),
+            timeframe=signal.timeframe,
+            performance_stats=symbol_stats if symbol_stats.get("total", 0) > 0 else None,
+        )
         if self.notifier:
             self.notifier.send_message(msg, parse_mode="HTML")
             logger.info(f"Signal sent: {signal.symbol} {signal.pattern_name} {signal.direction}")
@@ -1396,7 +1392,7 @@ def validate_environment() -> bool:
     return True
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Harmonic Pattern Bot - Automated harmonic pattern detection",
         formatter_class=argparse.RawDescriptionHelpFormatter,

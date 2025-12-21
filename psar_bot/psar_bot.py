@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
+from types import FrameType
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -49,28 +50,18 @@ except ImportError:
 
 sys.path.append(str(BASE_DIR.parent))
 
-# Safe imports with independent error handling
-from safe_import import safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-imports = [
-    ('notifier', 'TelegramNotifier', None),
-    ('signal_stats', 'SignalStats', None),
-    ('health_monitor', 'HealthMonitor', None),
-    ('health_monitor', 'RateLimiter', None),
-    ('tp_sl_calculator', 'TPSLCalculator', None),
-    ('trade_config', 'get_config_manager', None),
-    ('rate_limit_handler', 'RateLimitHandler', None),
-]
-
-components = safe_import_multiple(imports, logger_instance=logger)
-
-TelegramNotifier = components['TelegramNotifier']
-SignalStats = components['SignalStats']
-HealthMonitor = components['HealthMonitor']
-RateLimiter = components['RateLimiter']
-TPSLCalculator = components['TPSLCalculator']
-get_config_manager = components['get_config_manager']
-RateLimitHandler = components['RateLimitHandler']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -290,72 +281,36 @@ class PSARAnalyzer:
                 logger.debug("BEARISH stop too tight: %.6f < %.6f (%.1f%%)", psar_value - entry, min_sl_distance, min_sl_distance_pct * 100)
                 return None
 
-        if TPSLCalculator is not None:
-            if get_config_manager is not None:
-                config_mgr = get_config_manager()
-                risk_config = config_mgr.get_effective_risk("psar_bot", symbol)
-                tp1_mult = risk_config.tp1_atr_multiplier
-                tp2_mult = risk_config.tp2_atr_multiplier
-                min_rr = risk_config.min_risk_reward
-            else:
-                tp1_mult, tp2_mult, min_rr = 2.0, 3.5, 1.5
+        # Get risk config and calculate TP/SL using centralized calculator
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("psar_bot", symbol)
+        tp1_mult = risk_config.tp1_atr_multiplier
+        tp2_mult = risk_config.tp2_atr_multiplier
+        min_rr = risk_config.min_risk_reward
 
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
-            levels = calculator.calculate(
-                entry=entry,
-                direction=direction,
-                atr=atr,
-                tp1_multiplier=tp1_mult,
-                tp2_multiplier=tp2_mult,
-                custom_sl=psar_value,  # Use PSAR as stop loss
-            )
+        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        levels = calculator.calculate(
+            entry=entry,
+            direction=direction,
+            atr=atr,
+            tp1_multiplier=tp1_mult,
+            tp2_multiplier=tp2_mult,
+            custom_sl=psar_value,  # Use PSAR as stop loss
+        )
 
-            if levels.is_valid:
-                targets = {
-                    "entry": entry,
-                    "stop_loss": psar_value,
-                    "take_profit_1": levels.take_profit_1,
-                    "take_profit_2": levels.take_profit_2,
-                }
-                
-                # Validate TP/SL consistency
-                if direction == "BULLISH":
-                    assert psar_value < entry, f"PSAR BULLISH: SL {psar_value} should be < entry {entry}"
-                    assert levels.take_profit_1 > entry, f"PSAR BULLISH: TP1 {levels.take_profit_1} should be > entry {entry}"
-                    assert levels.take_profit_2 > entry, f"PSAR BULLISH: TP2 {levels.take_profit_2} should be > entry {entry}"
-                else:  # BEARISH
-                    assert psar_value > entry, f"PSAR BEARISH: SL {psar_value} should be > entry {entry}"
-                    assert levels.take_profit_1 < entry, f"PSAR BEARISH: TP1 {levels.take_profit_1} should be < entry {entry}"
-                    assert levels.take_profit_2 < entry, f"PSAR BEARISH: TP2 {levels.take_profit_2} should be < entry {entry}"
-                
-                logger.debug("%s %s PSAR signal | Entry: %.6f | SAR: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f",
-                           symbol, direction, entry, psar_value, levels.take_profit_1, levels.take_profit_2, levels.risk_reward_1)
-            else:
-                return None
-        else:
-            # Fallback to original calculation
-            sl = psar_value
-            if direction == "BULLISH":
-                tp1 = entry + (atr * 2.0)
-                tp2 = entry + (atr * 3.5)
-            else:
-                tp1 = entry - (atr * 2.0)
-                tp2 = entry - (atr * 3.5)
-            
-            # Validate fallback TP/SL
-            if direction == "BULLISH":
-                assert sl < entry, f"PSAR BULLISH fallback: SL {sl} should be < entry {entry}"
-                assert tp1 > entry, f"PSAR BULLISH fallback: TP1 {tp1} should be > entry {entry}"
-            else:  # BEARISH
-                assert sl > entry, f"PSAR BEARISH fallback: SL {sl} should be > entry {entry}"
-                assert tp1 < entry, f"PSAR BEARISH fallback: TP1 {tp1} should be < entry {entry}"
+        if not levels.is_valid:
+            logger.debug("%s: TPSLCalculator rejected - %s", symbol, levels.rejection_reason)
+            return None
 
-            targets = {
-                "entry": entry,
-                "stop_loss": sl,
-                "take_profit_1": tp1,
-                "take_profit_2": tp2,
-            }
+        targets = {
+            "entry": entry,
+            "stop_loss": psar_value,
+            "take_profit_1": levels.take_profit_1,
+            "take_profit_2": levels.take_profit_2,
+        }
+
+        logger.debug("%s %s PSAR signal | Entry: %.6f | SAR: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f",
+                   symbol, direction, entry, psar_value, levels.take_profit_1, levels.take_profit_2, levels.risk_reward_1)
 
         # Validate minimum risk/reward ratio using configurable parameter
         risk = abs(targets["entry"] - targets["stop_loss"])
@@ -456,12 +411,12 @@ class PSARAnalyzer:
 
 class MexcClient:
     """MEXC exchange client wrapper."""
-    
-    def __init__(self):
-        self.exchange = ccxt.mexc({
+
+    def __init__(self) -> None:
+        self.exchange: Any = ccxt.binanceusdm({
             "enableRateLimit": True,
             "options": {"defaultType": "swap"}
-        })  # type: ignore[arg-type]
+        })
         self.exchange.load_markets()
         self.rate_limiter = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
     
@@ -469,20 +424,20 @@ class MexcClient:
     def _swap_symbol(symbol: str) -> str:
         return f"{symbol.upper()}/USDT:USDT"
     
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> list:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
         if self.rate_limiter:
-            return self.rate_limiter.execute(
+            return cast(List[Any], self.rate_limiter.execute(
                 self.exchange.fetch_ohlcv,
                 self._swap_symbol(symbol),
                 timeframe=timeframe,
                 limit=limit
-            )
-        return self.exchange.fetch_ohlcv(
+            ))
+        return cast(List[Any], self.exchange.fetch_ohlcv(
             self._swap_symbol(symbol),
             timeframe=timeframe,
             limit=limit
-        )
+        ))
     
     def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch ticker data."""
@@ -674,7 +629,7 @@ class PSARBot:
         self.analyzer = PSARAnalyzer()
         self.state = BotState(STATE_FILE)
         self.notifier = self._init_notifier()
-        self.stats = SignalStats("PSAR Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("PSAR Bot", STATS_FILE)
         self.health_monitor = (
             HealthMonitor("PSAR Bot", self.notifier, heartbeat_interval=3600)
             if HealthMonitor and self.notifier else None
@@ -683,7 +638,7 @@ class PSARBot:
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
         # Cache for OHLCV data to reduce API calls
-        self.ohlcv_cache: Dict[str, Tuple[list, float]] = {}  # {"SYMBOL-5m": (data, timestamp)}
+        self.ohlcv_cache: Dict[str, Tuple[List[Any], float]] = {}  # {"SYMBOL-5m": (data, timestamp)}
         self.cache_ttl = 60  # Cache TTL in seconds
         self.max_cache_size = 100  # Maximum cache entries before cleanup
         # Graceful shutdown
@@ -691,7 +646,7 @@ class PSARBot:
         signal_module.signal(signal_module.SIGTERM, self._signal_handler)
         signal_module.signal(signal_module.SIGINT, self._signal_handler)
     
-    def _init_notifier(self):
+    def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
             return None
@@ -723,7 +678,7 @@ class PSARBot:
         self.exchange_delay[exchange] = new_delay
         logger.warning("%s rate limit; backing off for %.0fs", exchange, new_delay)
     
-    def _signal_handler(self, signum, frame) -> None:
+    def _signal_handler(self, signum: int, frame: Optional[FrameType]) -> None:
         """Handle shutdown signals gracefully."""
         logger.info("Received signal %d, initiating graceful shutdown...", signum)
         self.shutdown_requested = True
@@ -751,7 +706,7 @@ class PSARBot:
                 del self.ohlcv_cache[key]
             logger.debug("Cache cleanup: removed %d entries", len(keys_to_remove))
     
-    def _fetch_ohlcv_cached(self, symbol: str, timeframe: str, limit: int = 100) -> Optional[list]:
+    def _fetch_ohlcv_cached(self, symbol: str, timeframe: str, limit: int = 100) -> Optional[List[Any]]:
         """Fetch OHLCV with caching to reduce API calls."""
         cache_key = f"{symbol}-{timeframe}"
         now = time.time()
@@ -1007,65 +962,44 @@ class PSARBot:
         return signal
     
     def _format_message(self, signal: PSARSignal) -> str:
-        """Format Telegram message for signal."""
-        direction = signal.direction
-        emoji = "🟢" if direction == "BULLISH" else "🔴"
-        
-        # Format strength indicator
-        strength_emoji = "🔥" if signal.strength >= 0.8 else "⚡" if signal.strength >= 0.5 else "💫"
-        
-        lines = [
-            f"{emoji} <b>{direction} PSAR TREND - {signal.symbol}/USDT</b>",
-            "",
-            "📊 <b>Strategy:</b> Parabolic SAR Trend Following",
-            f"💰 <b>Current Price:</b> <code>{signal.current_price:.6f}</code>" if signal.current_price is not None else "💰 <b>Current Price:</b> N/A",
-            f"📍 <b>PSAR Level:</b> <code>{signal.psar_value:.6f}</code>",
-            f"📈 <b>ADX:</b> {signal.adx:.1f}",
-            f"{strength_emoji} <b>Trend Strength:</b> {signal.strength * 100:.0f}%",
-            "",
-            "<b>🎯 TRADE LEVELS:</b>",
-            f"🟢 Entry: <code>{signal.entry:.6f}</code>",
-            f"🛑 Stop Loss (PSAR): <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 TP1: <code>{signal.take_profit_1:.6f}</code>",
-            f"🚀 TP2: <code>{signal.take_profit_2:.6f}</code>",
-        ]
-        
-        # Calculate R:R
-        risk = abs(signal.entry - signal.stop_loss)
-        reward1 = abs(signal.take_profit_1 - signal.entry)
-        reward2 = abs(signal.take_profit_2 - signal.entry)
-        
-        if risk > 0:
-            rr1 = reward1 / risk
-            rr2 = reward2 / risk
-            lines.append("")
-            lines.append(f"⚖️ <b>Risk/Reward:</b> 1:{rr1:.2f} (TP1) | 1:{rr2:.2f} (TP2)")
-
-        # Historical TP/SL stats
+        """Format Telegram message for signal using centralized template."""
+        # Get performance stats
+        perf_stats = None
         if self.stats is not None:
             symbol_key = f"{signal.symbol}/USDT"
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1 = counts.get("TP1", 0)
-            tp2 = counts.get("TP2", 0)
-            sl = counts.get("SL", 0)
-            total = tp1 + tp2 + sl
-            lines.append("")
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+
             if total > 0:
-                win_rate = (tp1 + tp2) / total * 100.0
-                lines.append(
-                    f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
-                    f"(Win rate: {win_rate:.1f}%)"
-                )
-            else:
-                lines.append("📈 <b>History:</b> No previous trades for this symbol")
-        
-        lines.extend([
-            "",
-            "💡 <b>Note:</b> PSAR acts as trailing stop - adjust as it moves",
-            f"⏱️ {signal.timestamp}",
-        ])
-        
-        return "\n".join(lines)
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total,
+                }
+
+        return format_signal_message(
+            bot_name="PSAR",
+            symbol=f"{signal.symbol}/USDT",
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            tp2=signal.take_profit_2,
+            strength=signal.strength,
+            indicator_value=signal.psar_value,
+            indicator_name="PSAR",
+            adx=signal.adx,
+            exchange="MEXC",
+            timeframe="15m",
+            current_price=signal.current_price,
+            performance_stats=perf_stats,
+            extra_info="PSAR acts as trailing stop - adjust as it moves",
+        )
     
     def _monitor_open_signals(self) -> None:
         """Monitor open signals for TP/SL hits and update trailing stops."""

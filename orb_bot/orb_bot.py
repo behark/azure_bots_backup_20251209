@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
-import ccxt  # type: ignore
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -42,26 +42,29 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
 
-# Safe imports
-from safe_import import safe_import, safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator, calculate_atr
+from trade_config import get_config_manager
 
-TelegramNotifier = safe_import('notifier', 'TelegramNotifier')
-SignalStats = safe_import('signal_stats', 'SignalStats')
+# Optional imports (safe fallback)
+from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = safe_import('health_monitor', 'RateLimiter')
-TPSLCalculator = safe_import('tp_sl_calculator', 'TPSLCalculator')
-get_config_manager = safe_import('trade_config', 'get_config_manager')
+RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
 def load_json_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return cast(Dict[str, Any], json.loads(path.read_text()))
     except Exception:
         return {}
 
-def setup_logging(log_level: str = "INFO", enable_detailed: bool = False):
+def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> logging.Logger:
     """Setup enhanced logging."""
     from logging.handlers import RotatingFileHandler
     detailed_format = "%(asctime)s | %(levelname)-8s | [%(name)s:%(funcName)s:%(lineno)d] | %(message)s"
@@ -154,11 +157,19 @@ class ORBLevel:
 
 class ORBAnalyzer:
     """Detects Opening Range Breakouts."""
-    
-    def __init__(self, config: Dict[str, Any]):
+
+    def __init__(self, config: Dict[str, Any], risk_config: Optional[Any] = None) -> None:
         self.config = config
         self.buffer_pct = config.get("analysis", {}).get("breakout_buffer_pct", 0.001)
         self.window_minutes = config.get("analysis", {}).get("orb_window_minutes", 60)
+        self.use_tpsl_calculator = config.get("tp_sl", {}).get("use_tpsl_calculator", True)
+        self.risk_config = risk_config
+
+        # Initialize TPSLCalculator if available
+        self.tpsl_calc: Optional[Any] = None
+        if TPSLCalculator is not None and self.use_tpsl_calculator:
+            min_rr = config.get("risk", {}).get("min_risk_reward_ratio", 1.5)
+            self.tpsl_calc = TPSLCalculator(min_risk_reward=min_rr)
 
     def calculate_orb(self, ohlcv: List[List[float]], session_start_ts: int) -> Optional[ORBLevel]:
         """Calculate High/Low/Mid for the defined opening window."""
@@ -194,43 +205,75 @@ class ORBAnalyzer:
             return "BEARISH"
         return None
 
-    def calculate_targets(self, entry: float, direction: str, orb: ORBLevel) -> Dict[str, float]:
-        """Calculate TP/SL based on ORB range projection."""
+    def calculate_targets(self, entry: float, direction: str, orb: ORBLevel, ohlcv: Optional[List[List[float]]] = None) -> Dict[str, float]:
+        """Calculate TP/SL based on ORB range projection or TPSLCalculator."""
         orb_range = orb.range_dollars
-        
+
+        # Try using TPSLCalculator with ATR-based calculation if available
+        if self.tpsl_calc is not None and ohlcv and calculate_atr is not None:
+            atr = calculate_atr(ohlcv, period=14)
+            if atr:
+                # Get multipliers from risk_config or use defaults
+                if self.risk_config:
+                    sl_mult = self.risk_config.sl_atr_multiplier
+                    tp1_mult = self.risk_config.tp1_atr_multiplier
+                    tp2_mult = self.risk_config.tp2_atr_multiplier
+                else:
+                    sl_mult = self.config.get("tp_sl", {}).get("atr_sl_multiplier", 1.5)
+                    tp1_mult = self.config.get("tp_sl", {}).get("atr_tp1_multiplier", 2.0)
+                    tp2_mult = self.config.get("tp_sl", {}).get("atr_tp2_multiplier", 3.5)
+
+                levels = self.tpsl_calc.calculate(
+                    entry=entry,
+                    direction=direction,
+                    atr=atr,
+                    sl_multiplier=sl_mult,
+                    tp1_multiplier=tp1_mult,
+                    tp2_multiplier=tp2_mult,
+                    swing_high=orb.high,
+                    swing_low=orb.low,
+                )
+
+                if levels.is_valid:
+                    logger.debug(f"TPSLCalculator: SL={levels.stop_loss:.6f}, TP1={levels.take_profit_1:.6f}, TP2={levels.take_profit_2:.6f}, RR1={levels.risk_reward_1:.2f}")
+                    return {"entry": entry, "sl": levels.stop_loss, "tp1": levels.take_profit_1, "tp2": levels.take_profit_2}
+                else:
+                    logger.debug(f"TPSLCalculator rejected: {levels.rejection_reason}, falling back to ORB range")
+
+        # Fallback to ORB range-based calculation
         if direction == "BULLISH":
             sl = orb.low  # Stop at bottom of range (conservative) or mid
             tp1 = entry + orb_range  # Measured move
             tp2 = entry + (orb_range * 2)
-        else: # BEARISH
+        else:  # BEARISH
             sl = orb.high
             tp1 = entry - orb_range
             tp2 = entry - (orb_range * 2)
-            
+
         return {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2}
 
 class SignalTracker:
     """Robust signal tracker with file locking."""
-    
-    def __init__(self, stats=None, config=None):
+
+    def __init__(self, stats: Optional[Any] = None, config: Optional[Dict[str, Any]] = None) -> None:
         self.stats = stats
         self.config = config or {}
         self.state_lock = threading.Lock()
         self.state = self._load_state()
 
-    def _empty_state(self):
+    def _empty_state(self) -> Dict[str, Any]:
         return {"last_alerts": {}, "open_signals": {}, "last_result_notifications": {}}
 
-    def _load_state(self):
+    def _load_state(self) -> Dict[str, Any]:
         if STATE_FILE.exists():
             try:
                 with open(STATE_FILE, 'r') as f:
-                    return json.load(f)
+                    return cast(Dict[str, Any], json.load(f))
             except Exception:
                 return self._empty_state()
         return self._empty_state()
 
-    def _save_state(self):
+    def _save_state(self) -> None:
         with self.state_lock:
             temp_file = STATE_FILE.with_suffix('.tmp')
             try:
@@ -242,7 +285,7 @@ class SignalTracker:
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
 
-    def is_duplicate(self, symbol, exchange, timestamp):
+    def is_duplicate(self, symbol: str, exchange: str, timestamp: int) -> bool:
         # ORB is daily/session based. We assume one signal per session per symbol per direction is enough?
         # Better: Check if we have an open signal for this symbol+exchange
         open_signals = self.state.get("open_signals", {})
@@ -253,19 +296,19 @@ class SignalTracker:
                 return True
         return False
 
-    def add_signal(self, signal: ORBSignal):
+    def add_signal(self, signal: ORBSignal) -> None:
         signals = self.state.setdefault("open_signals", {})
         sig_id = f"{signal.symbol}-{signal.timestamp}"
         signals[sig_id] = signal.as_dict()
         self._save_state()
-        
+
         if self.stats:
             self.stats.record_open(
                 sig_id, signal.symbol, signal.direction, signal.entry, signal.timestamp,
                 extra={"exchange": signal.exchange, "orb_range": f"{signal.orb_low}-{signal.orb_high}"}
             )
 
-    def check_open_signals(self, client_map, notifier):
+    def check_open_signals(self, client_map: Dict[str, Any], notifier: Optional[Any]) -> None:
         signals = self.state.get("open_signals", {})
         if not signals: return
         
@@ -315,21 +358,30 @@ class SignalTracker:
                 elif price >= sl: res = "SL"
             
             if res:
-                pnl = (price - entry)/entry * 100 if direction == "BULLISH" else (entry - price)/entry * 100
-                msg = f"🎯 {display_symbol} ORB {res} HIT!\n💰 PnL: {pnl:.2f}%"
-                
+                msg = format_result_message(
+                    symbol=display_symbol,
+                    direction=direction,
+                    result=res,
+                    entry=entry,
+                    exit_price=price,
+                    stop_loss=sl,
+                    tp1=tp1,
+                    tp2=tp2,
+                    signal_id=sig_id,
+                )
+
                 if notifier:
                     notifier.send_message(msg)
                     last_notifs[display_symbol] = datetime.now(timezone.utc).isoformat()
-                    
+
                 if self.stats: self.stats.record_close(sig_id, price, res)
-                
+
                 del signals[sig_id]
                 updated = True
         
         if updated: self._save_state()
 
-    def check_reversal(self, symbol, new_direction, notifier):
+    def check_reversal(self, symbol: str, new_direction: str, notifier: Optional[Any]) -> None:
         signals = self.state.get("open_signals", {})
         for sig_id, payload in signals.items():
             if payload.get("symbol") == symbol:
@@ -340,32 +392,63 @@ class SignalTracker:
 
 class ORBBot:
     """Refactored ORB Bot."""
-    
-    def __init__(self, config_path: Path):
+
+    def __init__(self, config_path: Path) -> None:
         self.config = load_json_config(config_path)
         self.watchlist = self._load_watchlist()
-        self.analyzer = ORBAnalyzer(self.config)
-        self.tracker = SignalTracker(SignalStats("ORB Bot", STATS_FILE) if SignalStats else None, self.config)
+
+        # Load centralized config if available
+        self.config_manager: Optional[Any] = None
+        self.risk_config: Optional[Any] = None
+        if get_config_manager is not None:
+            try:
+                self.config_manager = get_config_manager()
+                self.risk_config = self.config_manager.get_effective_risk("orb_bot", "default")
+                logger.info("Loaded centralized config from TradeConfigManager")
+            except Exception as e:
+                logger.warning(f"Could not load centralized config: {e}")
+
+        self.analyzer = ORBAnalyzer(self.config, risk_config=self.risk_config)
+        self.tracker = SignalTracker(SignalStats("ORB Bot", STATS_FILE), self.config)
         self.notifier = self._init_notifier()
-        
+
         heartbeat = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
         self.health_monitor = HealthMonitor("ORB Bot", self.notifier, heartbeat_interval=heartbeat) if HealthMonitor and self.notifier else None
-        
+
+        # Initialize rate limit handler from config
+        rate_cfg = self.config.get("rate_limit", {})
+        self.rate_handler = None
+        if RateLimitHandler:
+            self.rate_handler = RateLimitHandler(
+                base_delay=rate_cfg.get("base_delay_seconds", 0.5),
+                max_retries=rate_cfg.get("max_retries", 5),
+                backoff_factor=rate_cfg.get("backoff_multiplier", 2.0),
+                max_backoff=rate_cfg.get("rate_limit_backoff_max", 30.0)
+            )
+            logger.info("RateLimitHandler initialized for API protection")
+
+        # Initialize exchange clients with rate limiting
         self.clients = {}
         for name, cfg in EXCHANGE_CONFIG.items():
             try:
-                self.clients[name] = cfg["factory"](cfg["params"])
+                raw_client = cfg["factory"](cfg["params"])
+                # Wrap with rate limiting if available
+                if RateLimitedExchange and self.rate_handler:
+                    self.clients[name] = RateLimitedExchange(raw_client, self.rate_handler)
+                    logger.debug(f"Exchange {name} wrapped with RateLimitedExchange")
+                else:
+                    self.clients[name] = raw_client
             except Exception as e:
                 logger.error(f"Failed to init {name}: {e}")
 
-    def _load_watchlist(self):
+    def _load_watchlist(self) -> List[Dict[str, Any]]:
         if not WATCHLIST_FILE.exists(): return []
         try:
-            return json.loads(WATCHLIST_FILE.read_text())
+            return cast(List[Dict[str, Any]], json.loads(WATCHLIST_FILE.read_text()))
         except Exception: return []
 
-    def _init_notifier(self):
-        if not TelegramNotifier: return None
+    def _init_notifier(self) -> Optional[Any]:
+        if TelegramNotifier is None: return None
         token = os.getenv("TELEGRAM_BOT_TOKEN_ORB") or os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         return TelegramNotifier(bot_token=token, chat_id=chat_id, signals_log_file=str(LOG_DIR/"orb_signals.json")) if token and chat_id else None
@@ -376,7 +459,7 @@ class ORBBot:
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         return int(start.timestamp() * 1000)
 
-    def run(self, run_once: bool = False):
+    def run(self, run_once: bool = False) -> None:
         logger.info("Starting Refactored ORB Bot...")
         if self.health_monitor: self.health_monitor.send_startup_message()
         
@@ -385,13 +468,15 @@ class ORBBot:
                 session_start = self.get_session_start_ts()
                 
                 for item in self.watchlist:
-                    symbol = item.get("symbol")
-                    exchange = item.get("exchange", "mexc")
+                    symbol: Optional[str] = item.get("symbol")
+                    exchange: str = item.get("exchange", "mexc")
                     timeframe = "5m" # Default for monitoring
-                    
+
+                    if not symbol: continue
+
                     client = self.clients.get(exchange)
                     if not client: continue
-                    
+
                     try:
                         # Fetch OHLCV since session start (plus buffer)
                         # We need enough candles to form the ORB window (e.g. 60 mins)
@@ -399,28 +484,36 @@ class ORBBot:
                         ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=limit)
                         ticker = client.fetch_ticker(resolve_symbol(symbol))
                         price = ticker.get('last')
-                        
+
                     except Exception as e:
                         logger.error(f"Error fetching {symbol}: {e}")
                         continue
-                        
+
                     if not price: continue
-                    
+
                     # 1. Calculate ORB Level
                     orb = self.analyzer.calculate_orb(ohlcv, session_start)
-                    
+
                     # Only proceed if we have a valid ORB range established
                     if orb:
                         # 2. Detect Breakout
                         direction = self.analyzer.detect_breakout(price, orb)
-                        
+
                         if direction:
                             # 3. Deduplicate (Check if we already alerted this session)
                             if not self.tracker.is_duplicate(symbol, exchange, session_start):
-                                
-                                # 4. Targets
-                                targets = self.analyzer.calculate_targets(price, direction, orb)
-                                
+
+                                # Update risk config for specific symbol if using centralized config
+                                if self.config_manager:
+                                    try:
+                                        symbol_risk = self.config_manager.get_effective_risk("orb_bot", symbol)
+                                        self.analyzer.risk_config = symbol_risk
+                                    except Exception:
+                                        pass  # Use existing risk_config
+
+                                # 4. Targets (pass ohlcv for ATR-based TPSLCalculator)
+                                targets = self.analyzer.calculate_targets(price, direction, orb, ohlcv=ohlcv)
+
                                 signal = ORBSignal(
                                     symbol=symbol, direction=direction,
                                     entry=price, stop_loss=targets['sl'],
@@ -430,7 +523,7 @@ class ORBBot:
                                     breakout_type="ORB Session Breakout",
                                     orb_high=orb.high, orb_low=orb.low, range_pct=orb.range_pct
                                 )
-                                
+
                                 self.tracker.check_reversal(symbol, direction, self.notifier)
                                 self.tracker.add_signal(signal)
                                 self._send_alert(signal)
@@ -450,21 +543,26 @@ class ORBBot:
         
         if self.health_monitor: self.health_monitor.send_shutdown_message()
 
-    def _send_alert(self, signal: ORBSignal):
-        emoji = "🚀" if signal.direction == "BULLISH" else "🔻"
-        safe_sym = html.escape(signal.symbol)
-        msg = (
-            f"{emoji} <b>ORB BREAKOUT - {safe_sym}</b>\n\n"
-            f"📈 Direction: {signal.direction}\n"
-            f"💰 Entry: {signal.entry:.6f}\n"
-            f"📊 Range: {signal.range_pct:.2f}% (${signal.orb_low:.4f} - ${signal.orb_high:.4f})\n\n"
-            f"🛑 Stop: {signal.stop_loss:.6f}\n"
-            f"🎯 TP1: {signal.take_profit_1:.6f}\n"
-            f"🎯 TP2: {signal.take_profit_2:.6f}"
-        )
-        if self.notifier: self.notifier.send_message(msg)
+    def _send_alert(self, signal: ORBSignal) -> None:
+        # Build extra info with ORB-specific data
+        extra_info = f"ORB Range: {signal.range_pct:.2f}% (${signal.orb_low:.4f} - ${signal.orb_high:.4f})"
 
-def main():
+        msg = format_signal_message(
+            bot_name="ORB",
+            symbol=signal.symbol,
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            tp2=signal.take_profit_2,
+            exchange=signal.exchange.upper(),
+            timeframe=signal.timeframe,
+            extra_info=extra_info,
+        )
+        if self.notifier:
+            self.notifier.send_message(msg)
+
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="orb_config.json")
     parser.add_argument("--once", action="store_true")

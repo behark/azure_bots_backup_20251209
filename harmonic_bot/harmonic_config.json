@@ -1,6 +1,6 @@
 {
   "exchange_settings": {
-    "active_exchange": "mexc",
+    "active_exchange": "binance",
     "check_exchange_for_duplicates": true,
     "check_timeframe_for_duplicates": true
   },
@@ -33,7 +33,7 @@
       "Butterfly": 0.18,
       "Crab": 0.18,
       "Deep Crab": 0.18,
-      "ABCD": 0.20
+      "ABCD": 0.2
     },
     "zigzag_atr_multiplier": 2.5,
     "min_leg_candles": 2,

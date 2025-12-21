@@ -1,9 +1,9 @@
 import logging
-import requests
+import requests  # type: ignore[import-untyped]
 import json
 import secrets
 import string
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -36,7 +36,7 @@ class TelegramNotifier:
         
         logger.info("Telegram notifier initialized")
     
-    def save_signal_to_json(self, signal: Dict, signals_log_file: Optional[str] = None, signal_id: Optional[str] = None) -> bool:
+    def save_signal_to_json(self, signal: Dict[str, Any], signals_log_file: Optional[str] = None, signal_id: Optional[str] = None) -> bool:
         try:
             log_file = Path(signals_log_file or self.signals_log_file)
 
@@ -112,7 +112,7 @@ class TelegramNotifier:
             logger.error(f"Unexpected error sending message: {e}")
             return False
     
-    def send_signal_alert(self, signal: Dict) -> bool:
+    def send_signal_alert(self, signal: Dict[str, Any]) -> bool:
         try:
             action = signal['action']
             symbol = signal['symbol']
@@ -176,7 +176,7 @@ class TelegramNotifier:
             logger.error(f"Error formatting signal alert: {e}")
             return False
     
-    def send_startup_message(self, pairs: list, available_pairs: dict) -> bool:
+    def send_startup_message(self, pairs: List[str], available_pairs: Dict[str, bool]) -> bool:
         try:
             available_count = sum(1 for v in available_pairs.values() if v)
             total_count = len(pairs)

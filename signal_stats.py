@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from file_lock import file_lock
 
@@ -36,7 +36,7 @@ class SignalStats:
         self.file_path = file_path
         self.data = self._load()
 
-    def symbol_tp_sl_counts(self, symbol: str) -> dict:
+    def symbol_tp_sl_counts(self, symbol: str) -> Dict[str, int]:
         """Return TP1/TP2/SL counts for a given symbol from history.
 
         Symbol must match the stored `symbol` field exactly (e.g. "ON/USDT").
@@ -57,7 +57,7 @@ class SignalStats:
         if self.file_path.exists():
             try:
                 with file_lock(self.file_path):
-                    return json.loads(self.file_path.read_text())
+                    return cast(Dict[str, object], json.loads(self.file_path.read_text()))
             except json.JSONDecodeError:
                 return {"open": {}, "history": []}
         return {"open": {}, "history": []}

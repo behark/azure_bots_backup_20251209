@@ -102,9 +102,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict, cast
+from types import FrameType
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -117,7 +118,7 @@ STATS_FILE = LOG_DIR / "diy_stats.json"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Setup enhanced logging with rotation
-def setup_logging(log_level: str = "INFO", enable_detailed: bool = False):
+def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> logging.Logger:
     """Setup enhanced logging with rotation."""
     detailed_format = "%(asctime)s | %(levelname)-8s | [%(name)s:%(funcName)s:%(lineno)d] | %(message)s"
     simple_format = "%(asctime)s | %(levelname)-8s | %(message)s"
@@ -168,28 +169,17 @@ except ImportError:
 
 sys.path.append(str(BASE_DIR.parent))
 
-# Safe imports with independent error handling
-from safe_import import safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator, CalculationMethod
+from trade_config import get_config_manager
 
-imports = [
-    ('notifier', 'TelegramNotifier', {}),
-    ('signal_stats', 'SignalStats', {}),
-    ('health_monitor', 'HealthMonitor', {}),
-    ('health_monitor', 'RateLimiter', {}),
-    ('tp_sl_calculator', 'TPSLCalculator', {}),
-    ('tp_sl_calculator', 'CalculationMethod', {}),
-    ('trade_config', 'get_config_manager', {}),
-]
-
-components = safe_import_multiple(imports, logger_instance=logger)
-
-TelegramNotifier = components['TelegramNotifier']
-SignalStats = components['SignalStats']
-HealthMonitor = components['HealthMonitor']
-RateLimiter = components['RateLimiter']
-TPSLCalculator = components['TPSLCalculator']
-CalculationMethod = components['CalculationMethod']
-get_config_manager = components['get_config_manager']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing - rate_limit_handler has different API
 
 
 class WatchItem(TypedDict, total=False):
@@ -577,7 +567,7 @@ class MultiIndicatorAnalyzer:
             rsi = 100 - (100 / (1 + rs))
         return rsi
 
-    def calculate_stoch_rsi(self, closes: np.ndarray) -> tuple:
+    def calculate_stoch_rsi(self, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Calculate Stochastic RSI (K, D)."""
         period = self.config.get("stoch_rsi_period", 14)
         smooth = self.config.get("stoch_rsi_smooth", 3)
@@ -602,7 +592,7 @@ class MultiIndicatorAnalyzer:
         d_line = smooth_values(k_line, smooth)
         return k_line, d_line
 
-    def calculate_macd(self, closes: np.ndarray) -> tuple:
+    def calculate_macd(self, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Calculate MACD."""
         fast_period = self.config.get("macd_fast", 12)
         slow_period = self.config.get("macd_slow", 26)
@@ -614,7 +604,7 @@ class MultiIndicatorAnalyzer:
         signal = self.calculate_ema(macd, signal_period)
         return macd, signal
 
-    def calculate_adx(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> tuple:
+    def calculate_adx(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Calculate ADX and DI."""
         period = self.config.get("adx_period", 14)
 
@@ -913,7 +903,7 @@ class MultiIndicatorAnalyzer:
             'confidence': confidence,
         }
 
-    def calculate_confluence(self, results: Dict[str, Dict]) -> tuple:
+    def calculate_confluence(self, results: Dict[str, Dict[str, Any]]) -> Tuple[str, float, float, float]:
         """Calculate overall confluence score."""
         # CRITICAL FIX: Early return if no results to process
         if not results:
@@ -1046,8 +1036,8 @@ class MultiIndicatorAnalyzer:
 class MexcClient:
     """MEXC exchange client wrapper with caching."""
 
-    def __init__(self, rate_limiter: Optional[RateLimiter] = None,
-                 ohlcv_cache_ttl: int = 60, ticker_cache_ttl: int = 5):
+    def __init__(self, rate_limiter: Optional[Any] = None,
+                 ohlcv_cache_ttl: int = 60, ticker_cache_ttl: int = 5) -> None:
         """
         Initialize MEXC client with caching.
 
@@ -1056,15 +1046,15 @@ class MexcClient:
             ohlcv_cache_ttl: OHLCV cache TTL in seconds (default: 60s)
             ticker_cache_ttl: Ticker cache TTL in seconds (default: 5s)
         """
-        self.exchange = ccxt.mexc({  # type: ignore[call-arg]
+        self.exchange: Any = ccxt.binanceusdm({
             "enableRateLimit": True,
             "options": {"defaultType": "swap"}
         })
         self.rate_limiter = rate_limiter
 
         # HIGH PRIORITY FIX: Add caching to reduce API calls
-        self._ohlcv_cache: Dict[str, tuple] = {}  # key -> (data, timestamp)
-        self._ticker_cache: Dict[str, tuple] = {}  # key -> (data, timestamp)
+        self._ohlcv_cache: Dict[str, Tuple[Any, float]] = {}  # key -> (data, timestamp)
+        self._ticker_cache: Dict[str, Tuple[Any, float]] = {}  # key -> (data, timestamp)
         self._ohlcv_cache_ttl = ohlcv_cache_ttl
         self._ticker_cache_ttl = ticker_cache_ttl
         self._cache_hits = 0
@@ -1102,7 +1092,7 @@ class MexcClient:
         # Otherwise, add both
         return f"{symbol}/USDT:USDT"
 
-    def _is_cache_valid(self, cache_entry: Optional[tuple], ttl: int) -> bool:
+    def _is_cache_valid(self, cache_entry: Optional[Tuple[Any, float]], ttl: int) -> bool:
         """Check if cache entry is still valid."""
         if cache_entry is None:
             return False
@@ -1113,16 +1103,16 @@ class MexcClient:
         """Generate cache key for OHLCV data."""
         return f"{symbol}:{timeframe}:{limit}"
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 300) -> list:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 300) -> List[Any]:
         """Fetch OHLCV data with caching."""
         cache_key = self._get_ohlcv_cache_key(symbol, timeframe, limit)
 
         # HIGH PRIORITY FIX: Check cache first
         cache_entry = self._ohlcv_cache.get(cache_key)
-        if self._is_cache_valid(cache_entry, self._ohlcv_cache_ttl):
+        if self._is_cache_valid(cache_entry, self._ohlcv_cache_ttl) and cache_entry is not None:
             self._cache_hits += 1
             logger.debug("OHLCV cache hit for %s (hits: %d)", symbol, self._cache_hits)
-            return cache_entry[0]  # Return cached data
+            return cast(List[Any], cache_entry[0])  # Return cached data
 
         self._cache_misses += 1
 
@@ -1140,19 +1130,19 @@ class MexcClient:
 
             if self.rate_limiter:
                 self.rate_limiter.record_success(f"mexc_{symbol}")
-            return result
-        except Exception as e:
+            return cast(List[Any], result)
+        except Exception:
             if self.rate_limiter:
                 self.rate_limiter.record_error(f"mexc_{symbol}")
             raise
 
-    def fetch_ticker(self, symbol: str) -> dict:
+    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch ticker data with caching."""
         # HIGH PRIORITY FIX: Check cache first
         cache_entry = self._ticker_cache.get(symbol)
-        if self._is_cache_valid(cache_entry, self._ticker_cache_ttl):
+        if self._is_cache_valid(cache_entry, self._ticker_cache_ttl) and cache_entry is not None:
             self._cache_hits += 1
-            return cache_entry[0]  # Return cached data
+            return cast(Dict[str, Any], cache_entry[0])  # Return cached data
 
         self._cache_misses += 1
 
@@ -1166,13 +1156,13 @@ class MexcClient:
 
             if self.rate_limiter:
                 self.rate_limiter.record_success(f"mexc_{symbol}")
-            return result
-        except Exception as e:
+            return cast(Dict[str, Any], result)
+        except Exception:
             if self.rate_limiter:
                 self.rate_limiter.record_error(f"mexc_{symbol}")
             raise
 
-    def fetch_tickers(self, symbols: List[str]) -> Dict[str, dict]:
+    def fetch_tickers(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Fetch multiple tickers in a single API call (batch).
 
@@ -1193,7 +1183,7 @@ class MexcClient:
 
         for symbol in symbols:
             cache_entry = self._ticker_cache.get(symbol)
-            if self._is_cache_valid(cache_entry, self._ticker_cache_ttl):
+            if self._is_cache_valid(cache_entry, self._ticker_cache_ttl) and cache_entry is not None:
                 result[symbol] = cache_entry[0]
                 self._cache_hits += 1
             else:
@@ -1415,7 +1405,7 @@ class BotState:
             # Return a shallow copy to prevent external modification
             return cast(Dict[str, Dict[str, Any]], dict(signals))
 
-    def cleanup_stale_signals(self, max_age_hours: int = 24, stats=None) -> int:
+    def cleanup_stale_signals(self, max_age_hours: int = 24, stats: Optional[Any] = None) -> int:
         """Remove signals older than max_age_hours and archive to stats."""
         signals = self.iter_signals()
         now = datetime.now(timezone.utc)
@@ -1468,7 +1458,7 @@ class DIYBot:
 
         # Initialize components
         self.notifier = self._init_notifier()
-        self.stats = SignalStats("DIY Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("DIY Bot", STATS_FILE)
 
         # Initialize Health Monitor with RateLimiter
         health_check_interval = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
@@ -1583,7 +1573,7 @@ class DIYBot:
 
         return count
 
-    def _init_notifier(self):
+    def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
             return None
@@ -1611,7 +1601,8 @@ class DIYBot:
             return
 
         signals = self.state.iter_signals()
-        stats_open = self.stats.data.get("open", {})
+        stats_data = getattr(self.stats, 'data', {})
+        stats_open: Dict[str, Any] = stats_data.get("open", {}) if isinstance(stats_data, dict) else {}
         synced = 0
 
         for signal_id, payload in signals.items():
@@ -1645,27 +1636,8 @@ class DIYBot:
         tp2: float
     ) -> str:
         """Format enhanced result message with performance history."""
-        # Calculate P&L
-        if direction == "BULLISH":
-            pnl_pct = ((exit - entry) / entry) * 100
-        else:  # BEARISH
-            pnl_pct = ((entry - exit) / entry) * 100
-
-        emoji = "🟢" if result in ["TP1", "TP2"] else "🔴"
-
-        lines = [
-            f"{emoji} <b>{direction} {symbol} - {result} HIT!</b>",
-            "",
-            f"💰 Entry: <code>{entry:.6f}</code>",
-            f"🎯 Exit: <code>{exit:.6f}</code>",
-            f"📊 PnL: <b>{pnl_pct:+.2f}%</b>",
-            "",
-            f"🛑 SL: <code>{sl:.6f}</code>",
-            f"🎯 TP1: <code>{tp1:.6f}</code>",
-            f"🎯 TP2: <code>{tp2:.6f}</code>",
-        ]
-
-        # Add performance history
+        # Get performance stats
+        perf_stats = None
         if self.stats:
             counts = self.stats.symbol_tp_sl_counts(symbol)
             tp1_count = counts.get("TP1", 0)
@@ -1674,19 +1646,28 @@ class DIYBot:
             total = tp1_count + tp2_count + sl_count
 
             if total > 0:
-                win_rate = (tp1_count + tp2_count) / total * 100.0
                 avg_pnl = self.stats.get_avg_pnl(symbol) if hasattr(self.stats, 'get_avg_pnl') else 0.0
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total,
+                    "avg_pnl": avg_pnl,
+                }
 
-                lines.extend([
-                    "",
-                    f"📈 <b>{symbol} Performance History:</b>",
-                    f"   TP1: {tp1_count} | TP2: {tp2_count} | SL: {sl_count}",
-                    f"   Win Rate: <b>{win_rate:.1f}%</b> ({tp1_count+tp2_count}/{total})",
-                    f"   Avg PnL: <b>{avg_pnl:+.2f}%</b>",
-                ])
-
-        lines.append(f"\n🆔 <code>{signal_id}</code>")
-        return "\n".join(lines)
+        return format_result_message(
+            symbol=symbol,
+            direction=direction,
+            result=result,
+            entry=entry,
+            exit_price=exit,
+            stop_loss=sl,
+            tp1=tp1,
+            tp2=tp2,
+            signal_id=signal_id,
+            performance_stats=perf_stats,
+        )
 
     def run(self, loop: bool = False, track_only: bool = False) -> None:
         if not self.watchlist:
@@ -1980,94 +1961,36 @@ class DIYBot:
             return None
         entry = float(current_price)
 
-        # Calculate TP/SL using TPSLCalculator if available
-        if TPSLCalculator is not None:
-            tp_sl_config = self.config.get("tp_sl", {})
-            sl_mult = tp_sl_config.get("atr_sl_multiplier", 1.5)
-            tp1_mult = tp_sl_config.get("atr_tp1_multiplier", 2.4)
-            tp2_mult = tp_sl_config.get("atr_tp2_multiplier", 3.6)
-            min_rr = tp_sl_config.get("min_risk_reward_tp1", 1.5)
+        # Calculate TP/SL using centralized TPSLCalculator
+        tp_sl_config = self.config.get("tp_sl", {})
+        sl_mult = tp_sl_config.get("atr_sl_multiplier", 1.5)
+        tp1_mult = tp_sl_config.get("atr_tp1_multiplier", 2.4)
+        tp2_mult = tp_sl_config.get("atr_tp2_multiplier", 3.6)
+        min_rr = tp_sl_config.get("min_risk_reward_tp1", 1.5)
+        min_sl_pct = tp_sl_config.get("min_sl_percent", 0.05)
 
-            min_sl_pct = tp_sl_config.get("min_sl_percent", 0.05)
-            calculator = TPSLCalculator(min_risk_reward=min_rr, min_sl_percent=min_sl_pct)
-            levels = calculator.calculate(
-                entry=entry,
-                direction=direction,
-                atr=atr,
-                sl_multiplier=sl_mult,
-                tp1_multiplier=tp1_mult,
-                tp2_multiplier=tp2_mult,
-                market_regime=regime_info['regime'],
-                adx_strength=regime_info['adx_strength'],
-            )
+        calculator = TPSLCalculator(min_risk_reward=min_rr, min_sl_percent=min_sl_pct)
+        levels = calculator.calculate(
+            entry=entry,
+            direction=direction,
+            atr=atr,
+            sl_multiplier=sl_mult,
+            tp1_multiplier=tp1_mult,
+            tp2_multiplier=tp2_mult,
+            market_regime=regime_info['regime'],
+            adx_strength=regime_info['adx_strength'],
+        )
 
-            if levels.is_valid:
-                sl = float(levels.stop_loss)
-                tp1 = float(levels.take_profit_1)
-                tp2 = float(levels.take_profit_2)
+        if not levels.is_valid:
+            logger.info("%s: Signal rejected - %s", symbol, levels.rejection_reason)
+            return None
 
-                # Validate TP/SL consistency
-                try:
-                    if direction == "BULLISH":
-                        assert sl < entry, f"DIY BULLISH: SL {sl} should be < entry {entry}"
-                        assert tp1 > entry, f"DIY BULLISH: TP1 {tp1} should be > entry {entry}"
-                        assert tp2 > entry, f"DIY BULLISH: TP2 {tp2} should be > entry {entry}"
-                    else:  # BEARISH
-                        assert sl > entry, f"DIY BEARISH: SL {sl} should be > entry {entry}"
-                        assert tp1 < entry, f"DIY BEARISH: TP1 {tp1} should be < entry {entry}"
-                        assert tp2 < entry, f"DIY BEARISH: TP2 {tp2} should be < entry {entry}"
-                except AssertionError as e:
-                    logger.error("%s: TP/SL validation failed: %s", symbol, e)
-                    return None
+        sl = float(levels.stop_loss)
+        tp1 = float(levels.take_profit_1)
+        tp2 = float(levels.take_profit_2)
 
-                logger.debug("%s %s signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | Conf: %.1f%%",
-                           symbol, direction, entry, sl, tp1, tp2, confidence)
-            else:
-                logger.info("%s: Signal rejected - %s", symbol, levels.rejection_reason)
-                return None
-        else:
-            # Fallback calculation using config multipliers
-            tp_sl_config = self.config.get("tp_sl", {})
-            sl_mult = tp_sl_config.get("atr_sl_multiplier", 1.0)
-            tp1_mult = tp_sl_config.get("atr_tp1_multiplier", 2.0)
-            tp2_mult = tp_sl_config.get("atr_tp2_multiplier", 3.0)
-
-            # Apply dynamic regime scaling to fallback
-            market_regime = regime_info['regime']
-            adx_strength = regime_info['adx_strength']
-            
-            if market_regime == "TRENDING":
-                sl_mult *= 1.2
-                trend_boost = min(1.5, adx_strength / 25.0)
-                tp1_mult *= trend_boost
-                tp2_mult *= (trend_boost * 1.2)
-            elif market_regime == "CHOPPY":
-                sl_mult *= 0.8
-                tp1_mult *= 0.7
-                tp2_mult *= 0.7
-
-            if direction == "BULLISH":
-                sl = float(entry - (atr * sl_mult))
-                tp1 = float(entry + (atr * tp1_mult))
-                tp2 = float(entry + (atr * tp2_mult))
-            else:
-                sl = float(entry + (atr * sl_mult))
-                tp1 = float(entry - (atr * tp1_mult))
-                tp2 = float(entry - (atr * tp2_mult))
-
-            # Minimal R:R validation for fallback
-            risk = abs(entry - sl)
-            if risk > 0:
-                rr1 = abs(tp1 - entry) / risk
-                min_rr = tp_sl_config.get("min_risk_reward_tp1", 1.0)
-                
-                # Allow a small 5% buffer on R:R for fallback signals
-                effective_min_rr = min_rr * 0.95
-                
-                if rr1 < effective_min_rr:
-                    logger.info("%s: Signal rejected (Fallback) - R:R too low (%.2f < %.2f)", 
-                               symbol, rr1, effective_min_rr)
-                    return None
+        logger.debug("%s %s signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | Conf: %.1f%%",
+                   symbol, direction, entry, sl, tp1, tp2, confidence)
 
         return DIYSignal(
             symbol=symbol,
@@ -2084,93 +2007,48 @@ class DIYBot:
         )
 
     def _format_message(self, signal: DIYSignal) -> str:
-        """Format Telegram message for signal."""
-        direction = signal.direction
-        emoji = "🟢" if direction == "BULLISH" else "🔴"
-
-        # Confidence levels
-        if signal.confidence >= 80:
-            conf_emoji = "🔥🔥🔥"
-            conf_text = "EXTREME"
-        elif signal.confidence >= 70:
-            conf_emoji = "🔥🔥"
-            conf_text = "VERY HIGH"
-        elif signal.confidence >= 60:
-            conf_emoji = "🔥"
-            conf_text = "HIGH"
-        else:
-            conf_emoji = "⚡"
-            conf_text = "MODERATE"
-
-        current_price = signal.current_price if isinstance(signal.current_price, (int, float)) else None
-        lines = [
-            f"{emoji} <b>{direction} DIY MULTI-INDICATOR - {signal.symbol}</b> {conf_emoji}",
-            "",
-            "🎯 <b>Strategy:</b> 30+ Indicator Confluence",
-            f"📊 <b>Confidence:</b> {conf_text} ({signal.confidence:.1f}%)",
-        ]
-
-        # Add symbol-specific performance history
+        """Format Telegram message for signal using centralized template."""
+        # Get performance stats
+        perf_stats = None
         if self.stats is not None:
             symbol_key = signal.symbol
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1 = counts.get("TP1", 0)
-            tp2 = counts.get("TP2", 0)
-            sl = counts.get("SL", 0)
-            total = tp1 + tp2 + sl
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
 
             if total > 0:
-                win_rate = (tp1 + tp2) / total * 100.0
-                # Get average PnL for this symbol
                 avg_pnl = self.stats.get_avg_pnl(symbol_key) if hasattr(self.stats, 'get_avg_pnl') else 0.0
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total,
+                    "avg_pnl": avg_pnl,
+                }
 
-                lines.extend([
-                    "",
-                    f"📈 <b>{symbol_key} Performance History:</b>",
-                    f"   TP1: {tp1} | TP2: {tp2} | SL: {sl}",
-                    f"   Win Rate: <b>{win_rate:.1f}%</b> ({tp1+tp2}/{total})",
-                    f"   Avg PnL: <b>{avg_pnl:+.2f}%</b>",
-                ])
-            else:
-                lines.extend([
-                    "",
-                    f"📈 <b>{symbol_key}:</b> First signal for this pair",
-                ])
+        # Build extra info with confluence scores
+        extra_info = f"Long: {signal.long_score:.0f} | Short: {signal.short_score:.0f}"
 
-        lines.append("")
-        if current_price is not None:
-            lines.append(f"💰 <b>Current Price:</b> <code>{current_price:.6f}</code>")
+        current_price = signal.current_price if isinstance(signal.current_price, (int, float)) else None
 
-        lines.extend([
-            "",
-            "<b>🎯 TRADE LEVELS:</b>",
-            f"🟢 Entry: <code>{signal.entry:.6f}</code>",
-            f"🛑 Stop Loss: <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 TP1: <code>{signal.take_profit_1:.6f}</code>",
-            f"🚀 TP2: <code>{signal.take_profit_2:.6f}</code>",
-        ])
-
-        # Calculate R:R
-        risk = abs(signal.entry - signal.stop_loss)
-        reward1 = abs(signal.take_profit_1 - signal.entry)
-        reward2 = abs(signal.take_profit_2 - signal.entry)
-
-        if risk > 0:
-            rr1 = reward1 / risk
-            rr2 = reward2 / risk
-            lines.append("")
-            lines.append(f"⚖️ <b>Risk/Reward:</b> 1:{rr1:.2f} (TP1) | 1:{rr2:.2f} (TP2)")
-
-        # Add confluence scores
-        lines.extend([
-            "",
-            f"📈 Long Score: {signal.long_score:.0f}",
-            f"📉 Short Score: {signal.short_score:.0f}",
-            "",
-            f"⏱️ {signal.timestamp}",
-        ])
-
-        return "\n".join(lines)
+        return format_signal_message(
+            bot_name="DIY",
+            symbol=signal.symbol,
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            tp2=signal.take_profit_2,
+            confidence=signal.confidence,
+            exchange="MEXC",
+            timeframe="15m",
+            current_price=current_price,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
 
     def _monitor_open_signals(self) -> List[Dict[str, Any]]:
         """Monitor open signals for TP/SL hits using batch ticker fetches.

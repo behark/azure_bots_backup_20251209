@@ -16,9 +16,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import FrameType
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -49,28 +50,18 @@ except ImportError:
 
 sys.path.append(str(BASE_DIR.parent))
 
-# Safe imports with independent error handling
-from safe_import import safe_import_multiple
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator
+from trade_config import get_config_manager
 
-imports = [
-    ('notifier', 'TelegramNotifier', None),
-    ('signal_stats', 'SignalStats', None),
-    ('health_monitor', 'HealthMonitor', None),
-    ('health_monitor', 'RateLimiter', None),
-    ('tp_sl_calculator', 'TPSLCalculator', None),
-    ('trade_config', 'get_config_manager', None),
-    ('rate_limit_handler', 'RateLimitHandler', None),
-]
-
-components = safe_import_multiple(imports, logger_instance=logger)
-
-TelegramNotifier = components['TelegramNotifier']
-SignalStats = components['SignalStats']
-HealthMonitor = components['HealthMonitor']
-RateLimiter = components['RateLimiter']
-TPSLCalculator = components['TPSLCalculator']
-get_config_manager = components['get_config_manager']
-RateLimitHandler = components['RateLimitHandler']
+# Optional imports (safe fallback)
+from safe_import import safe_import
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = None  # Disabled for testing
+RateLimitHandler = None  # Disabled - API mismatch with wait_if_needed()
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -128,7 +119,7 @@ class MultiTimeframeAnalyzer:
         "4h": ["1d", "1w"],
     }
     
-    def __init__(self):
+    def __init__(self) -> None:
         pass
     
     def get_higher_timeframes(self, base_tf: str) -> List[str]:
@@ -168,9 +159,9 @@ class MultiTimeframeAnalyzer:
         rsi = 100 - (100 / (1 + rs))
         rsi[:period] = 50
         rsi[-1] = 50 if np.isnan(rsi[-1]) else rsi[-1]
-        return rsi
+        return cast(np.ndarray, rsi)
     
-    def detect_trend(self, ohlcv: list) -> Tuple[str, float]:
+    def detect_trend(self, ohlcv: List[Any]) -> Tuple[str, float]:
         """
         Detect trend direction and strength.
         Returns: (direction, confidence_score)
@@ -199,8 +190,8 @@ class MultiTimeframeAnalyzer:
     
     def analyze_confluence(
         self,
-        base_ohlcv: list,
-        higher_ohlcvs: Dict[str, list]
+        base_ohlcv: List[Any],
+        higher_ohlcvs: Dict[str, List[Any]]
     ) -> Optional[Dict[str, object]]:
         """
         Analyze confluence across timeframes.
@@ -249,81 +240,49 @@ class MultiTimeframeAnalyzer:
         atr: float,
         symbol: str = "",
         strength: str = "MODERATE",
-    ) -> Dict[str, float]:
+    ) -> Optional[Dict[str, float]]:
         """Calculate entry, stop loss, and targets."""
         entry = current_price
         
+        # Adjust SL multiplier based on signal strength
         sl_adjust = {"STRONG": 3.0, "MODERATE": 2.0, "WEAK": 1.5}
-        fallback_sl_mult = sl_adjust.get(strength, 2.0)
-        if TPSLCalculator is not None:
-            if get_config_manager is not None:
-                config_mgr = get_config_manager()
-                risk_config = config_mgr.get_effective_risk("mtf_bot", symbol)
-                base_sl_mult = risk_config.sl_atr_multiplier
-                sl_mult = base_sl_mult * (fallback_sl_mult / 2.0)
-                tp1_mult = risk_config.tp1_atr_multiplier
-                tp2_mult = risk_config.tp2_atr_multiplier
-                min_rr = risk_config.min_risk_reward
-            else:
-                sl_mult, tp1_mult, tp2_mult, min_rr = fallback_sl_mult, 2.0, 3.5, 1.8
+        strength_mult = sl_adjust.get(strength, 2.0)
 
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
-            levels = calculator.calculate(
-                entry=entry,
-                direction=direction,
-                atr=atr,
-                sl_multiplier=sl_mult,
-                tp1_multiplier=tp1_mult,
-                tp2_multiplier=tp2_mult,
-            )
+        # Get risk config and calculate TP/SL using centralized calculator
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("mtf_bot", symbol)
+        base_sl_mult = risk_config.sl_atr_multiplier
+        sl_mult = base_sl_mult * (strength_mult / 2.0)
+        tp1_mult = risk_config.tp1_atr_multiplier
+        tp2_mult = risk_config.tp2_atr_multiplier
+        min_rr = risk_config.min_risk_reward
 
-            if levels.is_valid:
-                targets = {
-                    "entry": entry,
-                    "stop_loss": levels.stop_loss,
-                    "take_profit_1": levels.take_profit_1,
-                    "take_profit_2": levels.take_profit_2,
-                }
-                
-                # Validate TP/SL consistency
-                if direction == "BULLISH":
-                    assert levels.stop_loss < entry, f"MTF BULLISH: SL {levels.stop_loss} should be < entry {entry}"
-                    assert levels.take_profit_1 > entry, f"MTF BULLISH: TP1 {levels.take_profit_1} should be > entry {entry}"
-                else:  # BEARISH
-                    assert levels.stop_loss > entry, f"MTF BEARISH: SL {levels.stop_loss} should be > entry {entry}"
-                    assert levels.take_profit_1 < entry, f"MTF BEARISH: TP1 {levels.take_profit_1} should be < entry {entry}"
-                
-                logger.debug("%s %s MTF signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f",
-                           symbol, direction, entry, levels.stop_loss, levels.take_profit_1, levels.take_profit_2)
-                return targets
-        
-        # Fallback to original calculation
-        if direction == "BULLISH":
-            sl = entry - (atr * 1.5)
-            tp1 = entry + (atr * 2.0)
-            tp2 = entry + (atr * 3.5)
-        else:
-            sl = entry + (atr * 1.5)
-            tp1 = entry - (atr * 2.0)
-            tp2 = entry - (atr * 3.5)
-        
-        # Validate fallback TP/SL
-        if direction == "BULLISH":
-            assert sl < entry, f"MTF BULLISH fallback: SL {sl} should be < entry {entry}"
-            assert tp1 > entry, f"MTF BULLISH fallback: TP1 {tp1} should be > entry {entry}"
-        else:  # BEARISH
-            assert sl > entry, f"MTF BEARISH fallback: SL {sl} should be > entry {entry}"
-            assert tp1 < entry, f"MTF BEARISH fallback: TP1 {tp1} should be < entry {entry}"
-        
+        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        levels = calculator.calculate(
+            entry=entry,
+            direction=direction,
+            atr=atr,
+            sl_multiplier=sl_mult,
+            tp1_multiplier=tp1_mult,
+            tp2_multiplier=tp2_mult,
+        )
+
+        if not levels.is_valid:
+            logger.debug("%s: TPSLCalculator rejected - %s", symbol, levels.rejection_reason)
+            return None
+
+        logger.debug("%s %s MTF signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f",
+                   symbol, direction, entry, levels.stop_loss, levels.take_profit_1, levels.take_profit_2)
+
         return {
             "entry": entry,
-            "stop_loss": sl,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
+            "stop_loss": levels.stop_loss,
+            "take_profit_1": levels.take_profit_1,
+            "take_profit_2": levels.take_profit_2,
         }
     
     @staticmethod
-    def calculate_atr(ohlcv: list, period: int = 14) -> float:
+    def calculate_atr(ohlcv: List[Any], period: int = 14) -> float:
         """Calculate ATR."""
         if len(ohlcv) <= period:
             highs = [x[2] for x in ohlcv]
@@ -350,46 +309,46 @@ class MultiTimeframeAnalyzer:
 
 class MexcClient:
     """MEXC exchange client wrapper."""
-    
-    def __init__(self):
-        self.exchange = ccxt.mexc({
+
+    def __init__(self) -> None:
+        self.exchange: Any = ccxt.binanceusdm({
             "enableRateLimit": True,
             "options": {"defaultType": "swap"}
-        })  # type: ignore[arg-type]
+        })
         self.exchange.load_markets()
-        self.rate_limiter = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
+        self.rate_limiter: Any = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
     
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
         return f"{symbol.upper()}/USDT:USDT"
     
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> list:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
         if self.rate_limiter:
-            return self.rate_limiter.execute(
+            return cast(List[Any], self.rate_limiter.execute(
                 self.exchange.fetch_ohlcv,
                 self._swap_symbol(symbol),
                 timeframe=timeframe,
                 limit=limit
-            )
-        return self.exchange.fetch_ohlcv(
+            ))
+        return cast(List[Any], self.exchange.fetch_ohlcv(
             self._swap_symbol(symbol),
             timeframe=timeframe,
             limit=limit
-        )
-    
-    def fetch_ticker(self, symbol: str) -> dict:
+        ))
+
+    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch ticker data."""
         if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol))
-        return self.exchange.fetch_ticker(self._swap_symbol(symbol))
+            return cast(Dict[str, Any], self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol)))
+        return cast(Dict[str, Any], self.exchange.fetch_ticker(self._swap_symbol(symbol)))
 
 
 # Graceful shutdown handling
 shutdown_requested = False
 
 
-def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:  # pragma: no cover - signal path
     """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
     global shutdown_requested
     shutdown_requested = True
@@ -562,17 +521,17 @@ class MTFBot:
         self.analyzer = MultiTimeframeAnalyzer()
         self.state = BotState(STATE_FILE)
         self.notifier = self._init_notifier()
-        self.stats = SignalStats("MTF Bot", STATS_FILE) if SignalStats else None
+        self.stats = SignalStats("MTF Bot", STATS_FILE)
         self.health_monitor = (
             HealthMonitor("MTF Bot", self.notifier, heartbeat_interval=3600)
             if HealthMonitor else None
         )
         self.rate_limiter = (
-            RateLimiter(calls_per_minute=60, backoff_file=LOG_DIR / "rate_limiter.json")
-            if RateLimiter else None
+            RateLimitHandler(base_delay=0.5, max_retries=5)
+            if RateLimitHandler else None
         )
     
-    def _init_notifier(self):
+    def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
             return None
@@ -734,7 +693,7 @@ class MTFBot:
         
         # Fetch higher timeframes
         higher_tfs = self.analyzer.get_higher_timeframes(timeframe)
-        higher_ohlcvs: Dict[str, list] = {}
+        higher_ohlcvs: Dict[str, List[Any]] = {}
         
         for htf in higher_tfs:
             try:
@@ -783,7 +742,10 @@ class MTFBot:
             symbol=symbol,
             strength=strength_val,
         )
-        
+
+        if targets is None:
+            return None
+
         return MTFSignal(
             symbol=symbol,
             direction=direction_val,
@@ -799,74 +761,48 @@ class MTFBot:
         )
     
     def _format_message(self, signal: MTFSignal) -> str:
-        """Format Telegram message for signal."""
-        direction = signal.direction
-        emoji = "🟢" if direction == "BULLISH" else "🔴"
-        
-        # Strength emoji
-        if signal.strength == "STRONG":
-            strength_emoji = "💪💪💪"
-        elif signal.strength == "MODERATE":
-            strength_emoji = "💪💪"
-        else:
-            strength_emoji = "💪"
-        
-        perf_line = None
+        """Format Telegram message for signal using centralized template."""
+        # Map strength to a numeric value for the template
+        strength_map = {"STRONG": 0.9, "MODERATE": 0.7, "WEAK": 0.5}
+        strength_val = strength_map.get(signal.strength, 0.6)
+
+        # Get performance stats
+        perf_stats = None
         if self.stats is not None:
             symbol_key = f"{signal.symbol}/USDT"
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1 = counts.get("TP1", 0)
-            tp2 = counts.get("TP2", 0)
-            sl = counts.get("SL", 0)
-            total = tp1 + tp2 + sl
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+
             if total > 0:
-                win_rate = (tp1 + tp2) / total * 100.0
-                perf_line = (
-                    f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
-                    f"(Win rate: {win_rate:.1f}%)"
-                )
-            else:
-                perf_line = "📈 <b>History:</b> No previous trades for this symbol"
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total,
+                }
 
-        lines = [
-            f"{emoji} <b>{direction} MTF CONFLUENCE - {signal.symbol}/USDT</b> {strength_emoji}",
-            "",
-            "📊 <b>Strategy:</b> Multi-Timeframe Analysis",
-            f"⚡ <b>Strength:</b> {signal.strength}",
-            f"📈 <b>Confluence:</b> {signal.confluence_pct:.0f}%",
-            f"💰 <b>Current Price:</b> <code>{signal.current_price:.6f}</code>" if signal.current_price is not None else "💰 <b>Current Price:</b> N/A",
-        ]
+        # Build extra info with MTF-specific data
+        extra_info = f"MTF Confluence: {signal.confluence_pct:.0f}% | {signal.strength} | Base TF: {signal.base_timeframe}"
 
-        if perf_line:
-            lines.append(perf_line)
-
-        lines.extend([
-            "",
-            "<b>🎯 TRADE LEVELS:</b>",
-            f"🟢 Entry: <code>{signal.entry:.6f}</code>",
-            f"🛑 Stop Loss: <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 TP1: <code>{signal.take_profit_1:.6f}</code>",
-            f"🚀 TP2: <code>{signal.take_profit_2:.6f}</code>",
-        ])
-        
-        # Calculate R:R
-        risk = abs(signal.entry - signal.stop_loss)
-        reward1 = abs(signal.take_profit_1 - signal.entry)
-        reward2 = abs(signal.take_profit_2 - signal.entry)
-        
-        if risk > 0:
-            rr1 = reward1 / risk
-            rr2 = reward2 / risk
-            lines.append("")
-            lines.append(f"⚖️ <b>Risk/Reward:</b> 1:{rr1:.2f} (TP1) | 1:{rr2:.2f} (TP2)")
-        
-        lines.extend([
-            "",
-            f"⏱️ Base TF: {signal.base_timeframe}",
-            f"🕐 {signal.timestamp}",
-        ])
-        
-        return "\n".join(lines)
+        return format_signal_message(
+            bot_name="MTF",
+            symbol=f"{signal.symbol}/USDT",
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profit_1,
+            tp2=signal.take_profit_2,
+            strength=strength_val,
+            exchange="MEXC",
+            timeframe=signal.base_timeframe,
+            current_price=signal.current_price,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
     
     def _monitor_open_signals(self) -> None:
         """Monitor open signals for TP/SL hits."""

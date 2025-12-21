@@ -32,7 +32,7 @@ import time
 import random
 import logging
 from functools import wraps
-from typing import Any, Callable, Optional, TypeVar, cast
+from typing import Any, Callable, Dict, Optional, TypeVar, cast
 from datetime import datetime, timedelta
 from enum import Enum
 
@@ -86,7 +86,7 @@ def is_transient_error(exception: Exception) -> bool:
         ...         # Fail fast, don't retry
         ...         raise
     """
-    import ccxt
+    import ccxt  # type: ignore[import-not-found]
 
     # CCXT transient errors
     transient_types = (
@@ -174,9 +174,9 @@ def exponential_backoff(
 
     # Add jitter (randomize between 0 and delay)
     if jitter:
-        delay = random.uniform(0, delay)
+        delay = float(random.uniform(0, delay))
 
-    return delay
+    return float(delay)
 
 
 def retry_with_backoff(
@@ -451,10 +451,10 @@ if __name__ == "__main__":
 
     # Example 1: Retry with backoff
     @retry_with_backoff(max_attempts=3, base_delay=1.0)
-    def fetch_ticker(symbol: str) -> dict:
+    def fetch_ticker(symbol: str) -> Dict[str, Any]:
         """Fetch ticker with automatic retry."""
         exchange = ccxt.mexc()
-        return exchange.fetch_ticker(symbol)
+        return cast(Dict[str, Any], exchange.fetch_ticker(symbol))
 
     try:
         ticker = fetch_ticker("BTC/USDT")
@@ -465,10 +465,10 @@ if __name__ == "__main__":
     # Example 2: Circuit breaker
     breaker = CircuitBreaker(failure_threshold=3, timeout=30, name="mexc_api")
 
-    def get_balance():
+    def get_balance() -> Dict[str, Any]:
         """Fetch balance through circuit breaker."""
         exchange = ccxt.mexc({'apiKey': 'xxx', 'secret': 'yyy'})
-        return exchange.fetch_balance()
+        return cast(Dict[str, Any], exchange.fetch_balance())
 
     result = breaker.call(get_balance)
     if result is not None:
@@ -480,11 +480,11 @@ if __name__ == "__main__":
     exchange_breaker = CircuitBreaker(name="exchange")
 
     @retry_with_backoff(max_attempts=3)
-    def resilient_fetch(symbol: str) -> dict:
+    def resilient_fetch(symbol: str) -> Dict[str, Any]:
         """Fetch with retry and circuit breaker protection."""
-        def fetch():
+        def fetch() -> Dict[str, Any]:
             exchange = ccxt.mexc()
-            return exchange.fetch_ticker(symbol)
+            return cast(Dict[str, Any], exchange.fetch_ticker(symbol))
 
         result = exchange_breaker.call(fetch)
         if result is None:

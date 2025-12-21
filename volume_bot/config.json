@@ -41,7 +41,7 @@
       "comment": "Conservative rate limits to avoid bans"
     },
     "execution": {
-      "cycle_interval_seconds": 60,
+      "cycle_interval_seconds": 300,
       "symbol_delay_seconds": 2,
       "health_check_interval_seconds": 3600,
       "enable_startup_notification": true,

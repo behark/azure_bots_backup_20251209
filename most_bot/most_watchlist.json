@@ -33,5 +33,61 @@
     "symbol": "RLS",
     "period": "15m",
     "cooldown_minutes": 30
+  },
+  {
+    "symbol": "TRUTH/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "SOON/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ASR/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ZKJ/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "H/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "FHE/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "NIGHT/USDT",
+    "period": "15m",
+    "cooldown_minutes": 30,
+    "timeframe": "15m",
+    "exchange": "binance",
+    "market_type": "swap"
   }
 ]

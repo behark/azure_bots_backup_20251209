@@ -8,11 +8,19 @@ Example: python3 volume_profile.py APR 15m
 """
 
 import sys
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
+from typing import Any, Dict, List, Optional, Tuple, Union
+import numpy.typing as npt
 
 
-def calculate_volume_profile(highs, lows, closes, volumes, num_rows=24):
+def calculate_volume_profile(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    volumes: List[float],
+    num_rows: int = 24
+) -> Dict[str, Any]:
     """
     Calculate volume profile analysis including Point of Control, Value Area, and High Volume Nodes.
 
@@ -129,7 +137,10 @@ def calculate_volume_profile(highs, lows, closes, volumes, num_rows=24):
     }
 
 
-def calculate_rsi(closes, period=14):
+def calculate_rsi(
+    closes: Union[List[float], "npt.NDArray[np.floating[Any]]"],
+    period: int = 14
+) -> float:
     """
     Calculate Relative Strength Index (RSI) momentum oscillator.
 
@@ -180,10 +191,15 @@ def calculate_rsi(closes, period=14):
     if avg_loss == 0:
         return 100
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    return float(100 - (100 / (1 + rs)))
 
 
-def detect_candlestick_pattern(opens, highs, lows, closes):
+def detect_candlestick_pattern(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float]
+) -> Optional[str]:
     """
     Detect common bullish and bearish candlestick reversal patterns.
 
@@ -276,7 +292,7 @@ def detect_candlestick_pattern(opens, highs, lows, closes):
     return None
 
 
-def analyze_volume_profile(symbol, timeframe="15m"):
+def analyze_volume_profile(symbol: str, timeframe: str = "15m") -> None:
     """
     Perform comprehensive volume profile analysis and generate trading signals for a cryptocurrency.
 
@@ -576,7 +592,7 @@ def analyze_volume_profile(symbol, timeframe="15m"):
     print("=" * 70)
 
 
-def main():
+def main() -> None:
     """
     Command-line interface entry point for volume profile analysis.
 

@@ -1,6 +1,6 @@
 {
   "exchange_settings": {
-    "active_exchange": "mexc",
+    "active_exchange": "binance",
     "check_exchange_for_duplicates": true,
     "check_timeframe_for_duplicates": true
   },
@@ -24,14 +24,14 @@
     "request_timeout_seconds": 30,
     "timeframe_override": "15m",
     "funding_thresholds": {
-        "extreme_positive": 0.0003,
-        "extreme_negative": -0.0003,
-        "high_positive": 0.0002,
-        "high_negative": -0.0002
+      "extreme_positive": 0.0003,
+      "extreme_negative": -0.0003,
+      "high_positive": 0.0002,
+      "high_negative": -0.0002
     },
     "open_interest_thresholds": {
-        "strong_increase_pct": 5.0,
-        "moderate_increase_pct": 2.5
+      "strong_increase_pct": 5.0,
+      "moderate_increase_pct": 2.5
     },
     "volume_spike_threshold": 1.5
   },
@@ -47,7 +47,9 @@
     "cooldown_minutes": 30,
     "max_signal_age_hours": 24,
     "result_notification_cooldown_minutes": 15,
-    "allowed_directions": ["BEARISH"],
+    "allowed_directions": [
+      "BEARISH"
+    ],
     "_comment": "Only BEARISH signals - they have +122% P&L vs -29% for BULLISH"
   },
   "telegram": {

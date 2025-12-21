@@ -3,7 +3,7 @@
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 class HealthMonitor:
     """Monitors bot health and sends periodic heartbeat alerts."""
     
-    def __init__(self, bot_name: str, notifier=None, heartbeat_interval: int = 3600,
-                 error_rate_threshold: int = 10, stale_cycle_minutes: int = 15):
+    def __init__(self, bot_name: str, notifier: Optional[Any] = None, heartbeat_interval: int = 3600,
+                 error_rate_threshold: int = 10, stale_cycle_minutes: int = 15) -> None:
         """
         Initialize health monitor.
         
@@ -34,7 +34,7 @@ class HealthMonitor:
         self.cycle_count = 0
         self.error_count = 0
         self.errors_since_last_alert = 0
-        self.last_errors = []
+        self.last_errors: List[str] = []
         self.max_error_history = 10
         self.alert_sent_for_stale = False
         

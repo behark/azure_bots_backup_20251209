@@ -185,7 +185,7 @@ def get_config_manager() -> TradeConfigManager:
     return _config_manager
 
 
-def create_default_config():
+def create_default_config() -> None:
     """Create a default configuration file."""
     default_symbols = [
         "POWER", "BLUAI", "IRYS", "VVV", "ON", "CLO", 

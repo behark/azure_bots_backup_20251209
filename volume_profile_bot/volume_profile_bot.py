@@ -19,10 +19,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
+from types import FrameType
 from uuid import uuid4
 
-import ccxt
+import ccxt  # type: ignore[import-untyped]
 import numpy as np
 from dotenv import load_dotenv
 
@@ -52,35 +53,21 @@ load_dotenv(BASE_DIR / ".env")
 
 sys.path.insert(0, str(ROOT_DIR))
 
-# Safe imports with independent error handling
+# Required imports (fail fast if missing)
+from message_templates import format_signal_message, format_result_message
+from notifier import TelegramNotifier
+from signal_stats import SignalStats
+from tp_sl_calculator import TPSLCalculator, CalculationMethod
+
+# Optional imports (safe fallback)
 from safe_import import safe_import
-
-TelegramNotifier = safe_import('notifier', 'TelegramNotifier', logger_instance=logger)
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor', logger_instance=logger)
-
-# If TelegramNotifier failed, create fallback stub
-if TelegramNotifier is None:
-    logger.warning("TelegramNotifier not available, using fallback stub")
-
-    class TelegramNotifier:  # type: ignore[no-redef]
-        def __init__(self, bot_token: str, chat_id: str, signals_log_file: Optional[str] = None) -> None:
-            self.bot_token = bot_token
-            self.chat_id = chat_id
-
-        def send_message(self, message: str) -> bool:
-            logger.info("TELEGRAM STUB: %s", message)
-            return True
-
-# SignalStats is critical - raise if not available
-SignalStats = safe_import('signal_stats', 'SignalStats', logger_instance=logger)
-if SignalStats is None:
-    raise RuntimeError("signal_stats module is required for Volume Profile Bot")
 
 
 shutdown_requested = False
 
 
-def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:  # pragma: no cover - signal path
     global shutdown_requested
     shutdown_requested = True
     logger.info("Received %s, shutting down soon", signal.Signals(signum).name)
@@ -97,7 +84,7 @@ def utcnow() -> datetime:
 def load_watchlist() -> List[Dict[str, object]]:
     if not WATCHLIST_FILE.exists():
         raise FileNotFoundError(f"Watchlist file missing: {WATCHLIST_FILE}")
-    return json.loads(WATCHLIST_FILE.read_text())
+    return cast(List[Dict[str, object]], json.loads(WATCHLIST_FILE.read_text()))
 
 
 def load_state() -> Dict[str, Any]:
@@ -109,7 +96,7 @@ def load_state() -> Dict[str, Any]:
         data = {}
     data.setdefault("last_alerts", {})
     data.setdefault("open_positions", {})
-    return data
+    return cast(Dict[str, Any], data)
 
 
 def save_state(state: Dict[str, Any]) -> None:
@@ -229,7 +216,7 @@ class VolumeProfileBot:
         self.interval = interval
         self.watchlist = load_watchlist()
         self.state = load_state()
-        self.client = ccxt.mexc({"options": {"defaultType": "swap"}})
+        self.client = ccxt.binanceusdm({"options": {"defaultType": "swap"}})
         self.notifier = self._init_notifier()
         self.indicator = PivotVolumeProfile(IndicatorConfig())
         self.trade_settings = TradeSettings()
@@ -295,7 +282,8 @@ class VolumeProfileBot:
         for entry in self.watchlist:
             symbol = str(entry.get("symbol"))
             timeframe = str(entry.get("period", "5m"))
-            cooldown_minutes = int(entry.get("cooldown_minutes", 5))
+            cooldown_val = entry.get("cooldown_minutes", 5)
+            cooldown_minutes = int(cooldown_val) if isinstance(cooldown_val, (int, float, str)) else 5
             try:
                 candles = self.fetch_ohlcv(symbol, timeframe)
                 if not candles:
@@ -334,7 +322,7 @@ class VolumeProfileBot:
     def fetch_ohlcv(self, symbol: str, timeframe: str) -> Sequence[Sequence[float]]:
         market = f"{symbol}_USDT"
         candles = self.client.fetch_ohlcv(market, timeframe=timeframe, limit=500)
-        return candles
+        return cast(Sequence[Sequence[float]], candles)
 
     def evaluate_events(
         self,
@@ -418,7 +406,7 @@ class VolumeProfileBot:
             logger.info("Notification (no Telegram configured): %s", message)
 
     def _open_positions(self) -> Dict[str, Dict[str, Any]]:
-        return self.state.setdefault("open_positions", {})
+        return cast(Dict[str, Dict[str, Any]], self.state.setdefault("open_positions", {}))
 
     def _symbol_open_count(self, symbol: str) -> int:
         positions = self._open_positions()
@@ -442,25 +430,26 @@ class VolumeProfileBot:
         if va_range <= 0:
             return False
 
-        risk = max(va_range * self.trade_settings.range_risk_fraction, curr_close * 0.002)
-        buffer = max(va_range * self.trade_settings.buffer_fraction, curr_close * 0.0005)
+        # Use TPSLCalculator with STRUCTURE method (VAL/VAH as swing levels)
+        calculator = TPSLCalculator(min_risk_reward=1.5)
+        calc_levels = calculator.calculate(
+            entry=curr_close,
+            direction=direction,
+            method=CalculationMethod.STRUCTURE,
+            swing_high=levels["vah"],
+            swing_low=levels["val"],
+            tp1_multiplier=self.trade_settings.tp1_rr,
+            tp2_multiplier=self.trade_settings.tp2_rr,
+        )
 
-        if direction == "LONG":
-            sl = min(curr_close - 1e-8, levels["val"] - buffer)
-            if sl <= 0 or sl >= curr_close:
-                sl = curr_close - risk
-            tp1 = curr_close + risk * self.trade_settings.tp1_rr
-            tp2 = curr_close + risk * self.trade_settings.tp2_rr
-        else:
-            sl = max(curr_close + 1e-8, levels["vah"] + buffer)
-            if sl <= curr_close:
-                sl = curr_close + risk
-            tp1 = curr_close - risk * self.trade_settings.tp1_rr
-            tp2 = curr_close - risk * self.trade_settings.tp2_rr
-
-        risk_amount = abs(curr_close - sl)
-        if risk_amount <= 0:
+        if not calc_levels.is_valid:
+            logger.debug("%s: TPSLCalculator rejected - %s", symbol, calc_levels.rejection_reason)
             return False
+
+        sl = calc_levels.stop_loss
+        tp1 = calc_levels.take_profit_1
+        tp2 = calc_levels.take_profit_2
+        risk_amount = calc_levels.risk_amount
 
         signal_id = f"VP-{symbol}-{int(time.time())}-{uuid4().hex[:4]}"
         created_at = utcnow().isoformat()
@@ -529,10 +518,10 @@ class VolumeProfileBot:
         prev_close: float,
         trigger_level: float,
     ) -> str:
-        risk = abs(entry - sl)
-        rr = abs(tp_targets[0] - entry) / risk if risk else 0.0
-        icon = "🚀" if direction == "LONG" else "🐻"
-        
+        """Build entry message using centralized template."""
+        # Convert LONG/SHORT to BULLISH/BEARISH
+        msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+
         # Get historical stats
         symbol_key = f"{symbol}/USDT"
         counts = self.stats.symbol_tp_sl_counts(symbol_key)
@@ -540,24 +529,35 @@ class VolumeProfileBot:
         tp2_count = counts.get("TP2", 0)
         sl_count = counts.get("SL", 0)
         total = tp1_count + tp2_count + sl_count
-        win_rate = ((tp1_count + tp2_count) / total * 100) if total > 0 else 0.0
-        
-        message_parts = [
-            f"{icon} <b>Volume Profile Bot - {direction} Entry</b>",
-            "",
-            f"📈 <b>History:</b> TP1 {tp1_count} | TP2 {tp2_count} | SL {sl_count} (Win rate: {win_rate:.1f}%)" if total > 0 else "📈 <b>History:</b> No previous signals",
-            "",
-            f"🆔 {signal_id}",
-            f"📊 Symbol: {symbol_key} ({timeframe})",
-            f"🎯 Trigger: {event_name.upper()} at {trigger_level:.4f}",
-            f"📈 Prev Close: {prev_close:.4f}",
-            f"💵 Entry: <code>{entry:.6f}</code>",
-            f"🛑 Stop: <code>{sl:.6f}</code>",
-            f"🎯 TP1: <code>{tp_targets[0]:.6f}</code> (RR≈{rr:.2f})",
-            f"🎯 TP2: <code>{tp_targets[1]:.6f}</code>",
-            f"⏱ {utcnow().isoformat()}",
-        ]
-        return "\n".join(message_parts)
+
+        perf_stats = None
+        if total > 0:
+            perf_stats = {
+                "tp1": tp1_count,
+                "tp2": tp2_count,
+                "sl": sl_count,
+                "wins": tp1_count + tp2_count,
+                "total": total,
+            }
+
+        # Build extra info
+        extra_info = f"Trigger: {event_name.upper()} at {trigger_level:.4f}"
+
+        return format_signal_message(
+            bot_name="VOLUME PROFILE",
+            symbol=symbol_key,
+            direction=msg_direction,
+            entry=entry,
+            stop_loss=sl,
+            tp1=tp_targets[0],
+            tp2=tp_targets[1],
+            exchange=self.exchange.upper(),
+            timeframe=timeframe,
+            current_price=entry,
+            signal_id=signal_id,
+            performance_stats=perf_stats,
+            extra_info=extra_info,
+        )
 
     def _check_open_positions(self, symbol: str, current_price: float) -> None:
         positions = self._open_positions()

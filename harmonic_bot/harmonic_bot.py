@@ -8,18 +8,20 @@ Detects: Bat, Butterfly, Gartley, Crab, Shark, ABCD patterns and more
 from __future__ import annotations
 
 import argparse
+import fcntl
+import html
 import json
 import logging
 import os
-import signal
 import sys
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-import ccxt
+import ccxt  # type: ignore
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,124 +32,147 @@ STATS_FILE = LOG_DIR / "harmonic_stats.json"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "harmonic_bot.log"),
-    ],
-)
-
-logger = logging.getLogger("harmonic_bot")
-
 try:
     from dotenv import load_dotenv
-    load_dotenv(BASE_DIR / ".env")
-    load_dotenv(BASE_DIR.parent / ".env")
+    load_dotenv(BASE_DIR / ".env", override=True)
+    load_dotenv(BASE_DIR.parent / ".env", override=True)
 except ImportError:
     pass
 
-sys.path.append(str(BASE_DIR.parent))
-try:
-    from notifier import TelegramNotifier
-    from signal_stats import SignalStats
-    from health_monitor import HealthMonitor, RateLimiter
-    from tp_sl_calculator import TPSLCalculator
-    from trade_config import get_config_manager
-    from rate_limit_handler import RateLimitHandler
-except ImportError:
-    TelegramNotifier = None
-    SignalStats = None
-    HealthMonitor = None
-    RateLimitHandler = None
-    RateLimiter = None
-    TPSLCalculator = None
-    get_config_manager = None
+# Add parent directory to path for shared modules
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 
+# Safe imports
+from safe_import import safe_import, safe_import_multiple
 
-def load_watchlist() -> List[Dict[str, object]]:
-    """Load watchlist from JSON file."""
-    if not WATCHLIST_FILE.exists():
-        logger.error("Watchlist file missing: %s", WATCHLIST_FILE)
-        return []
-    
+TelegramNotifier = safe_import('notifier', 'TelegramNotifier')
+SignalStats = safe_import('signal_stats', 'SignalStats')
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
+RateLimiter = safe_import('health_monitor', 'RateLimiter')
+TPSLCalculator = safe_import('tp_sl_calculator', 'TPSLCalculator')
+get_config_manager = safe_import('trade_config', 'get_config_manager')
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+# Import configuration module (Same config structure as Volume Bot)
+# We assume we can load the JSON config similarly
+def load_json_config(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
     try:
-        data = json.loads(WATCHLIST_FILE.read_text())
-    except json.JSONDecodeError as exc:
-        logger.error("Invalid watchlist JSON: %s", exc)
-        return []
-    
-    normalized = []
-    for item in data:
-        normalized.append({
-            "symbol": item["symbol"].upper(),
-            "period": item.get("period", "5m"),
-            "cooldown_minutes": int(item.get("cooldown_minutes", 30)),
-        })
-    return normalized
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
 
+def setup_logging(log_level: str = "INFO", enable_detailed: bool = False):
+    """Setup enhanced logging with rotation and detailed formatting."""
+    from logging.handlers import RotatingFileHandler
+    detailed_format = "%(asctime)s | %(levelname)-8s | [%(name)s:%(funcName)s:%(lineno)d] | %(message)s"
+    simple_format = "%(asctime)s | %(levelname)-8s | %(message)s"
+    formatter = logging.Formatter(detailed_format if enable_detailed else simple_format)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    root_logger.handlers.clear()
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    file_handler = RotatingFileHandler(
+        LOG_DIR / "harmonic_bot.log", maxBytes=10 * 1024 * 1024, backupCount=5
+    )
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.DEBUG)
+    error_handler = RotatingFileHandler(
+        LOG_DIR / "harmonic_errors.log", maxBytes=5 * 1024 * 1024, backupCount=3
+    )
+    error_handler.setFormatter(formatter)
+    error_handler.setLevel(logging.ERROR)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(error_handler)
+    return logging.getLogger("harmonic_bot")
 
-def human_ts() -> str:
-    """Return human-readable UTC timestamp."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+logger = logging.getLogger("harmonic_bot")
 
+EXCHANGE_CONFIG = {
+    "binanceusdm": {
+        "factory": ccxt.binanceusdm,
+        "params": {"enableRateLimit": True},
+        "default_market": "swap",
+    },
+    "mexc": {
+        "factory": ccxt.mexc,
+        "params": {"enableRateLimit": True, "options": {"defaultType": "swap"}},
+        "default_market": "swap",
+    },
+    "bybit": {
+        "factory": ccxt.bybit,
+        "params": {"enableRateLimit": True, "options": {"defaultType": "swap"}},
+        "default_market": "swap",
+    },
+}
+
+def resolve_symbol(symbol: str, market_type: str = "swap") -> str:
+    """Resolve symbol format for CCXT."""
+    cleaned = symbol.upper().replace(" ", "")
+    if "/" not in cleaned:
+        if cleaned.endswith("USDT"):
+            base = cleaned[:-4]
+            cleaned = f"{base}/USDT"
+        else:
+            cleaned = f"{cleaned}/USDT"
+
+    if market_type == "swap" and ":USDT" not in cleaned:
+        cleaned = cleaned.replace("/USDT", "/USDT:USDT")
+    if market_type == "spot" and ":USDT" in cleaned:
+        cleaned = cleaned.replace(":USDT", "")
+    return cleaned
+
+@dataclass
+class HarmonicSignal:
+    symbol: str
+    pattern_name: str
+    direction: str
+    timestamp: str
+    d_timestamp: str
+    x: float
+    a: float
+    b: float
+    c: float
+    d: float
+    entry: float
+    stop_loss: float
+    take_profit_1: float
+    take_profit_2: float
+    error_score: float
+    current_price: float
+    timeframe: str
+    exchange: str
+    take_profit_3: Optional[float] = None
+    xab: float = 0.0
+    abc: float = 0.0
+    bcd: float = 0.0
+    xad: float = 0.0
+    confidence: float = 0.0  # Confidence score 0-1 (from Volume Bot)
+    prz_low: float = 0.0     # PRZ range
+    prz_high: float = 0.0
+
+    def as_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 class HarmonicPatternDetector:
-    """Detects harmonic patterns from price data."""
+    """Core logic for Harmonic Pattern Detection (unchanged, just imported/encapsulated)."""
     
-    # Pattern definitions (XAB, ABC, BCD, XAD ranges)
     PATTERNS = {
-        "Cypher": {
-            "xab": (0.382, 0.618),
-            "abc": (1.13, 1.414),
-            "bcd": (1.272, 2.0),
-            "xad": (0.76, 0.80),
-        },
-        "Deep Crab": {
-            "xab": (0.88, 0.895),
-            "abc": (0.382, 0.886),
-            "bcd": (2.0, 3.618),
-            "xad": (1.60, 1.63),
-        },
-        "Bat": {
-            "xab": (0.382, 0.5),
-            "abc": (0.382, 0.886),
-            "bcd": (1.618, 2.618),
-            "xad": (0.0, 0.886),
-        },
-        "Butterfly": {
-            "xab": (0.0, 0.786),
-            "abc": (0.382, 0.886),
-            "bcd": (1.618, 2.618),
-            "xad": (1.27, 1.618),
-        },
-        "Gartley": {
-            "xab": (0.61, 0.625),
-            "abc": (0.382, 0.886),
-            "bcd": (1.13, 2.618),
-            "xad": (0.75, 0.875),
-        },
-        "Crab": {
-            "xab": (0.5, 0.875),
-            "abc": (0.382, 0.886),
-            "bcd": (2.0, 5.0),
-            "xad": (1.382, 5.0),
-        },
-        "Shark": {
-            "xab": (0.5, 0.875),
-            "abc": (1.13, 1.618),
-            "bcd": (1.27, 2.24),
-            "xad": (0.886, 1.13),
-        },
-        "ABCD": {
-            "xab": (0.0, 999.0),  # Not used for ABCD
-            "abc": (0.382, 0.886),
-            "bcd": (1.13, 2.618),
-            "xad": (0.0, 999.0),  # Not used for ABCD
-        },
+        "Cypher": {"xab": (0.382, 0.618), "abc": (1.13, 1.414), "bcd": (1.272, 2.0), "xad": (0.76, 0.80)},
+        "Deep Crab": {"xab": (0.88, 0.895), "abc": (0.382, 0.886), "bcd": (2.0, 3.618), "xad": (1.60, 1.63)},
+        "Bat": {"xab": (0.382, 0.5), "abc": (0.382, 0.886), "bcd": (1.618, 2.618), "xad": (0.0, 0.886)},
+        "Butterfly": {"xab": (0.0, 0.786), "abc": (0.382, 0.886), "bcd": (1.618, 2.618), "xad": (1.27, 1.618)},
+        "Gartley": {"xab": (0.61, 0.625), "abc": (0.382, 0.886), "bcd": (1.13, 2.618), "xad": (0.75, 0.875)},
+        "Crab": {"xab": (0.5, 0.875), "abc": (0.382, 0.886), "bcd": (2.0, 5.0), "xad": (1.382, 5.0)},
+        "Shark": {"xab": (0.5, 0.875), "abc": (1.13, 1.618), "bcd": (1.27, 2.24), "xad": (0.886, 1.13)},
+        "ABCD": {"xab": (0.0, 999.0), "abc": (0.382, 0.886), "bcd": (1.13, 2.618), "xad": (0.0, 999.0)},
     }
-
+    
     PATTERN_IDEALS = {
         "Cypher": {"xab": 0.5, "abc": 1.272, "bcd": 1.414, "xad": 0.786},
         "Deep Crab": {"xab": 0.886, "abc": 0.618, "bcd": 2.618, "xad": 1.618},
@@ -158,747 +183,1281 @@ class HarmonicPatternDetector:
         "Shark": {"xab": 0.618, "abc": 1.27, "bcd": 1.618, "xad": 1.0},
         "ABCD": {"abc": 0.618, "bcd": 1.27},
     }
-    
-    def find_zigzag_pivots(
-        self,
-        highs: List[float],
-        lows: List[float],
-        closes: List[float],
-        opens: List[float],
-        atr_value: float,
-    ) -> List[Tuple[int, float, str]]:
-        """Find ZigZag pivot points."""
-        highs_arr = np.asarray(highs, dtype=float)
-        lows_arr = np.asarray(lows, dtype=float)
-        closes_arr = np.asarray(closes, dtype=float)
-        opens_arr = np.asarray(opens, dtype=float)
 
-        n = closes_arr.size
-        if n < 2:
-            return []
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        self.error_thresholds = self.config.get("analysis", {}).get("pattern_error_thresholds", {
+            "Cypher": 0.08, "Shark": 0.08, "Gartley": 0.10, "Bat": 0.10,
+            "Butterfly": 0.12, "Crab": 0.12, "Deep Crab": 0.12, "ABCD": 0.15
+        })
 
-        atr_threshold = max(atr_value * 2.0, 1e-8)
-
-        # 1 for bullish candle, -1 for bearish (ties treated as bullish to match prior behavior)
-        candle_dirs = np.where(closes_arr >= opens_arr, 1, -1)
-        change_points = np.flatnonzero(candle_dirs[1:] != candle_dirs[:-1]) + 1
-        if change_points.size == 0:
-            return []
-
-        segments = np.split(np.arange(n, dtype=int), change_points)
-        # Remove potential empty segments (shouldn't happen but keeps logic safe)
-        segments = [seg for seg in segments if seg.size > 0]
-        if len(segments) < 2:
-            return []
-
-        segment_dirs = [int(candle_dirs[seg[0]]) for seg in segments]
-        pivots: List[Tuple[int, float, str]] = []
-
-        for seg_idx in range(1, len(segments)):
-            prev_seg = segments[seg_idx - 1]
-            prev_dir = segment_dirs[seg_idx - 1]
-
-            if prev_dir == 1:
-                # Up-segment completed -> pivot high
-                local_idx = prev_seg[np.argmax(highs_arr[prev_seg])]
-                price = float(highs_arr[local_idx])
-                pivot_type = 'H'
-            else:
-                # Down-segment completed -> pivot low
-                local_idx = prev_seg[np.argmin(lows_arr[prev_seg])]
-                price = float(lows_arr[local_idx])
-                pivot_type = 'L'
-
-            if not pivots or abs(price - pivots[-1][1]) >= atr_threshold:
-                pivots.append((int(local_idx), price, pivot_type))
-
-        return pivots
-
-    @staticmethod
-    def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+    def calculate_atr(self, highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
         if len(closes) < period + 1:
             return float(np.mean(np.array(highs) - np.array(lows))) if highs and lows else 0.0
         trs = []
         for i in range(1, len(closes)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i-1]),
-                abs(lows[i] - closes[i-1])
-            )
+            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
             trs.append(tr)
-        if not trs:
-            return 0.0
-        if len(trs) >= period:
-            return float(np.mean(trs[-period:]))
-        return float(np.mean(trs))
-    
-    def get_xabcd_ratios(
-        self,
-        x: float,
-        a: float,
-        b: float,
-        c: float,
-        d: float,
-    ) -> Tuple[float, float, float, float]:
-        """Calculate XABCD Fibonacci ratios."""
-        xab = abs(b - a) / abs(x - a) if abs(x - a) != 0 else 0
-        xad = abs(a - d) / abs(x - a) if abs(x - a) != 0 else 0
-        abc = abs(b - c) / abs(a - b) if abs(a - b) != 0 else 0
-        bcd = abs(c - d) / abs(b - c) if abs(b - c) != 0 else 0
+        return float(np.mean(trs[-period:])) if len(trs) >= period else float(np.mean(trs) if trs else 0.0)
+
+    def calculate_rsi(self, closes: List[float], period: int = 14) -> float:
+        if len(closes) < period + 1: return 50.0
+        deltas = np.diff(closes)
+        seed = deltas[:period+1]
+        up = seed[seed >= 0].sum() / period
+        down = -seed[seed < 0].sum() / period
+        if down == 0: return 100.0
+        rs = up / down
+        return 100 - (100 / (1 + rs))
+
+    def find_pivots(self, highs, lows, closes, opens, atr):
+        # Increased ZigZag multiplier (Pro Upgrade)
+        mult = self.config.get("analysis", {}).get("zigzag_atr_multiplier", 3.0)
+        atr_threshold = max(atr * mult, 1e-8)
         
-        return xab, xad, abc, bcd
-    
-    def detect_patterns(
-        self,
-        x: float,
-        a: float,
-        b: float,
-        c: float,
-        d: float,
-    ) -> List[Tuple[str, str, float]]:
-        """Detect harmonic patterns based on Fibonacci ratios with error scoring."""
-        xab, xad, abc, bcd = self.get_xabcd_ratios(x, a, b, c, d)
-        direction = "BULLISH" if d < c else "BEARISH"
-
-        priority_order = [
-            "Cypher",
-            "Shark",
-            "Deep Crab",
-            "Butterfly",
-            "Bat",
-            "Crab",
-            "Gartley",
-            "ABCD",
-        ]
-
-        for pattern_name in priority_order:
-            ranges = self.PATTERNS.get(pattern_name)
-            if not ranges:
-                continue
-
-            xab_min, xab_max = ranges["xab"]
-            abc_min, abc_max = ranges["abc"]
-            bcd_min, bcd_max = ranges["bcd"]
-            xad_min, xad_max = ranges["xad"]
-
-            if not (
-                xab_min <= xab <= xab_max
-                and abc_min <= abc <= abc_max
-                and bcd_min <= bcd <= bcd_max
-                and xad_min <= xad <= xad_max
-            ):
-                continue
-
-            ideals = self.PATTERN_IDEALS.get(pattern_name, {})
-            error_score = 0.0
-            for key, actual in {
-                "xab": xab,
-                "abc": abc,
-                "bcd": bcd,
-                "xad": xad,
-            }.items():
-                ideal_val = ideals.get(key)
-                if ideal_val is not None:
-                    error_score += abs(actual - ideal_val)
-
-            if error_score > 0.15:
-                continue
-
-            return [(pattern_name, direction, error_score)]
-
-        return []
-    
-    def calculate_targets(
-        self,
-        c: float,
-        d: float,
-        direction: str,
-        symbol: str = "",
-    ) -> Dict[str, float]:
-        """Calculate entry, stop loss, and take profit levels."""
-        fib_range = abs(d - c)
+        # ... (ZigZag Logic)
+        highs_arr = np.asarray(highs, dtype=float)
+        lows_arr = np.asarray(lows, dtype=float)
+        closes_arr = np.asarray(closes, dtype=float)
+        opens_arr = np.asarray(opens, dtype=float)
+        n = closes_arr.size
+        if n < 2: return []
         
-        if direction == "BULLISH":
-            entry = d + (fib_range * 0.236)
-            swing_low = d
-        else:
-            entry = d - (fib_range * 0.236)
-            swing_high = d
+        candle_dirs = np.where(closes_arr >= opens_arr, 1, -1)
+        change_points = np.flatnonzero(candle_dirs[1:] != candle_dirs[:-1]) + 1
+        if change_points.size == 0: return []
+        segments = np.split(np.arange(n, dtype=int), change_points)
+        segments = [seg for seg in segments if seg.size > 0]
+        if len(segments) < 2: return []
         
-        if TPSLCalculator is not None:
-            from tp_sl_calculator import CalculationMethod
-            if get_config_manager is not None:
-                config_mgr = get_config_manager()
-                risk_config = config_mgr.get_effective_risk("harmonic_bot", symbol)
-                min_rr = risk_config.min_risk_reward
+        pivots = []
+        segment_dirs = [int(candle_dirs[seg[0]]) for seg in segments]
+        for seg_idx in range(1, len(segments)):
+            prev_seg = segments[seg_idx - 1]
+            prev_dir = segment_dirs[seg_idx - 1]
+            if prev_dir == 1:
+                local_idx = prev_seg[np.argmax(highs_arr[prev_seg])]
+                price = float(highs_arr[local_idx])
+                pivot_type = 'H'
             else:
-                min_rr = 2.0
-            
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
-            levels = calculator.calculate(
-                entry=entry,
-                direction=direction,
-                swing_high=d if direction == "BEARISH" else None,
-                swing_low=d if direction == "BULLISH" else None,
-                method=CalculationMethod.FIBONACCI,
-            )
-            
-            if levels.is_valid:
-                tp3_val = levels.take_profit_3 or levels.take_profit_2 or levels.take_profit_1
-                return {
-                    "entry": float(entry),
-                    "stop_loss": float(levels.stop_loss),
-                    "take_profit_1": float(levels.take_profit_1),
-                    "take_profit_2": float(levels.take_profit_2),
-                    "take_profit_3": float(tp3_val),
-                }
+                local_idx = prev_seg[np.argmin(lows_arr[prev_seg])]
+                price = float(lows_arr[local_idx])
+                pivot_type = 'L'
+            if not pivots or abs(price - pivots[-1][1]) >= atr_threshold:
+                pivots.append((int(local_idx), price, pivot_type))
+        return pivots
+
+    def detect(self, ohlcv, symbol, timeframe, current_price, exchange="mexc") -> Optional[HarmonicSignal]:
+        # Validate OHLCV data
+        if not ohlcv or not isinstance(ohlcv, list):
+            logger.debug(f"Invalid OHLCV data for {symbol}: empty or not a list")
+            return None
+
+        if len(ohlcv) < 50:
+            logger.debug(f"Insufficient OHLCV data for {symbol}: {len(ohlcv)} candles (need 50+)")
+            return None
+
+        # Look-ahead bias prevention (from Volume Bot):
+        # Exclude current (incomplete) candle to avoid using future data
+        # Use only CLOSED candles for calculations
+        if len(ohlcv) > 1:
+            ohlcv = ohlcv[:-1]  # Remove last incomplete candle
+            logger.debug(f"{symbol}: Using {len(ohlcv)} closed candles (excluded incomplete candle)")
+
+        # Validate OHLCV structure
+        try:
+            opens = [x[1] for x in ohlcv]
+            highs = [x[2] for x in ohlcv]
+            lows = [x[3] for x in ohlcv]
+            closes = [x[4] for x in ohlcv]
+        except (IndexError, TypeError) as e:
+            logger.error(f"Malformed OHLCV data for {symbol}: {e}")
+            return None
         
-        # Fallback to original calculation
+        atr = self.calculate_atr(highs, lows, closes)
+        if atr <= 0:
+            # Fix 1.9: Use average high-low range instead of std deviation
+            fallback_period = self.config.get("analysis", {}).get("atr_fallback_period", 50)
+            highs_arr = np.array(highs[-fallback_period:])
+            lows_arr = np.array(lows[-fallback_period:])
+            atr = max(float(np.mean(highs_arr - lows_arr)), 1e-6)
+        
+        pivots = self.find_pivots(highs, lows, closes, opens, atr)
+        if len(pivots) < 5:
+            logger.debug(f"{symbol}: Insufficient pivots ({len(pivots)}/5 needed)")
+            return None
+        
+        # Use last 5 pivots
+        x_idx, x, x_type = pivots[-5]
+        a_idx, a, a_type = pivots[-4]
+        b_idx, b, b_type = pivots[-3]
+        c_idx, c, c_type = pivots[-2]
+        d_idx, d, d_type = pivots[-1]
+        
+        # Check separation with configurable minimum leg candles (Fix 1.3)
+        min_leg_candles = self.config.get("analysis", {}).get("min_leg_candles", 3)
+        if any((p2 - p1) < min_leg_candles for p1, p2 in [(x_idx, a_idx), (a_idx, b_idx), (b_idx, c_idx), (c_idx, d_idx)]):
+            logger.debug(f"{symbol}: Pivots too close together (need {min_leg_candles}+ candles separation)")
+            return None
+        
+        # Check patterns
+        ratios = self._get_ratios(x, a, b, c, d)
+        if not ratios:
+            logger.debug(f"{symbol}: Invalid ratios (division by zero)")
+            return None
+        xab, xad, abc, bcd = ratios
+        
+        # Determine direction from XA leg (Fix 1.2)
+        # Bullish: A < X (price moved down from X to A, expecting reversal up)
+        # Bearish: A > X (price moved up from X to A, expecting reversal down)
+        direction = "BULLISH" if a < x else "BEARISH"
+        
+        best_pattern = None
+        for name, ranges in self.PATTERNS.items():
+            # Range checks - validate ALL ratios including BCD (Fix 1.1)
+            if not (ranges["xab"][0] <= xab <= ranges["xab"][1] and
+                    ranges["abc"][0] <= abc <= ranges["abc"][1] and
+                    ranges["bcd"][0] <= bcd <= ranges["bcd"][1] and
+                    ranges["xad"][0] <= xad <= ranges["xad"][1]):
+                continue
+            
+            # Error score
+            ideals = self.PATTERN_IDEALS.get(name, {})
+            score = 0.0
+            score += abs(xab - ideals.get("xab", xab))
+            score += abs(abc - ideals.get("abc", abc))
+            score += abs(bcd - ideals.get("bcd", bcd))
+            score += abs(xad - ideals.get("xad", xad))
+            
+            thresh = self.error_thresholds.get(name, 0.15)
+            if score <= thresh:
+                if best_pattern is None or score < best_pattern[2]:
+                    best_pattern = (name, direction, score)
+        
+        if not best_pattern:
+            logger.debug(f"{symbol}: No pattern match (ratios: XAB={xab:.3f}, ABC={abc:.3f}, BCD={bcd:.3f}, XAD={xad:.3f})")
+            return None
+
+        # RSI Check - now optional with enable_rsi_filter (Fix 1.4)
+        rsi = self.calculate_rsi(closes)
+        enable_rsi_filter = self.config.get("analysis", {}).get("enable_rsi_filter", True)
+        if enable_rsi_filter:
+            rsi_overbought = self.config.get("analysis", {}).get("rsi_overbought", 70)
+            rsi_oversold = self.config.get("analysis", {}).get("rsi_oversold", 30)
+            if direction == "BULLISH" and rsi > rsi_overbought:
+                logger.debug(f"{symbol}: BULLISH pattern rejected - RSI too high ({rsi:.1f} > {rsi_overbought})")
+                return None
+            if direction == "BEARISH" and rsi < rsi_oversold:
+                logger.debug(f"{symbol}: BEARISH pattern rejected - RSI too low ({rsi:.1f} < {rsi_oversold})")
+                return None
+
+        # Stale Check
+        d_age = (len(closes) - 1) - d_idx
+        if d_age > self.config.get("analysis", {}).get("max_pattern_age_candles", 3):
+            logger.debug(f"{symbol}: Pattern too old ({d_age} candles, max 3)")
+            return None
+        
+        # Targets
+        targets = self._calculate_targets(c, d, direction, atr, symbol)
+
+        # PRZ Validation - check if current price is within PRZ zone (Fix 1.5)
+        enable_prz_validation = self.config.get("analysis", {}).get("enable_prz_validation", True)
+        if enable_prz_validation:
+            prz_low = targets.get("prz_low", 0)
+            prz_high = targets.get("prz_high", float('inf'))
+            if not (prz_low <= current_price <= prz_high):
+                logger.debug(f"{symbol}: Price {current_price:.6f} outside PRZ [{prz_low:.6f}, {prz_high:.6f}]")
+                return None
+
+        d_ts_ms = ohlcv[d_idx][0]
+        d_ts_str = datetime.fromtimestamp(d_ts_ms/1000, timezone.utc).isoformat()
+
+        # Compute confidence score (from Volume Bot)
+        prz_dist_pct = abs(current_price - d) / d * 100 if d > 0 else 0
+        confidence = self._compute_confidence(
+            pattern_name=best_pattern[0],
+            error_score=best_pattern[2],
+            rsi=rsi,
+            direction=direction,
+            d_age=d_age,
+            prz_dist_pct=prz_dist_pct
+        )
+
+        logger.debug(f"{symbol}: ✓ {best_pattern[0]} pattern detected! {direction}, RSI={rsi:.1f}, Error={best_pattern[2]:.4f}, Confidence={confidence:.2f}")
+
+        return HarmonicSignal(
+            symbol=symbol, pattern_name=best_pattern[0], direction=direction,
+            timestamp=datetime.now(timezone.utc).isoformat(), d_timestamp=d_ts_str,
+            x=x, a=a, b=b, c=c, d=d, xab=xab, abc=abc, bcd=bcd, xad=xad,
+            entry=targets["entry"], stop_loss=targets["stop_loss"],
+            take_profit_1=targets["take_profit_1"], take_profit_2=targets["take_profit_2"],
+            take_profit_3=targets["take_profit_3"],
+            error_score=best_pattern[2], current_price=current_price,
+            timeframe=timeframe, exchange=exchange,
+            confidence=confidence,
+            prz_low=targets.get("prz_low", 0),
+            prz_high=targets.get("prz_high", 0)
+        )
+
+    def _get_ratios(self, x, a, b, c, d):
+        # Check denominators: XAB uses (x-a), ABC uses (a-b), BCD uses (b-c), XAD uses (x-a)
+        if x == a or a == b or b == c: return None
+        xab = abs(b - a) / abs(x - a)
+        xad = abs(a - d) / abs(x - a)
+        abc = abs(b - c) / abs(a - b)
+        bcd = abs(c - d) / abs(b - c)
+        return xab, xad, abc, bcd
+
+    def _compute_confidence(self, pattern_name: str, error_score: float, rsi: float,
+                           direction: str, d_age: int, prz_dist_pct: float) -> float:
+        """
+        Compute confidence score 0-1 based on pattern quality (from Volume Bot).
+
+        Factors weighted:
+        - Error score (lower is better): 40%
+        - Pattern age (fresher is better): 20%
+        - RSI alignment: 20%
+        - PRZ distance (closer is better): 20%
+        """
+        # Error score component (0-1, lower error = higher confidence)
+        # Typical error scores range 0.0 - 0.15
+        error_conf = max(0, 1 - (error_score / 0.15))
+
+        # Pattern age component (0-1, fresher = higher)
+        max_age = self.config.get("analysis", {}).get("max_pattern_age_candles", 3)
+        age_conf = max(0, 1 - (d_age / max_age))
+
+        # RSI alignment component
         if direction == "BULLISH":
-            sl = d * 0.98
-            tp1 = d + (fib_range * 0.618)
-            tp2 = d + (fib_range * 1.0)
-            tp3 = d + (fib_range * 1.618)
+            # Bullish: RSI < 50 is good (oversold conditions)
+            rsi_conf = max(0, (50 - rsi) / 50) if rsi < 50 else max(0, (100 - rsi) / 100)
         else:
-            sl = d * 1.02
-            tp1 = d - (fib_range * 0.618)
-            tp2 = d - (fib_range * 1.0)
-            tp3 = d - (fib_range * 1.618)
-        
+            # Bearish: RSI > 50 is good (overbought conditions)
+            rsi_conf = max(0, (rsi - 50) / 50) if rsi > 50 else max(0, rsi / 100)
+
+        # PRZ distance component (0-1, closer = higher)
+        # prz_dist_pct is the % distance from current price to D point
+        prz_conf = max(0, 1 - (prz_dist_pct / 2))  # 2% = 0 confidence
+
+        # Weighted average
+        confidence = (
+            error_conf * 0.40 +
+            age_conf * 0.20 +
+            rsi_conf * 0.20 +
+            prz_conf * 0.20
+        )
+
+        return round(min(1.0, max(0.0, confidence)), 3)
+
+    def _calculate_targets(self, c, d, direction, atr, symbol):
+        # Get config values
+        entry_buffer_mult = self.config.get("analysis", {}).get("entry_buffer_atr_multiplier", 0.05)
+        sl_fib_mult = self.config.get("analysis", {}).get("sl_fib_range_multiplier", 0.5)
+        tp1_mult = self.config.get("analysis", {}).get("tp1_risk_multiplier", 2.0)
+        tp2_mult = self.config.get("analysis", {}).get("tp2_risk_multiplier", 3.0)
+        tp3_mult = self.config.get("analysis", {}).get("tp3_risk_multiplier", 4.5)
+        prz_atr_mult = self.config.get("analysis", {}).get("prz_atr_multiplier", 0.5)
+
+        fib_range = abs(d - c)
+        entry_buffer = atr * entry_buffer_mult
+        prz_buffer = atr * prz_atr_mult  # PRZ range around D (Fix 1.5)
+
+        if direction == "BULLISH":
+            entry = d + entry_buffer
+            # PRZ zone: price should be within this range for valid entry
+            prz_low = d - prz_buffer
+            prz_high = d + prz_buffer
+            sl_default = d - (fib_range * sl_fib_mult)
+            if sl_default >= entry: sl_default = entry - (atr * 2)
+            risk = abs(entry - sl_default)
+            tp1 = entry + (risk * tp1_mult)
+            tp2 = entry + (risk * tp2_mult)
+            tp3 = entry + (risk * tp3_mult)
+            sl = sl_default
+        else:
+            entry = d - entry_buffer
+            # PRZ zone for bearish
+            prz_low = d - prz_buffer
+            prz_high = d + prz_buffer
+            sl_default = d + (fib_range * sl_fib_mult)
+            if sl_default <= entry: sl_default = entry + (atr * 2)
+            risk = abs(entry - sl_default)
+            tp1 = entry - (risk * tp1_mult)
+            tp2 = entry - (risk * tp2_mult)
+            tp3 = entry - (risk * tp3_mult)
+            sl = sl_default
+
         return {
             "entry": entry,
             "stop_loss": sl,
             "take_profit_1": tp1,
             "take_profit_2": tp2,
             "take_profit_3": tp3,
+            "prz_low": prz_low,
+            "prz_high": prz_high
         }
 
 
-class MexcClient:
-    """MEXC exchange client wrapper."""
-    
-    def __init__(self):
-        self.exchange = ccxt.mexc({  # type: ignore[arg-type]
-            "enableRateLimit": True,
-            "options": {"defaultType": "swap"}
-        })
-        self.exchange.load_markets()
-        self.rate_limiter = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
-    
-    @staticmethod
-    def _swap_symbol(symbol: str) -> str:
-        return f"{symbol.upper()}/USDT:USDT"
-    
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 300) -> list:
-        """Fetch OHLCV data."""
-        if self.rate_limiter:
-            return self.rate_limiter.execute(
-                self.exchange.fetch_ohlcv,
-                self._swap_symbol(symbol),
-                timeframe=timeframe,
-                limit=limit
-            )
-        return self.exchange.fetch_ohlcv(
-            self._swap_symbol(symbol),
-            timeframe=timeframe,
-            limit=limit
-        )
-    
-    def fetch_ticker(self, symbol: str) -> dict:
-        """Fetch ticker data."""
-        if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol))
-        return self.exchange.fetch_ticker(self._swap_symbol(symbol))
+class SignalTracker:
+    """Robust signal tracker with file locking and reversal detection (Ported from Volume Bot)."""
 
+    STATE_VERSION = 2  # Increment when state format changes (Fix 1.10)
 
-# Graceful shutdown handling
-shutdown_requested = False
+    def __init__(self, stats=None, config=None):
+        self.stats = stats
+        self.config = config or {}
+        self.state_lock = threading.Lock()
+        self.state = self._load_state()
 
+    def _empty_state(self):
+        return {
+            "version": self.STATE_VERSION,  # Fix 1.10: Add version field
+            "last_alerts": {},
+            "open_signals": {},
+            "signal_history": {},
+            "last_result_notifications": {}
+        }
 
-def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
-    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
-    global shutdown_requested
-    shutdown_requested = True
-    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
+    def _load_state(self):
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    loaded_state = json.load(f)
 
+                # Fix 1.10: Version validation and migration
+                loaded_version = loaded_state.get("version", 1)
+                if loaded_version < self.STATE_VERSION:
+                    logger.warning(f"State version mismatch (file: {loaded_version}, expected: {self.STATE_VERSION}). Migrating...")
+                    # Migrate old state to new format
+                    new_state = self._empty_state()
+                    # Preserve compatible fields
+                    for key in ["last_alerts", "open_signals", "signal_history", "last_result_notifications"]:
+                        if key in loaded_state:
+                            new_state[key] = loaded_state[key]
+                    new_state["version"] = self.STATE_VERSION
+                    logger.info(f"State migrated from v{loaded_version} to v{self.STATE_VERSION}")
+                    # Save migrated state immediately to prevent re-migration on next restart
+                    try:
+                        with open(STATE_FILE, 'w') as f:
+                            json.dump(new_state, f, indent=2)
+                        logger.info("Migrated state saved to disk")
+                    except Exception as e:
+                        logger.warning(f"Could not save migrated state: {e}")
+                    return new_state
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+                return loaded_state
+            except json.JSONDecodeError as e:
+                logger.error(f"State file has invalid JSON: {e}, rebuilding from scratch")
+                return self._empty_state()
+            except IOError as e:
+                logger.error(f"Failed to read state file: {e}, rebuilding from scratch")
+                return self._empty_state()
+            except Exception as e:
+                logger.error(f"Unexpected error loading state: {e}, rebuilding from scratch")
+                return self._empty_state()
+        return self._empty_state()
 
-@dataclass
-class HarmonicSignal:
-    """Represents a harmonic pattern signal."""
-    symbol: str
-    pattern_name: str
-    direction: str
-    timestamp: str
-    x: float
-    a: float
-    b: float
-    c: float
-    d: float
-    xab: float
-    abc: float
-    bcd: float
-    xad: float
-    entry: float
-    stop_loss: float
-    take_profit_1: float
-    take_profit_2: float
-    take_profit_3: Optional[float] = None
-    current_price: Optional[float] = None
-    error_score: float = 0.0
+    def _save_state(self):
+        with self.state_lock:
+            temp_file = STATE_FILE.with_suffix('.tmp')
+            try:
+                with open(temp_file, 'w') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    json.dump(self.state, f, indent=2)
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                temp_file.replace(STATE_FILE)
+            except Exception as e:
+                logger.error(f"Failed to save state: {e}")
 
+    def is_duplicate(self, symbol, pattern, d_ts, exchange="mexc", timeframe="1h"):
+        """Check duplicate using D-Timestamp with exchange+timeframe scope (Fix 1.6)."""
+        history = self.state.setdefault("signal_history", {})
+        # Include exchange and timeframe in key to allow same pattern on different TFs/exchanges
+        check_exchange = self.config.get("exchange_settings", {}).get("check_exchange_for_duplicates", True)
+        check_timeframe = self.config.get("exchange_settings", {}).get("check_timeframe_for_duplicates", True)
 
-class BotState:
-    """Manages bot state persistence."""
-    
-    def __init__(self, path: Path):
-        self.path = path
-        self.data: Dict[str, Dict[str, object]] = self._load()
-    
-    @staticmethod
-    def _parse_ts(value: str) -> datetime:
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    
-    def _load(self) -> Dict[str, Dict[str, object]]:
-        if not self.path.exists():
-            return {"last_alert": {}, "open_signals": {}}
-        try:
-            return json.loads(self.path.read_text())
-        except json.JSONDecodeError:
-            return {"last_alert": {}, "open_signals": {}}
-    
-    def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2))
-    
-    def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
-        last_map = cast(Dict[str, str], self.data.setdefault("last_alert", {}))
-        last_ts = last_map.get(symbol)
-        if not last_ts:
+        key_parts = [symbol, pattern]
+        if check_exchange:
+            key_parts.append(exchange)
+        if check_timeframe:
+            key_parts.append(timeframe)
+        key = "|".join(key_parts)
+        return d_ts in history.get(key, [])
+
+    def add_signal(self, signal: HarmonicSignal):
+        # Mark history with exchange+timeframe aware key (Fix 1.6)
+        history = self.state.setdefault("signal_history", {})
+        check_exchange = self.config.get("exchange_settings", {}).get("check_exchange_for_duplicates", True)
+        check_timeframe = self.config.get("exchange_settings", {}).get("check_timeframe_for_duplicates", True)
+
+        key_parts = [signal.symbol, signal.pattern_name]
+        if check_exchange:
+            key_parts.append(signal.exchange)
+        if check_timeframe:
+            key_parts.append(signal.timeframe)
+        key = "|".join(key_parts)
+
+        history_limit = self.config.get("analysis", {}).get("signal_history_limit", 10)
+        if key not in history: history[key] = []
+        if signal.d_timestamp not in history[key]:
+            history[key].append(signal.d_timestamp)
+            if len(history[key]) > history_limit: history[key] = history[key][-history_limit:]
+            
+        # Add open signal
+        signals = self.state.setdefault("open_signals", {})
+        sig_id = f"{signal.symbol}-{signal.pattern_name}-{signal.timestamp}"
+        signals[sig_id] = signal.as_dict()
+        self._save_state()
+        
+        if self.stats:
+            self.stats.record_open(sig_id, signal.symbol, signal.direction, signal.entry, signal.timestamp)
+
+    def check_open_signals(self, client_map, notifier, rate_limiter=None):
+        """Check open signals with rate limiting support (Fix 2.1)."""
+        signals = self.state.get("open_signals", {})
+        if not signals: return
+
+        updated = False
+        symbol_delay = self.config.get("execution", {}).get("symbol_delay_seconds", 1)
+
+        for sig_id, payload in list(signals.items()):
+            # Validate signal data
+            symbol = payload.get("symbol")
+            exchange = payload.get("exchange", "mexc")
+            direction = payload.get("direction")
+
+            if not isinstance(symbol, str) or not symbol or not symbol.strip():
+                logger.warning(f"Removing signal {sig_id} with invalid symbol: {symbol}")
+                signals.pop(sig_id, None)
+                updated = True
+                continue
+
+            if not isinstance(exchange, str) or exchange not in ["binanceusdm", "mexc", "bybit"]:
+                logger.warning(f"Invalid exchange '{exchange}' for {sig_id}, using mexc")
+                exchange = "mexc"
+
+            if direction not in ["BULLISH", "BEARISH"]:
+                logger.warning(f"Removing signal {sig_id} with invalid direction: {direction}")
+                signals.pop(sig_id, None)
+                updated = True
+                continue
+
+            # Fix 2.1: Use rate limiter before API call
+            if rate_limiter:
+                rate_limiter.wait_if_needed()
+
+            # Fetch price with specific exception handling
+            price = None
+            try:
+                client = client_map.get(exchange) or client_map.get("mexc")
+                if not client:
+                    logger.warning(f"No client for exchange {exchange}, skipping {symbol}")
+                    continue
+                ticker = client.fetch_ticker(resolve_symbol(symbol))
+                price = ticker.get("last")
+
+                if rate_limiter:
+                    rate_limiter.record_success(f"check_{exchange}_{symbol}")
+            except ccxt.NetworkError as e:
+                logger.warning(f"Network error fetching {symbol}: {e}")
+                if rate_limiter:
+                    rate_limiter.record_error(f"check_{exchange}_{symbol}")
+                continue
+            except ccxt.RateLimitExceeded as e:
+                logger.warning(f"Rate limit exceeded for {symbol}: {e}")
+                if rate_limiter:
+                    rate_limiter.record_error(f"check_{exchange}_{symbol}")
+                time.sleep(5)  # Longer backoff on rate limit
+                continue
+            except ccxt.ExchangeError as e:
+                logger.error(f"Exchange error for {symbol}: {e}")
+                if rate_limiter:
+                    rate_limiter.record_error(f"check_{exchange}_{symbol}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error fetching {symbol}: {e}")
+                continue
+
+            # Add delay between API calls to prevent bursting
+            time.sleep(symbol_delay * 0.5)
+
+            # Validate price
+            if price is None or not isinstance(price, (int, float)) or price <= 0:
+                logger.debug(f"Invalid price for {symbol}: {price}")
+                continue
+
+            # Validate and check TP/SL - now including TP3 (Fix 1.7)
+            tp1, tp2 = payload.get("take_profit_1"), payload.get("take_profit_2")
+            tp3 = payload.get("take_profit_3")  # TP3 support
+            sl = payload.get("stop_loss")
+            entry = payload.get("entry")
+
+            # Track which TPs have been hit (partial TP tracking)
+            tp_hits = payload.get("tp_hits", {"tp1": False, "tp2": False, "tp3": False})
+
+            # Ensure all required values are valid numbers
+            if not all(isinstance(v, (int, float)) for v in [tp1, tp2, sl, entry]):
+                logger.warning(f"Signal {sig_id} has invalid TP/SL values, removing")
+                signals.pop(sig_id, None)
+                updated = True
+                continue
+
+            # Check for TP hits with partial tracking (Fix 1.7)
+            res = None
+            close_signal = False
+
+            if direction == "BULLISH":
+                # Check TP3 first (highest), then TP2, then TP1
+                if tp3 and isinstance(tp3, (int, float)) and price >= tp3:
+                    if not tp_hits.get("tp3"):
+                        res = "TP3"
+                        tp_hits["tp3"] = True
+                        close_signal = True  # TP3 closes the trade
+                elif price >= tp2:
+                    if not tp_hits.get("tp2"):
+                        res = "TP2"
+                        tp_hits["tp2"] = True
+                        tp_hits["tp1"] = True  # Implied
+                elif price >= tp1:
+                    if not tp_hits.get("tp1"):
+                        res = "TP1"
+                        tp_hits["tp1"] = True
+                elif price <= sl:
+                    res = "SL"
+                    close_signal = True
+            else:
+                # BEARISH - inverted logic
+                if tp3 and isinstance(tp3, (int, float)) and price <= tp3:
+                    if not tp_hits.get("tp3"):
+                        res = "TP3"
+                        tp_hits["tp3"] = True
+                        close_signal = True
+                elif price <= tp2:
+                    if not tp_hits.get("tp2"):
+                        res = "TP2"
+                        tp_hits["tp2"] = True
+                        tp_hits["tp1"] = True
+                elif price <= tp1:
+                    if not tp_hits.get("tp1"):
+                        res = "TP1"
+                        tp_hits["tp1"] = True
+                elif price >= sl:
+                    res = "SL"
+                    close_signal = True
+
+            # Update tp_hits in payload if we hit something
+            if res and not close_signal:
+                payload["tp_hits"] = tp_hits
+                updated = True
+
+            if res:
+                # Check result notification cooldown (from Volume Bot)
+                result_cooldown = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
+                should_notify = self._should_notify_result(symbol, result_cooldown)
+
+                # Notify with HTML escaping
+                pnl = (price - entry)/entry * 100 if direction == "BULLISH" else (entry - price)/entry * 100
+                safe_symbol = html.escape(symbol)
+                safe_pattern = html.escape(payload.get('pattern_name', ''))
+                emoji = "🎯" if res in ["TP1", "TP2", "TP3"] else "🛑"
+
+                # Show partial TP status
+                tp_status = ""
+                if not close_signal and res.startswith("TP"):
+                    remaining_tps = []
+                    if not tp_hits.get("tp2"): remaining_tps.append("TP2")
+                    if tp3 and not tp_hits.get("tp3"): remaining_tps.append("TP3")
+                    if remaining_tps:
+                        tp_status = f"\n📊 <b>Remaining:</b> {', '.join(remaining_tps)}"
+
+                if should_notify:
+                    msg = (
+                        f"{emoji} <b>{safe_symbol} {safe_pattern}</b>\n\n"
+                        f"<b>Result:</b> {res} HIT!{' (PARTIAL)' if not close_signal else ''}\n"
+                        f"💰 <b>Entry:</b> <code>{entry:.6f}</code>\n"
+                        f"💵 <b>{'Exit' if close_signal else 'Current'}:</b> <code>{price:.6f}</code>\n"
+                        f"📈 <b>PnL:</b> {pnl:+.2f}%{tp_status}"
+                    )
+                    if notifier:
+                        notifier.send_message(msg, parse_mode="HTML")
+                        self._mark_result_notified(symbol)
+                        logger.info(f"📤 Result notification sent for {sig_id}")
+                else:
+                    logger.info(f"⏭️ Skipping duplicate result notification for {symbol} (within {result_cooldown}m cooldown)")
+
+                # Stats - only record close on final TP or SL
+                if close_signal:
+                    if self.stats: self.stats.record_close(sig_id, price, res)
+                    del signals[sig_id]
+                    updated = True
+        
+        if updated: self._save_state()
+
+    def should_alert(self, symbol, pattern, cooldown_minutes):
+        """Check if enough time has passed since last alert for this symbol-pattern pair."""
+        last_alerts = self.state.setdefault("last_alerts", {})
+        key = f"{symbol}|{pattern}"
+        last_time_str = last_alerts.get(key)
+
+        if not last_time_str:
             return True
-        delta = datetime.now(timezone.utc) - self._parse_ts(last_ts)
-        return delta >= timedelta(minutes=cooldown_minutes)
-    
-    def mark_alert(self, symbol: str) -> None:
-        cast(Dict[str, str], self.data.setdefault("last_alert", {}))[symbol] = datetime.now(timezone.utc).isoformat()
-        self.save()
-    
-    def add_signal(self, signal_id: str, payload: Dict[str, object]) -> None:
-        cast(Dict[str, Dict[str, object]], self.data.setdefault("open_signals", {}))[signal_id] = payload
-        self.save()
-    
-    def remove_signal(self, signal_id: str) -> None:
-        signals = cast(Dict[str, Dict[str, object]], self.data.setdefault("open_signals", {}))
-        if signal_id in signals:
-            signals.pop(signal_id)
-            self.save()
-    
-    def iter_signals(self) -> Dict[str, Dict[str, object]]:
-        return cast(Dict[str, Dict[str, object]], self.data.setdefault("open_signals", {}))
 
+        try:
+            last_time = datetime.fromisoformat(last_time_str)
+            elapsed = datetime.now(timezone.utc) - last_time
+            return elapsed.total_seconds() >= (cooldown_minutes * 60)
+        except Exception:
+            return True
+
+    def mark_alert(self, symbol, pattern):
+        """Mark that we just sent an alert for this symbol-pattern pair."""
+        last_alerts = self.state.setdefault("last_alerts", {})
+        key = f"{symbol}|{pattern}"
+        last_alerts[key] = datetime.now(timezone.utc).isoformat()
+        self._save_state()
+
+    def cleanup_stale_signals(self, max_age_hours=24):
+        """Remove signals older than max_age_hours and archive to stats (from Volume Bot)."""
+        signals = self.state.get("open_signals", {})
+        if not signals:
+            return 0
+
+        removed = []
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+
+        for sig_id, payload in list(signals.items()):
+            timestamp_str = payload.get("timestamp")
+            if not timestamp_str:
+                # Archive to stats as expired before removing
+                if self.stats:
+                    self.stats.record_close(
+                        sig_id,
+                        exit_price=payload.get("entry", 0),
+                        result="EXPIRED"
+                    )
+                removed.append(sig_id)
+                continue
+
+            try:
+                sig_time = datetime.fromisoformat(timestamp_str)
+                if sig_time.tzinfo is None:
+                    sig_time = sig_time.replace(tzinfo=timezone.utc)
+
+                age_hours = (datetime.now(timezone.utc) - sig_time).total_seconds() / 3600
+
+                if sig_time < cutoff:
+                    # Archive to stats as expired before removing
+                    if self.stats:
+                        self.stats.record_close(
+                            sig_id,
+                            exit_price=payload.get("entry", 0),
+                            result="EXPIRED"
+                        )
+                    removed.append(sig_id)
+                    logger.info(f"Removed stale signal {sig_id} (age: {age_hours:.1f}h)")
+            except Exception:
+                removed.append(sig_id)
+
+        for sig_id in removed:
+            del signals[sig_id]
+
+        if removed:
+            self._save_state()
+            logger.info(f"Cleaned up {len(removed)} stale signals")
+
+        return len(removed)
+
+    def _should_notify_result(self, symbol: str, cooldown_minutes: int) -> bool:
+        """Check if we should send result notification (from Volume Bot)."""
+        last_notifs = self.state.setdefault("last_result_notifications", {})
+        if not isinstance(last_notifs, dict):
+            last_notifs = {}
+            self.state["last_result_notifications"] = last_notifs
+
+        last_ts = last_notifs.get(symbol)
+        if not isinstance(last_ts, str):
+            return True
+
+        try:
+            last_dt = datetime.fromisoformat(last_ts)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return True
+
+        now = datetime.now(timezone.utc)
+        return now - last_dt >= timedelta(minutes=cooldown_minutes)
+
+    def _mark_result_notified(self, symbol: str) -> None:
+        """Mark that we sent a result notification for this symbol (from Volume Bot)."""
+        last_notifs = self.state.setdefault("last_result_notifications", {})
+        if not isinstance(last_notifs, dict):
+            last_notifs = {}
+            self.state["last_result_notifications"] = last_notifs
+        last_notifs[symbol] = datetime.now(timezone.utc).isoformat()
+        self._save_state()
+
+    def check_reversal(self, symbol, new_direction, notifier):
+        signals = self.state.get("open_signals", {})
+        for sig_id, payload in signals.items():
+            if payload.get("symbol") == symbol:
+                old_dir = payload.get("direction")
+                if old_dir != new_direction:
+                    safe_symbol = html.escape(symbol)
+                    safe_old = html.escape(old_dir)
+                    safe_new = html.escape(new_direction)
+                    msg = (
+                        f"⚠️ <b>SIGNAL REVERSAL</b> ⚠️\n\n"
+                        f"<b>Symbol:</b> {safe_symbol}\n"
+                        f"<b>Open:</b> {safe_old}\n"
+                        f"<b>New:</b> {safe_new}\n\n"
+                        f"💡 Check your position!"
+                    )
+                    if notifier: notifier.send_message(msg, parse_mode="HTML")
 
 class HarmonicBot:
-    """Main Harmonic Pattern Bot."""
-    
-    def __init__(self, interval: int = 300, default_cooldown: int = 30):
-        self.interval = interval
-        self.default_cooldown = default_cooldown
-        self.watchlist = load_watchlist()
-        self.client = MexcClient()
-        self.detector = HarmonicPatternDetector()
-        self.state = BotState(STATE_FILE)
-        self.notifier = self._init_notifier()
+    """Refactored Harmonic Bot with Volume Bot features."""
+
+    def __init__(self, config_path: Path):
+        self.config = load_json_config(config_path)
+
+        # Init components
+        self.watchlist = self._load_watchlist()
+        self.analyzer = HarmonicPatternDetector(self.config)
         self.stats = SignalStats("Harmonic Bot", STATS_FILE) if SignalStats else None
-        self.health_monitor = (
-            HealthMonitor("Harmonic Bot", self.notifier, heartbeat_interval=3600)
-            if HealthMonitor else None
-        )
-        self.rate_limiter = (
-            RateLimiter(calls_per_minute=60, backoff_file=LOG_DIR / "rate_limiter.json")
-            if RateLimiter else None
-        )
-    
+        self.tracker = SignalTracker(self.stats, self.config)
+        self.notifier = self._init_notifier()
+
+        # Init Health Monitor
+        heartbeat_interval = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
+        self.health_monitor = HealthMonitor("Harmonic Bot", self.notifier, heartbeat_interval=heartbeat_interval) if HealthMonitor and self.notifier else None
+
+        # Init Rate Limiter
+        calls_per_min = self.config.get("rate_limit", {}).get("calls_per_minute", 60)
+        self.rate_limiter = RateLimiter(calls_per_minute=calls_per_min, backoff_file=LOG_DIR / "rate_limiter.json") if RateLimiter else None
+        if self.rate_limiter:
+            logger.info(f"Rate limiter initialized: {calls_per_min} calls/min")
+
+        # Exchange backoff tracking (from Volume Bot)
+        self.exchange_backoff: Dict[str, float] = {}
+        self.exchange_delay: Dict[str, float] = {}
+
+        # Init Exchanges with timeout
+        request_timeout = self.config.get("analysis", {}).get("request_timeout_seconds", 30)
+        self.clients = {}
+        for name, cfg in EXCHANGE_CONFIG.items():
+            try:
+                params = dict(cfg["params"])
+                params['timeout'] = request_timeout * 1000  # ccxt uses milliseconds
+                self.clients[name] = cfg["factory"](params)
+            except Exception as e:
+                logger.error(f"Failed to init {name}: {e}")
+
+        # Validate exchanges on startup
+        self._validate_exchanges()
+
+        # Sync existing signals to stats on startup
+        self._sync_signals_to_stats()
+
+    def _validate_exchanges(self) -> None:
+        """Validate exchange connections on startup (from Volume Bot)."""
+        for exchange_name, client in self.clients.items():
+            try:
+                # Try to load markets to verify connection
+                client.load_markets()
+                logger.info(f"✅ {exchange_name} connection validated")
+            except ccxt.NetworkError as e:
+                logger.warning(f"⚠️ Network error connecting to {exchange_name}: {e}")
+            except ccxt.ExchangeError as e:
+                logger.warning(f"⚠️ Exchange error for {exchange_name}: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not validate {exchange_name}: {e}")
+
+    def _sync_signals_to_stats(self) -> None:
+        """Sync open signals from state to stats on startup (from Volume Bot)."""
+        if not self.stats:
+            return
+
+        signals = self.tracker.state.get("open_signals", {})
+        if not isinstance(signals, dict):
+            return
+
+        stats_open = self.stats.data.get("open", {}) if isinstance(self.stats.data.get("open", {}), dict) else {}
+        synced = 0
+
+        for signal_id, payload in signals.items():
+            if signal_id not in stats_open and isinstance(payload, dict):
+                self.stats.record_open(
+                    signal_id=signal_id,
+                    symbol=payload.get("symbol", ""),
+                    direction=payload.get("direction", "BULLISH"),
+                    entry=payload.get("entry", 0),
+                    created_at=payload.get("timestamp", ""),
+                    extra={
+                        "timeframe": payload.get("timeframe", ""),
+                        "exchange": payload.get("exchange", ""),
+                        "pattern": payload.get("pattern_name", ""),
+                    },
+                )
+                synced += 1
+
+        if synced > 0:
+            logger.info(f"Synced {synced} existing signals to stats tracker")
+
+    def _backoff_active(self, exchange: str) -> bool:
+        """Check if exchange is in backoff period (from Volume Bot)."""
+        until = self.exchange_backoff.get(exchange)
+        return bool(until and time.time() < until)
+
+    def _register_backoff(self, exchange: str) -> None:
+        """Register rate limit backoff for an exchange (from Volume Bot)."""
+        base_delay = self.config.get("rate_limit", {}).get("rate_limit_backoff_base", 60)
+        max_delay = self.config.get("rate_limit", {}).get("rate_limit_backoff_max", 300)
+        multiplier = self.config.get("rate_limit", {}).get("backoff_multiplier", 2.0)
+
+        prev = self.exchange_delay.get(exchange, base_delay)
+        new_delay = min(prev * multiplier, max_delay) if exchange in self.exchange_backoff else base_delay
+
+        until = time.time() + new_delay
+        self.exchange_backoff[exchange] = until
+        self.exchange_delay[exchange] = new_delay
+        logger.warning(f"{exchange} rate limit; backing off for {new_delay:.0f}s")
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        """Check if exception is a rate limit error (from Volume Bot)."""
+        msg = str(exc)
+        return "Requests are too frequent" in msg or "429" in msg or "403 Forbidden" in msg
+
+    def _count_symbol_signals(self, symbol: str) -> int:
+        """Count open signals for a specific symbol (from Volume Bot)."""
+        signals = self.tracker.state.get("open_signals", {})
+        if not isinstance(signals, dict):
+            return 0
+
+        # Normalize symbol for comparison
+        normalized = symbol.upper().split("/")[0].replace("USDT", "")
+        count = 0
+
+        for payload in signals.values():
+            if not isinstance(payload, dict):
+                continue
+            sig_symbol = payload.get("symbol", "")
+            sig_normalized = sig_symbol.upper().split("/")[0].replace("USDT", "")
+            if sig_normalized == normalized:
+                count += 1
+
+        return count
+
+    def _load_watchlist(self):
+        """Load and validate watchlist entries (Fix 2.3)."""
+        if not WATCHLIST_FILE.exists():
+            logger.warning("Watchlist file not found")
+            return []
+        try:
+            raw_watchlist = json.loads(WATCHLIST_FILE.read_text())
+        except Exception as e:
+            logger.error(f"Failed to load watchlist: {e}")
+            return []
+
+        # Validate watchlist entries
+        valid_exchanges = ["binanceusdm", "mexc", "bybit"]
+        valid_timeframes = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
+        valid_entries = []
+        invalid_count = 0
+
+        for item in raw_watchlist:
+            if not isinstance(item, dict):
+                logger.warning(f"Invalid watchlist entry (not a dict): {item}")
+                invalid_count += 1
+                continue
+
+            symbol = item.get("symbol")
+            exchange = item.get("exchange", "mexc")
+            timeframe = item.get("timeframe", "1h")
+
+            # Validate symbol
+            if not symbol or not isinstance(symbol, str):
+                logger.warning(f"Invalid symbol in watchlist: {symbol}")
+                invalid_count += 1
+                continue
+
+            # Validate exchange
+            if exchange not in valid_exchanges:
+                logger.warning(f"Invalid exchange '{exchange}' for {symbol}, using mexc")
+                item["exchange"] = "mexc"
+
+            # Validate timeframe
+            if timeframe not in valid_timeframes:
+                logger.warning(f"Invalid timeframe '{timeframe}' for {symbol}, using 1h")
+                item["timeframe"] = "1h"
+
+            valid_entries.append(item)
+
+        if invalid_count > 0:
+            logger.warning(f"Skipped {invalid_count} invalid watchlist entries")
+
+        logger.info(f"Loaded {len(valid_entries)} valid watchlist entries")
+        return valid_entries
+
     def _init_notifier(self):
-        if TelegramNotifier is None:
-            logger.warning("Telegram notifier unavailable")
-            return None
+        if not TelegramNotifier: return None
         token = os.getenv("TELEGRAM_BOT_TOKEN_HARMONIC") or os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not token or not chat_id:
-            logger.warning("Telegram credentials missing")
-            return None
-        return TelegramNotifier(
-            bot_token=token,
-            chat_id=chat_id,
-            signals_log_file=str(LOG_DIR / "harmonic_signals.json")
-        )
-    
-    def run(self, loop: bool = False) -> None:
-        if not self.watchlist:
-            logger.error("Empty watchlist; exiting")
-            return
-        
-        logger.info("Starting Harmonic Pattern Bot for %d symbols", len(self.watchlist))
-        
+        return TelegramNotifier(bot_token=token, chat_id=chat_id, signals_log_file=str(LOG_DIR/"signals.json")) if token and chat_id else None
+
+    def run(self, run_once: bool = False, track_only: bool = False):
+        logger.info("Starting Refactored Harmonic Bot...")
+
+        # Get configuration values
+        symbol_delay = self.config.get("execution", {}).get("symbol_delay_seconds", 1)
+        max_open_signals = self.config.get("risk", {}).get("max_open_signals", 30)
+        max_same_symbol = self.config.get("risk", {}).get("max_same_symbol_signals", 2)
+        cooldown_minutes = self.config.get("signal", {}).get("cooldown_minutes", 5)
+        max_slippage_pct = self.config.get("risk", {}).get("max_slippage_pct", 0.5)
+        confidence_threshold = self.config.get("analysis", {}).get("confidence_threshold", 0.0)
+        cycle_interval = self.config.get("execution", {}).get("cycle_interval_seconds", 60)
+
+        logger.info(f"Config: Max signals={max_open_signals}, Max/symbol={max_same_symbol}, Cooldown={cooldown_minutes}min")
+        logger.info(f"Config: Symbol delay={symbol_delay}s, Max slippage={max_slippage_pct}%, Confidence threshold={confidence_threshold}")
+
         if self.health_monitor:
             self.health_monitor.send_startup_message()
-        
+
+        # Track-only mode: just check open signals
+        if track_only:
+            logger.info("Running in track-only mode - checking open signals...")
+            self.tracker.check_open_signals(self.clients, self.notifier, self.rate_limiter)
+            logger.info("Track-only check complete")
+            return
+
+        # Fix 2.2: No-signal heartbeat tracking
+        last_signal_time = datetime.now(timezone.utc)
+        no_signal_hours = self.config.get("signal", {}).get("no_signal_alert_hours", 6)
+        last_heartbeat_time = datetime.now(timezone.utc)
+
         try:
-            while not shutdown_requested:
+            while True:
                 try:
-                    self._run_cycle()
-                    self._monitor_open_signals()
-                    
+                    signals_this_cycle = 0  # Track signals per cycle
+                    for item in self.watchlist:
+                        symbol = item.get("symbol")
+                        exchange = item.get("exchange", "mexc")
+                        timeframe = item.get("timeframe", "1h")
+
+                        # Check exchange backoff (from Volume Bot)
+                        if self._backoff_active(exchange):
+                            logger.debug(f"Backoff active for {exchange}; skipping {symbol}")
+                            continue
+
+                        # 1. Fetch Data (with rate limiting)
+                        client = self.clients.get(exchange)
+                        if not client: continue
+
+                        try:
+                            # Use rate limiter if available
+                            if self.rate_limiter:
+                                self.rate_limiter.wait_if_needed()
+
+                            ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=200)
+                            ticker = client.fetch_ticker(resolve_symbol(symbol))
+                            price = ticker.get("last")
+
+                            # Record success if rate limiter is available
+                            if self.rate_limiter:
+                                self.rate_limiter.record_success(f"{exchange}_{symbol}")
+                        except ccxt.RateLimitExceeded as e:
+                            logger.warning(f"Rate limit hit for {symbol}, backing off...")
+                            self._register_backoff(exchange)
+                            if self.health_monitor: self.health_monitor.record_error(f"Rate Limit {symbol}")
+                            if self.rate_limiter:
+                                self.rate_limiter.record_error(f"{exchange}_{symbol}")
+                            continue
+                        except ccxt.NetworkError as e:
+                            logger.warning(f"Network error for {symbol}: {e}")
+                            if self.rate_limiter:
+                                self.rate_limiter.record_error(f"{exchange}_{symbol}")
+                            continue
+                        except Exception as e:
+                            logger.error(f"Error fetching {symbol}: {e}")
+                            if self._is_rate_limit_error(e):
+                                self._register_backoff(exchange)
+                            if self.health_monitor: self.health_monitor.record_error(f"API Error {symbol}: {e}")
+                            if self.rate_limiter:
+                                self.rate_limiter.record_error(f"{exchange}_{symbol}")
+                            continue
+
+                        # 2. Analyze
+                        signal = self.analyzer.detect(ohlcv, symbol, timeframe, price, exchange)
+
+                        if signal:
+                            # 2.3 Confidence threshold check (from Volume Bot)
+                            if hasattr(signal, 'confidence') and signal.confidence < confidence_threshold:
+                                logger.debug(f"{symbol}: Confidence too low ({signal.confidence:.2f} < {confidence_threshold})")
+                                continue
+
+                            # 2.5 Slippage protection (Fix 1.8)
+                            if signal.entry > 0:
+                                slippage = abs(price - signal.entry) / signal.entry * 100
+                                if slippage > max_slippage_pct:
+                                    logger.debug(f"{symbol}: Slippage too high ({slippage:.2f}% > {max_slippage_pct}%), skipping")
+                                    continue
+
+                            # 3. Check Max Open Signals BEFORE adding
+                            current_open = len(self.tracker.state.get("open_signals", {}))
+                            if current_open >= max_open_signals:
+                                logger.info(f"Max signals limit reached ({current_open}/{max_open_signals}). Skipping {symbol}")
+                                continue
+
+                            # 3.5 Check Max Same Symbol Signals (from Volume Bot)
+                            symbol_count = self._count_symbol_signals(symbol)
+                            if symbol_count >= max_same_symbol:
+                                logger.debug(f"{symbol}: Max same symbol signals reached ({symbol_count}/{max_same_symbol})")
+                                continue
+
+                            # 4. Check Cooldown
+                            if not self.tracker.should_alert(symbol, signal.pattern_name, cooldown_minutes):
+                                logger.debug(f"Cooldown active for {symbol} {signal.pattern_name}")
+                                continue
+
+                            # 5. Deduplicate (Fix 1.6 - pass exchange and timeframe)
+                            if not self.tracker.is_duplicate(symbol, signal.pattern_name, signal.d_timestamp, exchange, timeframe):
+                                # 6. Check Reversal
+                                self.tracker.check_reversal(symbol, signal.direction, self.notifier)
+
+                                # 7. Alert & Track
+                                self.tracker.add_signal(signal)
+                                self._send_alert(signal)
+                                self.tracker.mark_alert(symbol, signal.pattern_name)
+                                signals_this_cycle += 1
+                                last_signal_time = datetime.now(timezone.utc)  # Fix 2.2
+
+                        # CRITICAL: Add delay between symbols to prevent rate limiting
+                        time.sleep(symbol_delay)
+
+                    # 6. Cleanup stale signals FIRST (before checking prices)
+                    max_age_hours = self.config.get("signal", {}).get("max_signal_age_hours", 24)
+                    self.tracker.cleanup_stale_signals(max_age_hours)
+
+                    # 7. Monitor Open Signals (after cleanup) - with rate limiting (Fix 2.1)
+                    self.tracker.check_open_signals(self.clients, self.notifier, self.rate_limiter)
+
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
-                    
-                    if not loop:
-                        break
 
-                    if shutdown_requested:
+                    # Fix 2.2: No-signal heartbeat notification
+                    hours_since_signal = (datetime.now(timezone.utc) - last_signal_time).total_seconds() / 3600
+                    hours_since_heartbeat = (datetime.now(timezone.utc) - last_heartbeat_time).total_seconds() / 3600
+
+                    if hours_since_signal >= no_signal_hours and hours_since_heartbeat >= no_signal_hours:
+                        if self.notifier:
+                            open_signals = len(self.tracker.state.get("open_signals", {}))
+                            msg = (
+                                f"💓 <b>Harmonic Bot Heartbeat</b>\n\n"
+                                f"⏰ No new signals for {hours_since_signal:.1f} hours\n"
+                                f"📊 Open signals: {open_signals}\n"
+                                f"👁️ Watching: {len(self.watchlist)} symbols\n"
+                                f"✅ Bot is running normally"
+                            )
+                            self.notifier.send_message(msg, parse_mode="HTML")
+                            last_heartbeat_time = datetime.now(timezone.utc)
+                            logger.info(f"Heartbeat sent - no signals for {hours_since_signal:.1f} hours")
+
+                    if run_once:
                         break
-                    logger.info("Cycle complete; sleeping %ds", self.interval)
-                    time.sleep(self.interval)
-                except Exception as exc:
-                    logger.error("Error in cycle: %s", exc)
-                    if self.health_monitor:
-                        self.health_monitor.record_error(str(exc))
-                    if not loop:
-                        raise
-                    if shutdown_requested:
-                        break
+                    time.sleep(cycle_interval)
+                    
+                except Exception as e:
+                    logger.error(f"Cycle error: {e}")
+                    if self.health_monitor: self.health_monitor.record_error(f"Cycle Error: {e}")
+                    if run_once: raise
                     time.sleep(10)
         finally:
             if self.health_monitor:
                 self.health_monitor.send_shutdown_message()
-    
-    def _run_cycle(self) -> None:
-        for item in self.watchlist:
-            symbol_val = item.get("symbol") if isinstance(item, dict) else None
-            if not isinstance(symbol_val, str):
+
+    def _get_symbol_performance(self, symbol: str) -> Dict[str, Any]:
+        """Get performance statistics for a specific symbol."""
+        if not self.tracker.stats or not isinstance(self.tracker.stats.data, dict):
+            return {"total": 0, "wins": 0, "tp1": 0, "tp2": 0, "sl": 0, "avg_pnl": 0.0}
+
+        history = self.tracker.stats.data.get("history", [])
+        if not isinstance(history, list):
+            return {"total": 0, "wins": 0, "tp1": 0, "tp2": 0, "sl": 0, "avg_pnl": 0.0}
+
+        # Normalize symbol for comparison
+        symbol_key = symbol.split(":")[0].upper()
+
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
+        pnl_sum = 0.0
+        count = 0
+
+        for entry in history:
+            if not isinstance(entry, dict):
                 continue
-            symbol = symbol_val
-            period_val = item.get("period", "5m") if isinstance(item, dict) else "5m"
-            period = period_val if isinstance(period_val, str) else "5m"
-            cooldown_raw = item.get("cooldown_minutes", self.default_cooldown) if isinstance(item, dict) else self.default_cooldown
-            if isinstance(cooldown_raw, (int, float, str)):
-                try:
-                    cooldown = int(cooldown_raw)
-                except Exception:
-                    cooldown = self.default_cooldown
-            else:
-                cooldown = self.default_cooldown
-            
-            if self.rate_limiter:
-                self.rate_limiter.wait_if_needed()
-            
-            try:
-                signal = self._analyze_symbol(symbol, period)
-                if self.rate_limiter:
-                    self.rate_limiter.record_success(f"mexc_{symbol}")
-            except Exception as exc:
-                logger.error("Failed to analyze %s: %s", symbol, exc)
-                if self.rate_limiter:
-                    self.rate_limiter.record_error(f"mexc_{symbol}")
-                if self.health_monitor:
-                    self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
+
+            entry_symbol = entry.get("symbol", "").split(":")[0].upper()
+            if entry_symbol != symbol_key:
                 continue
-            
-            if signal is None:
-                logger.debug("%s: No pattern detected", symbol)
-                continue
-            
-            if not self.state.can_alert(symbol, cooldown):
-                logger.debug("Cooldown active for %s", symbol)
-                continue
-            
-            # Max open signals limit
-            MAX_OPEN_SIGNALS = 50
-            current_open = len(self.state.iter_signals())
-            if current_open >= MAX_OPEN_SIGNALS:
-                logger.info(
-                    "Max open signals limit reached (%d/%d). Skipping %s",
-                    current_open, MAX_OPEN_SIGNALS, symbol
-                )
-                continue
-            
-            # Send alert
-            message = self._format_message(signal)
-            self._dispatch(message)
-            self.state.mark_alert(symbol)
-            
-            # Track signal
-            signal_id = f"{symbol}-{signal.pattern_name}-{signal.timestamp}"
-            trade_data = {
-                "id": signal_id,
-                "symbol": symbol,
-                "pattern": signal.pattern_name,
-                "direction": signal.direction,
-                "entry": signal.entry,
-                "stop_loss": signal.stop_loss,
-                "take_profit_1": signal.take_profit_1,
-                "take_profit_2": signal.take_profit_2,
-                "created_at": signal.timestamp,
-                "timeframe": period,
-                "exchange": "MEXC",
-                "error_score": signal.error_score,
-            }
-            self.state.add_signal(signal_id, trade_data)
-            
-            if self.stats:
-                self.stats.record_open(
-                    signal_id=signal_id,
-                    symbol=f"{symbol}/USDT",
-                    direction=signal.direction,
-                    entry=signal.entry,
-                    created_at=signal.timestamp,
-                    extra={
-                        "timeframe": period,
-                        "exchange": "MEXC",
-                        "pattern": signal.pattern_name,
-                    },
-                )
-            
-            time.sleep(0.5)
-    
-    def _analyze_symbol(self, symbol: str, timeframe: str) -> Optional[HarmonicSignal]:
-        """Analyze symbol for harmonic patterns."""
-        # Fetch OHLCV data
-        ohlcv = self.client.fetch_ohlcv(symbol, timeframe, limit=300)
-        
-        if len(ohlcv) < 100:
-            return None
-        
-        opens = [x[1] for x in ohlcv]
-        highs = [x[2] for x in ohlcv]
-        lows = [x[3] for x in ohlcv]
-        closes = [x[4] for x in ohlcv]
-        
-        atr_value = self.detector.calculate_atr(highs, lows, closes)
-        if atr_value <= 0:
-            atr_value = max(np.std(closes[-50:]), 1e-6)
-        # Find ZigZag pivots
-        pivots = self.detector.find_zigzag_pivots(highs, lows, closes, opens, atr_value)
-        
-        if len(pivots) < 5:
-            return None
-        
-        # Get last 5 pivots for XABCD
-        x_idx, x, _ = pivots[-5]
-        a_idx, a, _ = pivots[-4]
-        b_idx, b, _ = pivots[-3]
-        c_idx, c, _ = pivots[-2]
-        d_idx, d, _ = pivots[-1]
-        
-        # Detect patterns
-        patterns = self.detector.detect_patterns(x, a, b, c, d)
-        
-        if not patterns:
-            return None
-        
-        # Use first (strongest) pattern
-        pattern_name, direction, error_score = patterns[0]
-        
-        # Calculate ratios
-        xab, xad, abc, bcd = self.detector.get_xabcd_ratios(x, a, b, c, d)
-        
-        # Calculate targets
-        targets = self.detector.calculate_targets(c, d, direction)
-        
-        # Get current price
-        ticker = self.client.fetch_ticker(symbol)
-        current_price = ticker.get("last") or ticker.get("close")
-        
-        return HarmonicSignal(
-            symbol=symbol,
-            pattern_name=pattern_name,
-            direction=direction,
-            timestamp=human_ts(),
-            x=x, a=a, b=b, c=c, d=d,
-            xab=xab, abc=abc, bcd=bcd, xad=xad,
-            entry=targets["entry"],
-            stop_loss=targets["stop_loss"],
-            take_profit_1=targets["take_profit_1"],
-            take_profit_2=targets["take_profit_2"],
-            take_profit_3=targets.get("take_profit_3"),
-            current_price=current_price,
-            error_score=error_score,
-        )
-    
-    def _format_message(self, signal: HarmonicSignal) -> str:
-        """Format Telegram message for signal."""
-        direction = signal.direction
-        emoji = "🟢" if direction == "BULLISH" else "🔴"
-        perf_line = self._symbol_perf_line(signal.symbol)
+
+            result = entry.get("result", "")
+            pnl = entry.get("pnl_pct", 0.0)
+
+            if result == "TP1":
+                tp1_count += 1
+            elif result == "TP2":
+                tp2_count += 1
+            elif result == "SL":
+                sl_count += 1
+
+            if isinstance(pnl, (int, float)):
+                pnl_sum += float(pnl)
+                count += 1
+
+        total = tp1_count + tp2_count + sl_count
+        wins = tp1_count + tp2_count
+        avg_pnl = (pnl_sum / count) if count > 0 else 0.0
+
+        return {
+            "total": total,
+            "wins": wins,
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "avg_pnl": avg_pnl
+        }
+
+    def _send_alert(self, signal):
+        emoji = "🟢" if signal.direction == "BULLISH" else "🔴"
+        safe_sym = html.escape(signal.symbol)
+        safe_pattern = html.escape(signal.pattern_name)
+        safe_direction = html.escape(signal.direction)
+        safe_exchange = html.escape(signal.exchange.upper())
+        safe_timeframe = html.escape(signal.timeframe)
+
+        # Get symbol performance stats
+        symbol_stats = self._get_symbol_performance(signal.symbol)
 
         lines = [
-            f"{emoji} <b>{direction} {signal.pattern_name.upper()} PATTERN - {signal.symbol}/USDT</b>",
+            f"{emoji} <b>{safe_direction} {safe_pattern} - {safe_sym}</b>",
             "",
-            f"📐 <b>Pattern:</b> {signal.pattern_name}",
-            f"💰 <b>Current Price:</b> <code>{signal.current_price:.6f}</code>",
+            f"💰 <b>Entry:</b> <code>{signal.entry:.6f}</code>",
+            f"🛑 <b>Stop:</b> <code>{signal.stop_loss:.6f}</code>",
+            f"🎯 <b>TP1:</b> <code>{signal.take_profit_1:.6f}</code>",
+            f"🚀 <b>TP2:</b> <code>{signal.take_profit_2:.6f}</code>",
+            "",
+            f"🏦 {safe_exchange} | ⏰ {safe_timeframe}"
         ]
 
-        if perf_line:
-            lines.append(perf_line)
-            lines.append("")
+        # Add symbol performance section
+        if symbol_stats["total"] > 0:
+            win_rate = (symbol_stats["wins"] / symbol_stats["total"]) * 100
+            lines.extend([
+                "",
+                f"📈 <b>{safe_sym} Performance History:</b>",
+                f"   TP1: {symbol_stats['tp1']} | TP2: {symbol_stats['tp2']} | SL: {symbol_stats['sl']}",
+                f"   Win Rate: <b>{win_rate:.1f}%</b> ({symbol_stats['wins']}/{symbol_stats['total']})",
+                f"   Avg PnL: <b>{symbol_stats['avg_pnl']:+.2f}%</b>",
+            ])
 
-        lines.extend([
-            "<b>🎯 TRADE LEVELS:</b>",
-            f"🟢 Entry: <code>{signal.entry:.6f}</code>",
-            f"🛑 Stop Loss: <code>{signal.stop_loss:.6f}</code>",
-            f"🎯 TP1: <code>{signal.take_profit_1:.6f}</code>",
-            f"🚀 TP2: <code>{signal.take_profit_2:.6f}</code>",
-        ])
-        
-        if signal.take_profit_3:
-            lines.append(f"🌟 TP3: <code>{signal.take_profit_3:.6f}</code>")
-        
-        # Calculate R:R
-        risk = abs(signal.entry - signal.stop_loss)
-        reward1 = abs(signal.take_profit_1 - signal.entry)
-        reward2 = abs(signal.take_profit_2 - signal.entry)
-        
-        if risk > 0:
-            rr1 = reward1 / risk
-            rr2 = reward2 / risk
-            lines.append("")
-            lines.append(f"⚖️ <b>Risk/Reward:</b> 1:{rr1:.2f} (TP1) | 1:{rr2:.2f} (TP2)")
-        
-        lines.extend([
-            "",
-            "<b>📊 FIBONACCI RATIOS:</b>",
-            f"XAB: <code>{signal.xab:.3f}</code> | ABC: <code>{signal.abc:.3f}</code>",
-            f"BCD: <code>{signal.bcd:.3f}</code> | XAD: <code>{signal.xad:.3f}</code>",
-            f"🎯 Pattern Error Score: <code>{signal.error_score:.3f}</code>",
-            "",
-            f"⏱️ {signal.timestamp}",
-        ])
-        
-        return "\n".join(lines)
-
-    def _symbol_perf_line(self, symbol: str) -> Optional[str]:
-        if not self.stats:
-            return None
-        symbol_key = symbol if "/" in symbol else f"{symbol}/USDT"
-        counts = self.stats.symbol_tp_sl_counts(symbol_key)
-        tp1 = counts.get("TP1", 0)
-        tp2 = counts.get("TP2", 0)
-        sl = counts.get("SL", 0)
-        total = tp1 + tp2 + sl
-        if total == 0:
-            return None
-        win_rate = (tp1 + tp2) / total * 100.0
-        return (
-            f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
-            f"(Win rate: {win_rate:.1f}%)"
-        )
-    
-    def _monitor_open_signals(self) -> None:
-        """Monitor open signals for TP/SL hits."""
-        signals = self.state.iter_signals()
-        if not signals:
-            return
-        
-        for signal_id, payload in list(signals.items()):
-            symbol_val = payload.get("symbol") if isinstance(payload, dict) else None
-            if not isinstance(symbol_val, str):
-                self.state.remove_signal(signal_id)
-                continue
-            symbol = symbol_val
-            
-            try:
-                ticker = self.client.fetch_ticker(symbol)
-                price = ticker.get("last") or ticker.get("close")
-            except Exception as exc:
-                logger.warning("Failed to fetch ticker for %s: %s", signal_id, exc)
-                continue
-            
-            if price is None:
-                continue
-            
-            direction = payload.get("direction")
-            entry = payload.get("entry")
-            tp1 = payload.get("take_profit_1")
-            tp2 = payload.get("take_profit_2")
-            sl = payload.get("stop_loss")
-            
-            if None in (direction, entry, tp1, tp2, sl):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-            
-            if direction == "BULLISH":
-                hit_tp2 = price >= tp2
-                hit_tp1 = price >= tp1
-                hit_sl = price <= sl
-            else:
-                hit_tp2 = price <= tp2
-                hit_tp1 = price <= tp1
-                hit_sl = price >= sl
-            
-            result = None
-            if hit_tp2:
-                result = "TP2"
-            elif hit_tp1:
-                result = "TP1"
-            elif hit_sl:
-                result = "SL"
-            
-            if result:
-                summary_message = None
-                if self.stats:
-                    stats_record = self.stats.record_close(
-                        signal_id,
-                        exit_price=price,
-                        result=result,
-                    )
-                    if stats_record:
-                        summary_message = self.stats.build_summary_message(stats_record)
-                    else:
-                        self.stats.discard(signal_id)
-                
-                if summary_message:
-                    self._dispatch(summary_message)
-                else:
-                    pattern = payload.get("pattern", "Pattern")
-                    message = (
-                        f"🎯 {symbol}/USDT {pattern} {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
-                        f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
-                    )
-                    self._dispatch(message)
-                
-                self.state.remove_signal(signal_id)
-    
-    def _dispatch(self, message: str) -> None:
-        """Send message via Telegram."""
+        msg = "\n".join(lines)
         if self.notifier:
-            if self.notifier.send_message(message):
-                logger.info("Alert sent to Telegram")
-            else:
-                logger.error("Failed to send Telegram message")
-                logger.info("%s", message)
-        else:
-            logger.info("Alert:\n%s", message)
+            self.notifier.send_message(msg, parse_mode="HTML")
+            logger.info(f"Signal sent: {signal.symbol} {signal.pattern_name} {signal.direction}")
+
+def validate_environment() -> bool:
+    """Validate all required environment variables are set (from Volume Bot)."""
+    required = {
+        "TELEGRAM_BOT_TOKEN": "Telegram bot token (or TELEGRAM_BOT_TOKEN_HARMONIC)",
+        "TELEGRAM_CHAT_ID": "Telegram chat ID",
+    }
+
+    missing = []
+
+    # Check Telegram (at least one token must exist)
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN_HARMONIC") or os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not bot_token:
+        missing.append("  - TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN_HARMONIC: Telegram bot token")
+    if not chat_id:
+        missing.append("  - TELEGRAM_CHAT_ID: Telegram chat ID")
+
+    if missing:
+        logger.critical("❌ Missing required environment variables:")
+        for item in missing:
+            logger.critical(item)
+        logger.critical("\nPlease create a .env file with these variables.")
+        return False
+
+    logger.info("✅ All required environment variables present")
+    return True
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Harmonic Pattern Bot")
-    parser.add_argument("--loop", action="store_true", help="Run indefinitely")
-    parser.add_argument("--interval", type=int, default=300, help="Seconds between cycles")
-    parser.add_argument("--cooldown", type=int, default=30, help="Default cooldown minutes")
-    return parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(
+        description="Harmonic Pattern Bot - Automated harmonic pattern detection",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python harmonic_bot.py --once              # Run one cycle
+  python harmonic_bot.py --track             # Check open signals only
+  python harmonic_bot.py --debug             # Enable debug logging
+  python harmonic_bot.py --config custom.json  # Use custom config file
+        """
+    )
+    parser.add_argument("--config", default="harmonic_config.json", help="Path to configuration JSON file")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
+    parser.add_argument("--track", action="store_true", help="Only run tracker checks (from Volume Bot)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Skip environment validation (not recommended)",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set logging level (overrides config)",
+    )
+    args = parser.parse_args()
 
+    # Load config first to get logging settings
+    config_path = BASE_DIR / args.config
+    config = load_json_config(config_path)
 
-def main() -> None:
-    args = parse_args()
-    bot = HarmonicBot(interval=args.interval, default_cooldown=args.cooldown)
-    bot.run(loop=args.loop)
+    # Determine log level (CLI > config > default)
+    if args.log_level:
+        log_level = args.log_level
+    elif args.debug:
+        log_level = "DEBUG"
+    else:
+        log_level = config.get("execution", {}).get("log_level", "INFO")
+    enable_detailed = config.get("execution", {}).get("enable_detailed_logging", False)
+
+    global logger
+    logger = setup_logging(log_level=log_level, enable_detailed=enable_detailed)
+
+    logger.info("=" * 60)
+    logger.info("🤖 Harmonic Pattern Bot Starting...")
+    logger.info("=" * 60)
+    logger.info(f"📝 Log level: {log_level} | Detailed: {enable_detailed}")
+    logger.info(f"📁 Working directory: {BASE_DIR}")
+    logger.info(f"⚙️  Config file: {config_path}")
+
+    # Validate environment unless skipped
+    if not args.skip_validation:
+        if not validate_environment():
+            logger.critical("❌ Environment validation failed - exiting")
+            logger.critical("Use --skip-validation to bypass (not recommended)")
+            sys.exit(1)
+
+    bot = HarmonicBot(config_path)
+    bot.run(run_once=args.once, track_only=args.track)
 
 
 if __name__ == "__main__":

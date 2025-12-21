@@ -1,8 +1,53 @@
 [
   {
+    "symbol": "AIOT",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ALCH",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ALMANAK",
+    "period": "15m",
+    "cooldown_minutes": 60
+  },
+  {
+    "symbol": "BAY",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
     "symbol": "CLO",
     "period": "15m",
     "cooldown_minutes": 60
+  },
+  {
+    "symbol": "CORL",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "DSYNC",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "FHE",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "H",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ICNT",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "IRYS",
@@ -15,14 +60,9 @@
     "cooldown_minutes": 60
   },
   {
-    "symbol": "ON",
-    "period": "15m",
-    "cooldown_minutes": 60
-  },
-  {
-    "symbol": "RIVER",
-    "period": "15m",
-    "cooldown_minutes": 60
+    "symbol": "LONG",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "NIGHT",
@@ -30,14 +70,29 @@
     "cooldown_minutes": 60
   },
   {
-    "symbol": "ALMANAK",
+    "symbol": "ON",
     "period": "15m",
     "cooldown_minutes": 60
   },
   {
+    "symbol": "POWR",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "RVV",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
     "symbol": "TRUTH",
-    "period": "15m",
-    "cooldown_minutes": 60
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "TYCOON",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "WET",

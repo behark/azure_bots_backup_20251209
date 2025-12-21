@@ -1,77 +1,92 @@
 [
   {
-    "symbol": "CLO",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "AIOT/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "JELLYJELLY",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "ALCH/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "ON",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "ASTER/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "POWER",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "CLO/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "RIVER",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "DOGE/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "PIPPIN",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "FHE/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "NIGHT",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "FRANKLIN/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "ALMANAK",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "H/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "SUI",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "ICNT/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "TRUTH",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "IRYS/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "LRC",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "ON/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "ASTER",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "PIPPIN/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "DOGE",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "RVV/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "WET",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "SUI/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   },
   {
-    "symbol": "FRANKLIN",
-    "period": "5m",
-    "cooldown_minutes": 3
+    "symbol": "TRUTH/USDT",
+    "timeframe": "8h",
+    "exchange": "mexc",
+    "market_type": "swap"
   }
 ]

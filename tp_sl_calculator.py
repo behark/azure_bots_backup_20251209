@@ -87,8 +87,8 @@ class TPSLCalculator:
     def __init__(
         self,
         min_risk_reward: float = 1.8,
-        max_sl_percent: float = 5.0,
-        min_sl_percent: float = 0.2,
+        max_sl_percent: float = 5.5,
+        min_sl_percent: float = 0.05,
         sl_buffer_percent: float = 0.75,
     ):
         """
@@ -119,6 +119,8 @@ class TPSLCalculator:
         swing_low: Optional[float] = None,
         volatility_percent: Optional[float] = None,
         custom_sl: Optional[float] = None,
+        market_regime: str = "RANGING",  # TRENDING, RANGING, CHOPPY
+        adx_strength: float = 20.0,
     ) -> TradeLevels:
         """
         Calculate TP/SL levels using specified method.
@@ -136,27 +138,48 @@ class TPSLCalculator:
             swing_low: Recent swing low (for STRUCTURE method)
             volatility_percent: Recent volatility % (for VOLATILITY method)
             custom_sl: Custom stop loss price (overrides calculation)
+            market_regime: Current market regime for dynamic scaling
+            adx_strength: Trend strength for scaling TP
             
         Returns:
             TradeLevels with all calculated values
         """
         # Normalize direction
         direction = self._normalize_direction(direction)
-        
+
+        # Dynamic adjustments based on market regime
+        adj_sl_mult = sl_multiplier
+        adj_tp1_mult = tp1_multiplier
+        adj_tp2_mult = tp2_multiplier
+
+        if market_regime == "TRENDING":
+            # In trending markets, widen SL slightly and extend TP
+            adj_sl_mult *= 1.2
+            # FIX: Ensure trend_boost is at least 1.0 to avoid reducing TP
+            # When ADX > 25, boost TP proportionally; when ADX <= 25, keep TP unchanged
+            trend_boost = max(1.0, min(1.5, adx_strength / 25.0))
+            adj_tp1_mult *= trend_boost
+            adj_tp2_mult *= (trend_boost * 1.2)
+        elif market_regime == "CHOPPY":
+            # In choppy markets, tighten everything and reduce R:R expectations
+            adj_sl_mult *= 0.8
+            adj_tp1_mult *= 0.7
+            adj_tp2_mult *= 0.7
+
         if method == CalculationMethod.ATR:
             return self._calculate_atr_based(
-                entry, direction, atr, sl_multiplier,
-                tp1_multiplier, tp2_multiplier, tp3_multiplier, custom_sl
+                entry, direction, atr, adj_sl_mult,
+                adj_tp1_mult, adj_tp2_mult, tp3_multiplier, custom_sl
             )
         elif method == CalculationMethod.PERCENTAGE:
             return self._calculate_percentage_based(
                 entry, direction, volatility_percent or 1.0,
-                tp1_multiplier, tp2_multiplier, tp3_multiplier
+                adj_tp1_mult, adj_tp2_mult, tp3_multiplier
             )
         elif method == CalculationMethod.STRUCTURE:
             return self._calculate_structure_based(
                 entry, direction, swing_high, swing_low,
-                tp1_multiplier, tp2_multiplier, tp3_multiplier
+                adj_tp1_mult, adj_tp2_mult, tp3_multiplier
             )
         elif method == CalculationMethod.FIBONACCI:
             return self._calculate_fibonacci_based(
@@ -164,8 +187,8 @@ class TPSLCalculator:
             )
         else:
             return self._calculate_atr_based(
-                entry, direction, atr, sl_multiplier,
-                tp1_multiplier, tp2_multiplier, tp3_multiplier, custom_sl
+                entry, direction, atr, adj_sl_mult,
+                adj_tp1_mult, adj_tp2_mult, tp3_multiplier, custom_sl
             )
     
     def _normalize_direction(self, direction: str) -> str:

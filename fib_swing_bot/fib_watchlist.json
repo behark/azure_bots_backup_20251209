@@ -30,11 +30,6 @@
     "cooldown_minutes": 60
   },
   {
-    "symbol": "RIVER",
-    "period": "15m",
-    "cooldown_minutes": 60
-  },
-  {
     "symbol": "RLS",
     "period": "15m",
     "cooldown_minutes": 60

@@ -51,11 +51,16 @@ load_dotenv(ROOT_DIR / ".env")
 load_dotenv(BASE_DIR / ".env")
 
 sys.path.insert(0, str(ROOT_DIR))
-try:
-    from notifier import TelegramNotifier
-    from health_monitor import HealthMonitor
-except Exception as exc:  # pragma: no cover - fallback
-    logger.warning("Falling back to internal notifier stub: %s", exc)
+
+# Safe imports with independent error handling
+from safe_import import safe_import
+
+TelegramNotifier = safe_import('notifier', 'TelegramNotifier', logger_instance=logger)
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor', logger_instance=logger)
+
+# If TelegramNotifier failed, create fallback stub
+if TelegramNotifier is None:
+    logger.warning("TelegramNotifier not available, using fallback stub")
 
     class TelegramNotifier:  # type: ignore[no-redef]
         def __init__(self, bot_token: str, chat_id: str, signals_log_file: Optional[str] = None) -> None:
@@ -66,12 +71,10 @@ except Exception as exc:  # pragma: no cover - fallback
             logger.info("TELEGRAM STUB: %s", message)
             return True
 
-    HealthMonitor = None  # type: ignore
-
-try:
-    from signal_stats import SignalStats
-except ImportError as exc:  # pragma: no cover - critical dependency
-    raise RuntimeError("signal_stats module is required for Volume Profile Bot") from exc
+# SignalStats is critical - raise if not available
+SignalStats = safe_import('signal_stats', 'SignalStats', logger_instance=logger)
+if SignalStats is None:
+    raise RuntimeError("signal_stats module is required for Volume Profile Bot")
 
 
 shutdown_requested = False
@@ -222,7 +225,7 @@ class PivotVolumeProfile:
 
 
 class VolumeProfileBot:
-    def __init__(self, interval: int = 300) -> None:
+    def __init__(self, interval: int = 60) -> None:
         self.interval = interval
         self.watchlist = load_watchlist()
         self.state = load_state()
@@ -275,7 +278,14 @@ class VolumeProfileBot:
                 break
             if sleep_for:
                 logger.info("Cycle complete; sleeping %.1fs", sleep_for)
-                time.sleep(sleep_for)
+                # Sleep in 1-second chunks to respond quickly to shutdown signals
+                for _ in range(int(sleep_for)):
+                    if shutdown_requested:
+                        break
+                    time.sleep(1)
+                # Sleep remaining fractional seconds
+                if not shutdown_requested and sleep_for % 1 > 0:
+                    time.sleep(sleep_for % 1)
         logger.info("Shutdown requested, exiting main loop")
         if monitor:
             monitor.send_shutdown_message()
@@ -525,7 +535,10 @@ class VolumeProfileBot:
         
         # Get historical stats
         symbol_key = f"{symbol}/USDT"
-        tp1_count, tp2_count, sl_count = self.stats.symbol_tp_sl_counts(symbol_key)
+        counts = self.stats.symbol_tp_sl_counts(symbol_key)
+        tp1_count = counts.get("TP1", 0)
+        tp2_count = counts.get("TP2", 0)
+        sl_count = counts.get("SL", 0)
         total = tp1_count + tp2_count + sl_count
         win_rate = ((tp1_count + tp2_count) / total * 100) if total > 0 else 0.0
         
@@ -605,15 +618,15 @@ class VolumeProfileBot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Volume Profile bot")
-    parser.add_argument("--interval", type=int, default=300, help="Loop interval seconds")
-    parser.add_argument("--loop", action="store_true", help="Run continuously")
+    parser.add_argument("--interval", type=int, default=60, help="Loop interval seconds")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     bot = VolumeProfileBot(interval=args.interval)
-    if args.loop:
+    if not args.once:
         bot.run_loop()
     else:
         bot.run_cycle()

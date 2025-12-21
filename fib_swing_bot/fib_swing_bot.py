@@ -15,6 +15,7 @@ Entry Types:
 - STANDARD:  At Fibonacci level in uptrend
 """
 
+
 import sys
 import os
 import signal
@@ -22,12 +23,23 @@ import json
 import time
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING, cast
 
 import ccxt
 import numpy as np
+
+# Logging setup (must be before any logger use)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(Path(__file__).parent / "logs" / "fib_swing_bot.log"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -40,31 +52,28 @@ if TYPE_CHECKING:
     from trade_config import get_config_manager
     from rate_limit_handler import RateLimitHandler
 else:
-    try:
-        from notifier import TelegramNotifier
-    except Exception:
-        TelegramNotifier = None  # type: ignore[misc]
-    try:
-        from signal_stats import SignalStats
-    except Exception:
-        SignalStats = None  # type: ignore[misc]
-    try:
-        from health_monitor import HealthMonitor, RateLimiter
-    except Exception:
-        HealthMonitor = None  # type: ignore[misc]
-        RateLimiter = None  # type: ignore[misc]
-    try:
-        from tp_sl_calculator import TPSLCalculator
-    except Exception:
-        TPSLCalculator = None  # type: ignore[misc]
-    try:
-        from trade_config import get_config_manager
-    except Exception:
-        get_config_manager = None  # type: ignore[misc]
-    try:
-        from rate_limit_handler import RateLimitHandler
-    except Exception:
-        RateLimitHandler = None  # type: ignore[misc]
+    # Safe imports with independent error handling
+    from safe_import import safe_import_multiple
+
+    imports = [
+        ('notifier', 'TelegramNotifier', None),
+        ('signal_stats', 'SignalStats', None),
+        ('health_monitor', 'HealthMonitor', None),
+        ('health_monitor', 'RateLimiter', None),
+        ('tp_sl_calculator', 'TPSLCalculator', None),
+        ('trade_config', 'get_config_manager', None),
+        ('rate_limit_handler', 'RateLimitHandler', None),
+    ]
+
+    components = safe_import_multiple(imports, logger_instance=logger)
+
+    TelegramNotifier = components['TelegramNotifier']
+    SignalStats = components['SignalStats']
+    HealthMonitor = components['HealthMonitor']
+    RateLimiter = components['RateLimiter']
+    TPSLCalculator = components['TPSLCalculator']
+    get_config_manager = components['get_config_manager']
+    RateLimitHandler = components['RateLimitHandler']
 
 
 # Graceful shutdown handling
@@ -85,17 +94,6 @@ class WatchItem(TypedDict, total=False):
     symbol: str
     timeframe: str
     cooldown_minutes: int
-
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler(Path(__file__).parent / "logs" / "fib_swing_bot.log"),
-        logging.StreamHandler(),
-    ],
-)
-logger = logging.getLogger(__name__)
 
 STATS_FILE = Path(__file__).parent / "logs" / "fib_stats.json"
 STATE_FILE = Path(__file__).parent / "logs" / "fib_state.json"
@@ -454,10 +452,15 @@ class SignalTracker:
         """Load state from file"""
         if self.state_file.exists():
             try:
-                return json.loads(self.state_file.read_text())
+                data = json.loads(self.state_file.read_text())
+                return {
+                    "open_signals": data.get("open_signals", {}),
+                    "last_alerts": data.get("last_alerts", {}),
+                    "closed_signals": data.get("closed_signals", {}),
+                }
             except json.JSONDecodeError:
-                return {"open_signals": {}, "last_alerts": {}}
-        return {"open_signals": {}, "last_alerts": {}}
+                return {"open_signals": {}, "last_alerts": {}, "closed_signals": {}}
+        return {"open_signals": {}, "last_alerts": {}, "closed_signals": {}}
     
     def _save_state(self) -> None:
         """Save state to file"""
@@ -473,14 +476,67 @@ class SignalTracker:
         if not last_ts:
             return True
         
-        last_dt = datetime.fromisoformat(last_ts)
-        return datetime.utcnow() - last_dt >= timedelta(minutes=cooldown_minutes)
+        try:
+            last_dt = datetime.fromisoformat(last_ts)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            else:
+                last_dt = last_dt.astimezone(timezone.utc)
+            current_time = datetime.now(timezone.utc)
+            return current_time - last_dt >= timedelta(minutes=cooldown_minutes)
+        except (ValueError, TypeError):
+            return True
     
     def mark_alert(self, symbol: str, timeframe: str) -> None:
         """Mark that an alert was sent"""
         key = f"{symbol}-{timeframe}"
-        self.state.setdefault("last_alerts", {})[key] = datetime.utcnow().isoformat()
+        self.state.setdefault("last_alerts", {})[key] = datetime.now(timezone.utc).isoformat()
         self._save_state()
+    
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and move to closed_signals."""
+        signals = self.state.setdefault("open_signals", {})
+        closed = self.state.setdefault("closed_signals", {})
+        
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove = []
+        
+        for signal_id, signal_data in list(signals.items()):
+            if not isinstance(signal_data, dict):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            created_at_str = signal_data.get("created_at")
+            if not isinstance(created_at_str, str):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            try:
+                created_time = datetime.fromisoformat(created_at_str)
+                if created_time.tzinfo is None:
+                    created_time = created_time.replace(tzinfo=timezone.utc)
+                else:
+                    created_time = created_time.astimezone(timezone.utc)
+                
+                age = current_time - created_time
+                
+                if age >= timedelta(hours=max_age_hours):
+                    closed[signal_id] = {**signal_data, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(signal_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(signal_id)
+        
+        for signal_id in signal_ids_to_remove:
+            if signal_id in signals:
+                signals.pop(signal_id)
+        
+        if removed_count > 0:
+            self._save_state()
+        
+        return removed_count
     
     def add_signal(self, signal: FibSignal) -> None:
         """Add signal to tracking"""
@@ -554,11 +610,14 @@ class SignalTracker:
                 updated = True
                 continue
             
-            # Check TP/SL hits (LONG only)
-            hit_tp3 = current_price >= tp3
-            hit_tp2 = current_price >= tp2
-            hit_tp1 = current_price >= tp1
-            hit_sl = current_price <= sl
+            # Check TP/SL hits with price tolerance for slippage
+            PRICE_TOLERANCE = 0.005  # 0.5% tolerance
+            
+            # LONG positions: Allow slightly lower prices for TP, slightly higher for SL
+            hit_tp3 = current_price >= (tp3 * (1 - PRICE_TOLERANCE))
+            hit_tp2 = current_price >= (tp2 * (1 - PRICE_TOLERANCE)) and current_price < (tp3 * (1 - PRICE_TOLERANCE))
+            hit_tp1 = current_price >= (tp1 * (1 - PRICE_TOLERANCE)) and current_price < (tp2 * (1 - PRICE_TOLERANCE))
+            hit_sl = current_price <= (sl * (1 + PRICE_TOLERANCE))
             
             result = None
             if hit_tp3:
@@ -581,6 +640,8 @@ class SignalTracker:
                     )
                     if stats_record:
                         summary_message = self.stats.build_summary_message(stats_record)
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%",
+                                   signal_id, symbol, entry, current_price, result, stats_record.pnl_pct)
                     else:
                         self.stats.discard(signal_id)
                 
@@ -610,7 +671,7 @@ class SignalTracker:
 class FibSwingBot:
     """Main Fibonacci Swing Bot"""
     
-    def __init__(self, watchlist_file: Path, interval: int = 300):
+    def __init__(self, watchlist_file: Path, interval: int = 60):
         self.watchlist_file = watchlist_file
         self.interval = interval
         self.watchlist: List[WatchItem] = self._load_watchlist()
@@ -766,6 +827,11 @@ class FibSwingBot:
                     # Check open signals
                     self.tracker.check_open_signals(self.notifier)
                     
+                    # Cleanup stale signals every cycle
+                    stale_count = self.tracker.cleanup_stale_signals(max_age_hours=24)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
+                    
                     # Scan watchlist
                     for item in self.watchlist:
                         symbol_val = item.get("symbol") if isinstance(item, dict) else None
@@ -813,7 +879,7 @@ class FibSwingBot:
                         
                         if signal:
                             # MAX OPEN SIGNALS LIMIT
-                            MAX_OPEN_SIGNALS = 50
+                            MAX_OPEN_SIGNALS = 45
                             current_open = len(self.tracker.state.get("open_signals", {}))
                             if current_open >= MAX_OPEN_SIGNALS:
                                 logger.info(
@@ -847,7 +913,9 @@ class FibSwingBot:
                         break
                     
                     logger.info("Cycle complete; sleeping %d seconds", self.interval)
-                    time.sleep(self.interval)
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(self.interval):
+                        time.sleep(1)
                 
                 except Exception as exc:
                     logger.error("Error in cycle: %s", exc, exc_info=True)
@@ -867,13 +935,13 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Fibonacci Swing Bot")
-    parser.add_argument("--loop", action="store_true", help="Run continuously")
-    parser.add_argument("--interval", type=int, default=300, help="Check interval in seconds")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
+    parser.add_argument("--interval", type=int, default=60, help="Check interval in seconds")
     args = parser.parse_args()
     
     watchlist_file = Path(__file__).parent / "fib_watchlist.json"
     bot = FibSwingBot(watchlist_file, interval=args.interval)
-    bot.run(run_once=not args.loop)
+    bot.run(run_once=args.once)
 
 
 if __name__ == "__main__":

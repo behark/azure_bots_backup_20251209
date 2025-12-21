@@ -1,8 +1,23 @@
 [
   {
+    "symbol": "AIOT",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ALCH",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
     "symbol": "APR",
     "period": "15m",
     "cooldown_minutes": 60
+  },
+  {
+    "symbol": "BAY",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "CLO",
@@ -10,12 +25,52 @@
     "cooldown_minutes": 60
   },
   {
-    "symbol": "IRYS",
+    "symbol": "CORL",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "DOGE",
     "period": "15m",
     "cooldown_minutes": 60
   },
   {
-    "symbol": "JELLYJELLY",
+    "symbol": "DSYNC",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "FHE",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "FRANKLIN",
+    "period": "15m",
+    "cooldown_minutes": 60
+  },
+  {
+    "symbol": "H",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ICNT",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "IRYS",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "LONG",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "NIGHT",
     "period": "15m",
     "cooldown_minutes": 60
   },
@@ -25,24 +80,14 @@
     "cooldown_minutes": 60
   },
   {
-    "symbol": "RIVER",
-    "period": "15m",
-    "cooldown_minutes": 60
+    "symbol": "POWR",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
-    "symbol": "NIGHT",
-    "period": "15m",
-    "cooldown_minutes": 60
-  },
-  {
-    "symbol": "ALMANAK",
-    "period": "15m",
-    "cooldown_minutes": 60
-  },
-  {
-    "symbol": "SUI",
-    "period": "15m",
-    "cooldown_minutes": 60
+    "symbol": "RVV",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "TRUTH",
@@ -50,17 +95,12 @@
     "cooldown_minutes": 60
   },
   {
-    "symbol": "DOGE",
-    "period": "15m",
-    "cooldown_minutes": 60
+    "symbol": "TYCOON",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "WET",
-    "period": "15m",
-    "cooldown_minutes": 60
-  },
-  {
-    "symbol": "FRANKLIN",
     "period": "15m",
     "cooldown_minutes": 60
   }

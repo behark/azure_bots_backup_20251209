@@ -50,21 +50,28 @@ if str(BASE_DIR.parent) not in sys.path:
     sys.path.append(str(BASE_DIR.parent))
     sys_path_added = True
 
-try:
-    from notifier import TelegramNotifier  # type: ignore
-    from signal_stats import SignalStats  # type: ignore
-    from health_monitor import HealthMonitor, RateLimiter  # type: ignore
-    from tp_sl_calculator import TPSLCalculator  # type: ignore
-    from trade_config import get_config_manager  # type: ignore
-    from rate_limit_handler import RateLimitHandler  # type: ignore
-except ImportError:
-    TelegramNotifier = None  # type: ignore
-    SignalStats = None  # type: ignore
-    HealthMonitor = None  # type: ignore
-    RateLimitHandler = None  # type: ignore
-    RateLimiter = None  # type: ignore
-    TPSLCalculator = None  # type: ignore
-    get_config_manager = None  # type: ignore
+# Safe imports with independent error handling
+from safe_import import safe_import_multiple
+
+imports = [
+    ('notifier', 'TelegramNotifier', None),
+    ('signal_stats', 'SignalStats', None),
+    ('health_monitor', 'HealthMonitor', None),
+    ('health_monitor', 'RateLimiter', None),
+    ('tp_sl_calculator', 'TPSLCalculator', None),
+    ('trade_config', 'get_config_manager', None),
+    ('rate_limit_handler', 'RateLimitHandler', None),
+]
+
+components = safe_import_multiple(imports, logger_instance=logger)
+
+TelegramNotifier = components['TelegramNotifier']
+SignalStats = components['SignalStats']
+HealthMonitor = components['HealthMonitor']
+RateLimiter = components['RateLimiter']
+TPSLCalculator = components['TPSLCalculator']
+get_config_manager = components['get_config_manager']
+RateLimitHandler = components['RateLimitHandler']
 
 
 # Graceful shutdown handling
@@ -262,7 +269,7 @@ class LiquidationState:
         self.data: Dict[str, Any] = self._load()
 
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alert": {}, "open_signals": {}}
+        return {"last_alert": {}, "open_signals": {}, "closed_signals": {}}
 
     def _load(self) -> Dict[str, Any]:
         if not self.path.exists():
@@ -273,9 +280,11 @@ class LiquidationState:
                 return self._empty_state()
             last_alert = data.get("last_alert")
             open_signals = data.get("open_signals")
+            closed_signals = data.get("closed_signals")
             return {
                 "last_alert": last_alert if isinstance(last_alert, dict) else {},
                 "open_signals": open_signals if isinstance(open_signals, dict) else {},
+                "closed_signals": closed_signals if isinstance(closed_signals, dict) else {},
             }
         except json.JSONDecodeError:
             return self._empty_state()
@@ -285,9 +294,15 @@ class LiquidationState:
 
     @staticmethod
     def _parse_ts(value: str) -> datetime:
-        dt = datetime.fromisoformat(value)
+        """Parse ISO format timestamp, ensuring UTC timezone."""
+        try:
+            dt = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return datetime.now(timezone.utc)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
         return dt
 
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
@@ -329,7 +344,7 @@ class LiquidationState:
 
 
 class LiquidationBot:
-    def __init__(self, interval: int = 300):
+    def __init__(self, interval: int = 60):
         self.interval = interval
         self.watchlist: List[WatchItem] = load_watchlist()
         self.client = MexcOrderflowClient()
@@ -368,6 +383,12 @@ class LiquidationBot:
             while not shutdown_requested:
                 try:
                     self._run_cycle()
+                    
+                    # Cleanup stale signals every cycle
+                    stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
+                    
                     self._monitor_open_signals()
 
                     # Record successful cycle
@@ -381,7 +402,9 @@ class LiquidationBot:
                         break
 
                     logger.info("Cycle complete; sleeping %ds", self.interval)
-                    time.sleep(self.interval)
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(self.interval):
+                        time.sleep(1)
                 except Exception as exc:
                     logger.error(f"Error in cycle: {exc}")
                     if self.health_monitor:
@@ -820,14 +843,19 @@ class LiquidationBot:
                     self.stats.discard(signal_id)
                 continue
 
+            # Check for TP/SL hits with price tolerance
+            PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
+            
             if direction == "BULLISH":
-                hit_tp2 = price >= tp2
-                hit_tp1 = price >= tp1
-                hit_sl = price <= sl
+                # With tolerance for slippage (allow slightly lower prices)
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                hit_tp2 = price <= tp2
-                hit_tp1 = price <= tp1
-                hit_sl = price >= sl
+                # For BEARISH, allow slightly higher prices
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
 
             result = None
             if hit_tp2:
@@ -847,6 +875,8 @@ class LiquidationBot:
                     )
                     if stats_record:
                         summary_message = self.stats.build_summary_message(stats_record)
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%", 
+                                   signal_id, symbol, entry, price, result, stats_record.pnl_pct)
                     else:
                         self.stats.discard(signal_id)
 
@@ -865,15 +895,15 @@ class LiquidationBot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Liquidation/orderflow monitoring bot")
-    parser.add_argument("--loop", action="store_true", help="Run continuously")
-    parser.add_argument("--interval", type=int, default=300, help="Seconds between cycles")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
+    parser.add_argument("--interval", type=int, default=60, help="Seconds between cycles")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     bot = LiquidationBot(interval=args.interval)
-    bot.run(loop=args.loop)
+    bot.run(loop=not args.once)
 
 
 if __name__ == "__main__":

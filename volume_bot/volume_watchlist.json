@@ -1,5 +1,23 @@
 [
   {
+    "symbol": "AIOT/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ALCH/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ALMANAK/USDT",
+    "timeframe": "15m",
+    "exchange": "mexc",
+    "market_type": "swap"
+  },
+  {
     "symbol": "APR/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
@@ -12,7 +30,43 @@
     "market_type": "swap"
   },
   {
+    "symbol": "FHE/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "H/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "ICNT/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "IRYS/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
+    "market_type": "swap"
+  },
+  {
     "symbol": "JELLYJELLY/USDT",
+    "timeframe": "15m",
+    "exchange": "mexc",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "LRC/USDT",
+    "timeframe": "15m",
+    "exchange": "mexc",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "NIGHT/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"
@@ -21,6 +75,12 @@
     "symbol": "ON/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
+    "market_type": "swap"
+  },
+  {
+    "symbol": "POWR/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -36,31 +96,19 @@
     "market_type": "swap"
   },
   {
-    "symbol": "NIGHT/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "ALMANAK/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "SUI/USDT",
-    "timeframe": "15m",
-    "exchange": "mexc",
+    "symbol": "RVV/USDT",
+    "timeframe": "5m",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "TRUTH/USDT",
     "timeframe": "15m",
-    "exchange": "mexc",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
-    "symbol": "LRC/USDT",
+    "symbol": "TRUTH/USDT",
     "timeframe": "15m",
     "exchange": "mexc",
     "market_type": "swap"

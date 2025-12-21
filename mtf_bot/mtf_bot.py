@@ -48,23 +48,29 @@ except ImportError:
     pass
 
 sys.path.append(str(BASE_DIR.parent))
-try:
-    from notifier import TelegramNotifier
-    from signal_stats import SignalStats
-    from health_monitor import HealthMonitor, RateLimiter
-    from tp_sl_calculator import TPSLCalculator
-    from trade_config import get_config_manager
-    from rate_limit_handler import RateLimitHandler
-except ImportError:
-    TelegramNotifier = None
-    SignalStats = None
-    HealthMonitor = None
-    RateLimiter = None
-    TPSLCalculator = None
-    get_config_manager = None
-    RateLimitHandler = None
 
+# Safe imports with independent error handling
+from safe_import import safe_import_multiple
 
+imports = [
+    ('notifier', 'TelegramNotifier', None),
+    ('signal_stats', 'SignalStats', None),
+    ('health_monitor', 'HealthMonitor', None),
+    ('health_monitor', 'RateLimiter', None),
+    ('tp_sl_calculator', 'TPSLCalculator', None),
+    ('trade_config', 'get_config_manager', None),
+    ('rate_limit_handler', 'RateLimitHandler', None),
+]
+
+components = safe_import_multiple(imports, logger_instance=logger)
+
+TelegramNotifier = components['TelegramNotifier']
+SignalStats = components['SignalStats']
+HealthMonitor = components['HealthMonitor']
+RateLimiter = components['RateLimiter']
+TPSLCalculator = components['TPSLCalculator']
+get_config_manager = components['get_config_manager']
+RateLimitHandler = components['RateLimitHandler']
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -272,12 +278,24 @@ class MultiTimeframeAnalyzer:
             )
 
             if levels.is_valid:
-                return {
+                targets = {
                     "entry": entry,
                     "stop_loss": levels.stop_loss,
                     "take_profit_1": levels.take_profit_1,
                     "take_profit_2": levels.take_profit_2,
                 }
+                
+                # Validate TP/SL consistency
+                if direction == "BULLISH":
+                    assert levels.stop_loss < entry, f"MTF BULLISH: SL {levels.stop_loss} should be < entry {entry}"
+                    assert levels.take_profit_1 > entry, f"MTF BULLISH: TP1 {levels.take_profit_1} should be > entry {entry}"
+                else:  # BEARISH
+                    assert levels.stop_loss > entry, f"MTF BEARISH: SL {levels.stop_loss} should be > entry {entry}"
+                    assert levels.take_profit_1 < entry, f"MTF BEARISH: TP1 {levels.take_profit_1} should be < entry {entry}"
+                
+                logger.debug("%s %s MTF signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f",
+                           symbol, direction, entry, levels.stop_loss, levels.take_profit_1, levels.take_profit_2)
+                return targets
         
         # Fallback to original calculation
         if direction == "BULLISH":
@@ -288,6 +306,14 @@ class MultiTimeframeAnalyzer:
             sl = entry + (atr * 1.5)
             tp1 = entry - (atr * 2.0)
             tp2 = entry - (atr * 3.5)
+        
+        # Validate fallback TP/SL
+        if direction == "BULLISH":
+            assert sl < entry, f"MTF BULLISH fallback: SL {sl} should be < entry {entry}"
+            assert tp1 > entry, f"MTF BULLISH fallback: TP1 {tp1} should be > entry {entry}"
+        else:  # BEARISH
+            assert sl > entry, f"MTF BEARISH fallback: SL {sl} should be > entry {entry}"
+            assert tp1 < entry, f"MTF BEARISH fallback: TP1 {tp1} should be < entry {entry}"
         
         return {
             "entry": entry,
@@ -401,13 +427,19 @@ class BotState:
     
     @staticmethod
     def _parse_ts(value: str) -> datetime:
-        dt = datetime.fromisoformat(value)
+        """Parse ISO format timestamp, ensuring UTC timezone."""
+        try:
+            dt = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return datetime.now(timezone.utc)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
         return dt
     
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alert": {}, "open_signals": {}}
+        return {"last_alert": {}, "open_signals": {}, "closed_signals": {}}
 
     def _load(self) -> Dict[str, Any]:
         if not self.path.exists():
@@ -418,9 +450,11 @@ class BotState:
                 return self._empty_state()
             last_alert = data.get("last_alert")
             open_signals = data.get("open_signals")
+            closed_signals = data.get("closed_signals")
             return {
                 "last_alert": last_alert if isinstance(last_alert, dict) else {},
                 "open_signals": open_signals if isinstance(open_signals, dict) else {},
+                "closed_signals": closed_signals if isinstance(closed_signals, dict) else {},
             }
         except json.JSONDecodeError:
             return self._empty_state()
@@ -429,6 +463,7 @@ class BotState:
         self.path.write_text(json.dumps(self.data, indent=2))
     
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
+        """Check if enough time has passed since last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
         if not isinstance(last_map, dict):
             self.data["last_alert"] = {}
@@ -436,16 +471,66 @@ class BotState:
         last_ts = last_map.get(symbol)
         if not isinstance(last_ts, str):
             return True
-        delta = datetime.now(timezone.utc) - self._parse_ts(last_ts)
-        return delta >= timedelta(minutes=cooldown_minutes)
+        
+        try:
+            last_time = self._parse_ts(last_ts)
+            current_time = datetime.now(timezone.utc)
+            delta = current_time - last_time
+            return delta >= timedelta(minutes=cooldown_minutes)
+        except (ValueError, TypeError):
+            return True
     
     def mark_alert(self, symbol: str) -> None:
+        """Record the time of the last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
         if not isinstance(last_map, dict):
             last_map = {}
             self.data["last_alert"] = last_map
         last_map[symbol] = datetime.now(timezone.utc).isoformat()
         self.save()
+    
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and move to closed_signals."""
+        signals = self.iter_signals()
+        closed = self.data.setdefault("closed_signals", {})
+        if not isinstance(closed, dict):
+            closed = {}
+            self.data["closed_signals"] = closed
+        
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove = []
+        
+        for signal_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            created_at_str = payload.get("created_at")
+            if not isinstance(created_at_str, str):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            try:
+                created_time = self._parse_ts(created_at_str)
+                age = current_time - created_time
+                
+                if age >= timedelta(hours=max_age_hours):
+                    closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(signal_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(signal_id)
+        
+        for signal_id in signal_ids_to_remove:
+            if signal_id in signals:
+                signals.pop(signal_id)
+        
+        if removed_count > 0:
+            self.save()
+        
+        return removed_count
     
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         signals = self.iter_signals()
@@ -469,7 +554,7 @@ class BotState:
 class MTFBot:
     """Main Multi-Timeframe Bot."""
     
-    def __init__(self, interval: int = 300, default_cooldown: int = 45):
+    def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
         self.default_cooldown = default_cooldown
         self.watchlist: List[WatchItem] = load_watchlist()
@@ -516,6 +601,12 @@ class MTFBot:
             while not shutdown_requested:
                 try:
                     self._run_cycle()
+                    
+                    # Cleanup stale signals every cycle
+                    stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
+                    
                     self._monitor_open_signals()
                     
                     if self.health_monitor:
@@ -527,7 +618,9 @@ class MTFBot:
                     if shutdown_requested:
                         break
                     logger.info("Cycle complete; sleeping %ds", self.interval)
-                    time.sleep(self.interval)
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(self.interval):
+                        time.sleep(1)
                 except Exception as exc:
                     logger.error("Error in cycle: %s", exc)
                     if self.health_monitor:
@@ -732,6 +825,8 @@ class MTFBot:
                     f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
                     f"(Win rate: {win_rate:.1f}%)"
                 )
+            else:
+                perf_line = "📈 <b>History:</b> No previous trades for this symbol"
 
         lines = [
             f"{emoji} <b>{direction} MTF CONFLUENCE - {signal.symbol}/USDT</b> {strength_emoji}",
@@ -834,14 +929,19 @@ class MTFBot:
                     self.stats.discard(signal_id)
                 continue
             
+            # Check for TP/SL hits with price tolerance
+            PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
+            
             if direction == "BULLISH":
-                hit_tp2 = price >= tp2
-                hit_tp1 = price >= tp1
-                hit_sl = price <= sl
+                # With tolerance for slippage (allow slightly lower prices)
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                hit_tp2 = price <= tp2
-                hit_tp1 = price <= tp1
-                hit_sl = price >= sl
+                # For BEARISH, allow slightly higher prices
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
             
             result = None
             if hit_tp2:
@@ -861,6 +961,8 @@ class MTFBot:
                     )
                     if stats_record:
                         summary_message = self.stats.build_summary_message(stats_record)
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%", 
+                                   signal_id, symbol, entry, price, result, stats_record.pnl_pct)
                     else:
                         self.stats.discard(signal_id)
                 
@@ -890,16 +992,16 @@ class MTFBot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multi-Timeframe Bot")
-    parser.add_argument("--loop", action="store_true", help="Run indefinitely")
-    parser.add_argument("--interval", type=int, default=300, help="Seconds between cycles")
-    parser.add_argument("--cooldown", type=int, default=45, help="Default cooldown minutes")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
+    parser.add_argument("--interval", type=int, default=60, help="Seconds between cycles")
+    parser.add_argument("--cooldown", type=int, default=5, help="Default cooldown minutes")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     bot = MTFBot(interval=args.interval, default_cooldown=args.cooldown)
-    bot.run(loop=args.loop)
+    bot.run(loop=not args.once)
 
 
 if __name__ == "__main__":

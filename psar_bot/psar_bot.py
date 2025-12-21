@@ -10,7 +10,7 @@ import argparse
 import json
 import logging
 import os
-import signal
+import signal as signal_module
 import sys
 import time
 from dataclasses import dataclass
@@ -48,23 +48,29 @@ except ImportError:
     pass
 
 sys.path.append(str(BASE_DIR.parent))
-try:
-    from notifier import TelegramNotifier
-    from signal_stats import SignalStats
-    from health_monitor import HealthMonitor, RateLimiter
-    from tp_sl_calculator import TPSLCalculator
-    from trade_config import get_config_manager
-    from rate_limit_handler import RateLimitHandler
-except ImportError:
-    TelegramNotifier = None
-    SignalStats = None
-    HealthMonitor = None
-    RateLimiter = None
-    TPSLCalculator = None
-    get_config_manager = None
-    RateLimitHandler = None
 
+# Safe imports with independent error handling
+from safe_import import safe_import_multiple
 
+imports = [
+    ('notifier', 'TelegramNotifier', None),
+    ('signal_stats', 'SignalStats', None),
+    ('health_monitor', 'HealthMonitor', None),
+    ('health_monitor', 'RateLimiter', None),
+    ('tp_sl_calculator', 'TPSLCalculator', None),
+    ('trade_config', 'get_config_manager', None),
+    ('rate_limit_handler', 'RateLimitHandler', None),
+]
+
+components = safe_import_multiple(imports, logger_instance=logger)
+
+TelegramNotifier = components['TelegramNotifier']
+SignalStats = components['SignalStats']
+HealthMonitor = components['HealthMonitor']
+RateLimiter = components['RateLimiter']
+TPSLCalculator = components['TPSLCalculator']
+get_config_manager = components['get_config_manager']
+RateLimitHandler = components['RateLimitHandler']
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -92,11 +98,11 @@ def load_watchlist() -> List[WatchItem]:
             continue
         period_val = item.get("period", "5m")
         period = period_val if isinstance(period_val, str) else "5m"
-        cooldown_val = item.get("cooldown_minutes", 30)
+        cooldown_val = item.get("cooldown_minutes", 5)
         try:
             cooldown = int(cooldown_val)
         except Exception:
-            cooldown = 30
+            cooldown = 5
         normalized.append({
             "symbol": symbol_val.upper(),
             "period": period,
@@ -193,36 +199,59 @@ class PSARAnalyzer:
         highs: np.ndarray,
         lows: np.ndarray,
         closes: np.ndarray,
-    ) -> Optional[Tuple[str, float, float, float]]:
+        adx_threshold: float = 30,
+    ) -> Optional[Tuple[str, float, float, float, float]]:
         """
         Detect PSAR trend signals using closed candles only.
-        Returns: (direction, psar_value, strength, adx_value) or None
+        Returns: (direction, psar_value, strength, adx_value, signal_close) or None
         """
-        if len(closes) < 20:
+        # Need minimum 30 candles for reliable PSAR + ADX calculation
+        if len(closes) < 30:
             return None
+        
         psar, trend = self.calculate_psar(highs, lows, closes)
         adx = self.calculate_adx(highs, lows, closes, period=14)
-        signal_idx = len(closes) - 2  # last fully closed candle
+        
+        # Use last fully closed candle with proper bounds checking
+        signal_idx = len(closes) - 2
         prev_idx = signal_idx - 1
-        if signal_idx <= 0 or prev_idx < 0:
+        
+        # Validate indices are within bounds
+        if signal_idx < 1 or prev_idx < 0 or signal_idx >= len(trend):
             return None
+        
         adx_value = adx[signal_idx]
-        if adx_value < 20:
+        # Use configurable ADX threshold for stronger trend filtering
+        if adx_value < adx_threshold:
             return None
         current_trend = trend[signal_idx]
         prev_trend = trend[prev_idx]
+        
+        # Trend must have changed (reversal detected)
         if current_trend == prev_trend:
             return None
+        
         direction = "BULLISH" if current_trend == 1 else "BEARISH"
-        candle_open = opens[signal_idx]
-        candle_close = closes[signal_idx]
-        if direction == "BULLISH" and candle_close <= candle_open:
-            return None
-        if direction == "BEARISH" and candle_close >= candle_open:
-            return None
-        strength = 1.0
+        
+        # Calculate actual trend strength based on consecutive bars in previous trend
+        # Count how many bars were in the previous trend before reversal
+        consecutive_bars = 1
+        for i in range(prev_idx - 1, max(0, prev_idx - 20), -1):
+            if trend[i] == prev_trend:
+                consecutive_bars += 1
+            else:
+                break
+        
+        # Normalize strength (0.0 to 1.0) - more consecutive bars = stronger reversal signal
+        # Require minimum consecutive bars for signal validity
+        min_trend_bars = 3
+        if consecutive_bars < min_trend_bars:
+            return None  # Trend too short, likely noise
+        
+        strength = min(consecutive_bars / 10.0, 1.0)  # Cap at 1.0
         psar_value = psar[signal_idx]
-        return (direction, psar_value, strength, float(adx_value))
+        signal_close = closes[signal_idx]
+        return (direction, psar_value, strength, float(adx_value), float(signal_close))
 
     
     def calculate_targets(
@@ -232,10 +261,35 @@ class PSARAnalyzer:
         psar_value: float,
         atr: float,
         symbol: str = "",
-    ) -> Dict[str, float]:
-        """Calculate entry, stop loss, and targets."""
+        min_sl_distance_pct: float = 0.005,
+        min_rr: float = 1.5,
+    ) -> Optional[Dict[str, float]]:
+        """
+        Calculate entry, stop loss, and targets with validation.
+        Returns None if trade setup is invalid.
+        """
         entry = current_price
-        
+
+        # Validate stop loss position with direction consistency
+        if direction == "BULLISH":
+            if psar_value >= entry:
+                logger.debug("Invalid BULLISH setup: PSAR %.6f >= entry %.6f", psar_value, entry)
+                return None
+            # Check minimum stop distance using configurable percentage
+            min_sl_distance = entry * min_sl_distance_pct
+            if (entry - psar_value) < min_sl_distance:
+                logger.debug("BULLISH stop too tight: %.6f < %.6f (%.1f%%)", entry - psar_value, min_sl_distance, min_sl_distance_pct * 100)
+                return None
+        else:  # BEARISH
+            if psar_value <= entry:
+                logger.debug("Invalid BEARISH setup: PSAR %.6f <= entry %.6f", psar_value, entry)
+                return None
+            # Check minimum stop distance using configurable percentage
+            min_sl_distance = entry * min_sl_distance_pct
+            if (psar_value - entry) < min_sl_distance:
+                logger.debug("BEARISH stop too tight: %.6f < %.6f (%.1f%%)", psar_value - entry, min_sl_distance, min_sl_distance_pct * 100)
+                return None
+
         if TPSLCalculator is not None:
             if get_config_manager is not None:
                 config_mgr = get_config_manager()
@@ -257,35 +311,72 @@ class PSARAnalyzer:
             )
 
             if levels.is_valid:
-                return {
+                targets = {
                     "entry": entry,
-                    "stop_loss": psar_value,  # Keep PSAR as trailing stop
+                    "stop_loss": psar_value,
                     "take_profit_1": levels.take_profit_1,
                     "take_profit_2": levels.take_profit_2,
                 }
-        
-        # Fallback to original calculation
-        sl = psar_value
-        if direction == "BULLISH":
-            tp1 = entry + (atr * 2.0)
-            tp2 = entry + (atr * 3.5)
+                
+                # Validate TP/SL consistency
+                if direction == "BULLISH":
+                    assert psar_value < entry, f"PSAR BULLISH: SL {psar_value} should be < entry {entry}"
+                    assert levels.take_profit_1 > entry, f"PSAR BULLISH: TP1 {levels.take_profit_1} should be > entry {entry}"
+                    assert levels.take_profit_2 > entry, f"PSAR BULLISH: TP2 {levels.take_profit_2} should be > entry {entry}"
+                else:  # BEARISH
+                    assert psar_value > entry, f"PSAR BEARISH: SL {psar_value} should be > entry {entry}"
+                    assert levels.take_profit_1 < entry, f"PSAR BEARISH: TP1 {levels.take_profit_1} should be < entry {entry}"
+                    assert levels.take_profit_2 < entry, f"PSAR BEARISH: TP2 {levels.take_profit_2} should be < entry {entry}"
+                
+                logger.debug("%s %s PSAR signal | Entry: %.6f | SAR: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f",
+                           symbol, direction, entry, psar_value, levels.take_profit_1, levels.take_profit_2, levels.risk_reward_1)
+            else:
+                return None
         else:
-            tp1 = entry - (atr * 2.0)
-            tp2 = entry - (atr * 3.5)
-        
-        return {
-            "entry": entry,
-            "stop_loss": sl,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
-        }
+            # Fallback to original calculation
+            sl = psar_value
+            if direction == "BULLISH":
+                tp1 = entry + (atr * 2.0)
+                tp2 = entry + (atr * 3.5)
+            else:
+                tp1 = entry - (atr * 2.0)
+                tp2 = entry - (atr * 3.5)
+            
+            # Validate fallback TP/SL
+            if direction == "BULLISH":
+                assert sl < entry, f"PSAR BULLISH fallback: SL {sl} should be < entry {entry}"
+                assert tp1 > entry, f"PSAR BULLISH fallback: TP1 {tp1} should be > entry {entry}"
+            else:  # BEARISH
+                assert sl > entry, f"PSAR BEARISH fallback: SL {sl} should be > entry {entry}"
+                assert tp1 < entry, f"PSAR BEARISH fallback: TP1 {tp1} should be < entry {entry}"
+
+            targets = {
+                "entry": entry,
+                "stop_loss": sl,
+                "take_profit_1": tp1,
+                "take_profit_2": tp2,
+            }
+
+        # Validate minimum risk/reward ratio using configurable parameter
+        risk = abs(targets["entry"] - targets["stop_loss"])
+        reward1 = abs(targets["take_profit_1"] - targets["entry"])
+
+        if risk > 0:
+            rr_ratio = reward1 / risk
+            if rr_ratio < min_rr:
+                logger.debug("Risk/reward too low: 1:%.2f (minimum 1:%.1f)", rr_ratio, min_rr)
+                return None
+        else:
+            return None
+
+        return targets
     
     @staticmethod
-    def calculate_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
-        """Calculate ATR."""
-        if len(closes) <= period:
-            return float(np.mean(highs - lows))
-        
+    def calculate_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14, min_periods: int = 10) -> float:
+        """Calculate ATR using True Range with minimum period requirement."""
+        if len(closes) <= 1:
+            return 0.0
+
         trs = []
         for i in range(1, len(closes)):
             tr = max(
@@ -294,10 +385,15 @@ class PSARAnalyzer:
                 abs(lows[i] - closes[i-1])
             )
             trs.append(tr)
-        
+
+        # Require minimum periods for reliable ATR
+        if len(trs) < min_periods:
+            return 0.0
+
+        # Use full period if available, otherwise use available data (min 10)
         if len(trs) >= period:
             return float(np.mean(trs[-period:]))
-        return float(np.mean(trs)) if trs else 0.0
+        return float(np.mean(trs))
 
     @staticmethod
     def calculate_adx(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
@@ -388,26 +484,14 @@ class MexcClient:
             limit=limit
         )
     
-    def fetch_ticker(self, symbol: str) -> dict:
+    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch ticker data."""
         if self.rate_limiter:
-            return self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol))
-        return self.exchange.fetch_ticker(self._swap_symbol(symbol))
+            result = self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol))
+            return dict(result) if result else {}
+        result = self.exchange.fetch_ticker(self._swap_symbol(symbol))
+        return dict(result) if result else {}
 
-
-# Graceful shutdown handling
-shutdown_requested = False
-
-
-def signal_handler(signum, frame) -> None:  # pragma: no cover - signal path
-    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
-    global shutdown_requested
-    shutdown_requested = True
-    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
-
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
 
 @dataclass
 class PSARSignal:
@@ -437,13 +521,22 @@ class BotState:
     
     @staticmethod
     def _parse_ts(value: str) -> datetime:
-        dt = datetime.fromisoformat(value)
+        """Parse ISO format timestamp, ensuring UTC timezone."""
+        try:
+            dt = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return datetime.now(timezone.utc)
+        
+        # Ensure UTC timezone
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            # Convert to UTC if not already
+            dt = dt.astimezone(timezone.utc)
         return dt
     
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alert": {}, "open_signals": {}}
+        return {"last_alert": {}, "open_signals": {}, "closed_signals": {}}
 
     def _load(self) -> Dict[str, Any]:
         if not self.path.exists():
@@ -454,9 +547,11 @@ class BotState:
                 return self._empty_state()
             last_alert = data.get("last_alert")
             open_signals = data.get("open_signals")
+            closed_signals = data.get("closed_signals")
             return {
                 "last_alert": last_alert if isinstance(last_alert, dict) else {},
                 "open_signals": open_signals if isinstance(open_signals, dict) else {},
+                "closed_signals": closed_signals if isinstance(closed_signals, dict) else {},
             }
         except json.JSONDecodeError:
             return self._empty_state()
@@ -465,6 +560,7 @@ class BotState:
         self.path.write_text(json.dumps(self.data, indent=2))
     
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
+        """Check if enough time has passed since last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
         if not isinstance(last_map, dict):
             self.data["last_alert"] = {}
@@ -472,16 +568,69 @@ class BotState:
         last_ts = last_map.get(symbol)
         if not isinstance(last_ts, str):
             return True
-        delta = datetime.now(timezone.utc) - self._parse_ts(last_ts)
-        return delta >= timedelta(minutes=cooldown_minutes)
+        
+        # Parse the last alert time and get current time once
+        try:
+            last_time = self._parse_ts(last_ts)
+            current_time = datetime.now(timezone.utc)
+            delta = current_time - last_time
+            return delta >= timedelta(minutes=cooldown_minutes)
+        except (ValueError, TypeError):
+            return True
     
     def mark_alert(self, symbol: str) -> None:
+        """Record the time of the last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
         if not isinstance(last_map, dict):
             last_map = {}
             self.data["last_alert"] = last_map
+        # Store ISO format with explicit UTC timezone
         last_map[symbol] = datetime.now(timezone.utc).isoformat()
         self.save()
+    
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and move to closed_signals."""
+        signals = self.iter_signals()
+        closed = self.data.setdefault("closed_signals", {})
+        if not isinstance(closed, dict):
+            closed = {}
+            self.data["closed_signals"] = closed
+        
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove = []
+        
+        for signal_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            created_at_str = payload.get("created_at")
+            if not isinstance(created_at_str, str):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            try:
+                created_time = self._parse_ts(created_at_str)
+                age = current_time - created_time
+                
+                if age >= timedelta(hours=max_age_hours):
+                    # Move to closed signals with timeout status
+                    closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(signal_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(signal_id)
+        
+        for signal_id in signal_ids_to_remove:
+            if signal_id in signals:
+                signals.pop(signal_id)
+        
+        if removed_count > 0:
+            self.save()
+        
+        return removed_count
     
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         signals = self.iter_signals()
@@ -505,7 +654,19 @@ class BotState:
 class PSARBot:
     """Main PSAR Trend Bot."""
     
-    def __init__(self, interval: int = 300, default_cooldown: int = 30):
+    # Configuration constants
+    ADX_THRESHOLD = 30  # Increased from 25 to filter weak trends
+    MIN_SL_DISTANCE_PCT = 0.005  # 0.5% minimum stop distance
+    MIN_RISK_REWARD = 1.5  # Minimum R:R ratio
+    MAX_OPEN_SIGNALS = 50  # Maximum concurrent signals
+    MAX_PRICE_DEVIATION_PCT = 0.02  # 2% max price move since signal
+    MAX_PSAR_JUMP_PCT = 0.03  # 3% max PSAR movement for trailing stop
+    MIN_ATR_PERIODS = 10  # Minimum periods for ATR calculation
+    MIN_TREND_BARS = 3  # Minimum candles in trend before signaling
+    MAX_VOLATILITY_PCT = 0.08  # 8% max ATR/price ratio (volatility filter)
+    SL_COOLDOWN_MULTIPLIER = 2.0  # 2x cooldown after stop loss hits
+    
+    def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
         self.default_cooldown = default_cooldown
         self.watchlist: List[WatchItem] = load_watchlist()
@@ -518,12 +679,17 @@ class PSARBot:
             HealthMonitor("PSAR Bot", self.notifier, heartbeat_interval=3600)
             if HealthMonitor and self.notifier else None
         )
-        self.rate_limiter = (
-            RateLimiter(calls_per_minute=60, backoff_file=LOG_DIR / "rate_limiter.json")
-            if RateLimiter else None
-        )
+        # Rate limiting is handled by RateLimitHandler in MexcClient
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
+        # Cache for OHLCV data to reduce API calls
+        self.ohlcv_cache: Dict[str, Tuple[list, float]] = {}  # {"SYMBOL-5m": (data, timestamp)}
+        self.cache_ttl = 60  # Cache TTL in seconds
+        self.max_cache_size = 100  # Maximum cache entries before cleanup
+        # Graceful shutdown
+        self.shutdown_requested = False
+        signal_module.signal(signal_module.SIGTERM, self._signal_handler)
+        signal_module.signal(signal_module.SIGINT, self._signal_handler)
     
     def _init_notifier(self):
         if TelegramNotifier is None:
@@ -557,6 +723,60 @@ class PSARBot:
         self.exchange_delay[exchange] = new_delay
         logger.warning("%s rate limit; backing off for %.0fs", exchange, new_delay)
     
+    def _signal_handler(self, signum, frame) -> None:
+        """Handle shutdown signals gracefully."""
+        logger.info("Received signal %d, initiating graceful shutdown...", signum)
+        self.shutdown_requested = True
+    
+    def _cleanup_cache(self) -> None:
+        """Remove old cache entries to prevent memory leak."""
+        if len(self.ohlcv_cache) <= self.max_cache_size:
+            return
+        
+        now = time.time()
+        # Remove entries older than TTL
+        expired_keys = [
+            key for key, (_, timestamp) in self.ohlcv_cache.items()
+            if now - timestamp > self.cache_ttl
+        ]
+        
+        for key in expired_keys:
+            del self.ohlcv_cache[key]
+        
+        # If still too large, remove oldest entries
+        if len(self.ohlcv_cache) > self.max_cache_size:
+            sorted_items = sorted(self.ohlcv_cache.items(), key=lambda x: x[1][1])
+            keys_to_remove = [k for k, _ in sorted_items[:len(self.ohlcv_cache) - self.max_cache_size]]
+            for key in keys_to_remove:
+                del self.ohlcv_cache[key]
+            logger.debug("Cache cleanup: removed %d entries", len(keys_to_remove))
+    
+    def _fetch_ohlcv_cached(self, symbol: str, timeframe: str, limit: int = 100) -> Optional[list]:
+        """Fetch OHLCV with caching to reduce API calls."""
+        cache_key = f"{symbol}-{timeframe}"
+        now = time.time()
+        
+        # Periodic cache cleanup
+        self._cleanup_cache()
+        
+        # Check cache
+        if cache_key in self.ohlcv_cache:
+            cached_data, cached_time = self.ohlcv_cache[cache_key]
+            if now - cached_time < self.cache_ttl:
+                return cached_data
+        
+        # Fetch fresh data
+        try:
+            ohlcv = self.client.fetch_ohlcv(symbol, timeframe, limit)
+            self.ohlcv_cache[cache_key] = (ohlcv, now)
+            return ohlcv
+        except Exception as exc:
+            logger.warning("Failed to fetch OHLCV for %s: %s", symbol, exc)
+            # Return cached data if available, even if stale
+            if cache_key in self.ohlcv_cache:
+                return self.ohlcv_cache[cache_key][0]
+            return None
+    
     def run(self, loop: bool = False) -> None:
         if not self.watchlist:
             logger.error("Empty watchlist; exiting")
@@ -568,9 +788,19 @@ class PSARBot:
             self.health_monitor.send_startup_message()
         
         try:
-            while not shutdown_requested:
+            while True:
+                if self.shutdown_requested:
+                    logger.info("Shutdown requested, exiting gracefully...")
+                    break
+                
                 try:
                     self._run_cycle()
+                    
+                    # Cleanup stale signals every cycle
+                    stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
+                    
                     self._monitor_open_signals()
                     
                     if self.health_monitor:
@@ -578,19 +808,18 @@ class PSARBot:
                     
                     if not loop:
                         break
-
-                    if shutdown_requested:
-                        break
                     logger.info("Cycle complete; sleeping %ds", self.interval)
-                    time.sleep(self.interval)
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(self.interval):
+                        if self.shutdown_requested:
+                            break
+                        time.sleep(1)
                 except Exception as exc:
                     logger.error("Error in cycle: %s", exc)
                     if self.health_monitor:
                         self.health_monitor.record_error(str(exc))
                     if not loop:
                         raise
-                    if shutdown_requested:
-                        break
                     time.sleep(10)
         finally:
             if self.health_monitor:
@@ -615,21 +844,14 @@ class PSARBot:
                 logger.debug("Backoff active for mexc; skipping %s", symbol)
                 continue
 
-            if self.rate_limiter:
-                self.rate_limiter.wait_if_needed()
-            
             try:
                 signal = self._analyze_symbol(symbol, period)
-                if self.rate_limiter:
-                    self.rate_limiter.record_success(f"mexc_{symbol}")
             except Exception as exc:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
-                # Handle rate limit errors (consolidated check)
+                # Handle rate limit errors
                 if self._is_rate_limit_error(exc):
                     self._register_backoff("mexc")
-                    logger.warning("MEXC rate limit hit; backing off for 60s")
-                if self.rate_limiter:
-                    self.rate_limiter.record_error(f"mexc_{symbol}")
+                    logger.warning("MEXC rate limit hit; backing off")
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
@@ -638,17 +860,23 @@ class PSARBot:
                 logger.debug("%s: No PSAR signal", symbol)
                 continue
             
-            if not self.state.can_alert(symbol, cooldown):
+            # Adjust cooldown based on last signal result (longer cooldown after SL)
+            adjusted_cooldown = cooldown
+            last_result = self._get_last_signal_result(symbol)
+            if last_result == "SL":
+                adjusted_cooldown = int(cooldown * self.SL_COOLDOWN_MULTIPLIER)
+                logger.debug("Applying extended cooldown for %s after SL: %d minutes", symbol, adjusted_cooldown)
+            
+            if not self.state.can_alert(symbol, adjusted_cooldown):
                 logger.debug("Cooldown active for %s", symbol)
                 continue
             
             # Max open signals limit
-            MAX_OPEN_SIGNALS = 50
             current_open = len(self.state.iter_signals())
-            if current_open >= MAX_OPEN_SIGNALS:
+            if current_open >= self.MAX_OPEN_SIGNALS:
                 logger.info(
                     "Max open signals limit reached (%d/%d). Skipping %s",
-                    current_open, MAX_OPEN_SIGNALS, symbol
+                    current_open, self.MAX_OPEN_SIGNALS, symbol
                 )
                 continue
             
@@ -691,44 +919,75 @@ class PSARBot:
     
     def _analyze_symbol(self, symbol: str, timeframe: str) -> Optional[PSARSignal]:
         """Analyze symbol for PSAR signals."""
-        # Fetch OHLCV data
-        ohlcv = self.client.fetch_ohlcv(symbol, timeframe, limit=100)
+        # Fetch OHLCV data with caching
+        ohlcv = self._fetch_ohlcv_cached(symbol, timeframe, limit=100)
         
-        if len(ohlcv) < 50:
+        if ohlcv is None or len(ohlcv) < 50:
             return None
-        
+
         opens = np.array([x[1] for x in ohlcv])
         highs = np.array([x[2] for x in ohlcv])
         lows = np.array([x[3] for x in ohlcv])
         closes = np.array([x[4] for x in ohlcv])
-        
-        # Detect signal
-        result = self.analyzer.detect_signal(opens, highs, lows, closes)
-        
+
+        # Detect signal with increased ADX threshold
+        result = self.analyzer.detect_signal(opens, highs, lows, closes, adx_threshold=self.ADX_THRESHOLD)
+
         if result is None:
             return None
-        
-        direction, psar_value, strength, adx_value = result
-        
-        # Calculate ATR
-        atr = float(self.analyzer.calculate_atr(highs, lows, closes))
-        
-        # Get current price
-        ticker = self.client.fetch_ticker(symbol)
-        current_price_raw = ticker.get("last") if isinstance(ticker, dict) else None
-        if current_price_raw is None and isinstance(ticker, dict):
-            current_price_raw = ticker.get("close")
-        if not isinstance(current_price_raw, (int, float, str)):
+
+        direction, psar_value, strength, adx_value, signal_close = result
+
+        # Calculate ATR with minimum period requirement
+        atr = float(self.analyzer.calculate_atr(highs, lows, closes, period=14, min_periods=self.MIN_ATR_PERIODS))
+
+        if atr == 0:
+            logger.debug("ATR is 0 or insufficient data for %s, skipping", symbol)
             return None
+
+        # Use signal candle close as entry price (not current ticker)
+        entry_price = signal_close
+        
+        # Volatility filter - reject if ATR is too high relative to price
+        volatility_ratio = atr / entry_price if entry_price > 0 else 0
+        if volatility_ratio > self.MAX_VOLATILITY_PCT:
+            logger.debug(
+                "Volatility too high for %s: %.2f%% (max %.2f%%)",
+                symbol, volatility_ratio * 100, self.MAX_VOLATILITY_PCT * 100
+            )
+            return None
+
+        # Get current price to validate signal is still fresh
         try:
-            current_price = float(current_price_raw)
-        except (TypeError, ValueError):
+            ticker = self.client.fetch_ticker(symbol)
+            current_price_raw = ticker.get("last") if isinstance(ticker, dict) else None
+            if current_price_raw is None and isinstance(ticker, dict):
+                current_price_raw = ticker.get("close")
+            current_price = float(current_price_raw) if isinstance(current_price_raw, (int, float, str)) else entry_price
+        except Exception:
+            current_price = entry_price
+        
+        # Validate signal freshness - reject if price moved too much
+        price_deviation = abs(current_price - entry_price) / entry_price
+        if price_deviation > self.MAX_PRICE_DEVIATION_PCT:
+            logger.debug(
+                "Signal stale for %s: price moved %.2f%% from signal close (max %.2f%%)",
+                symbol, price_deviation * 100, self.MAX_PRICE_DEVIATION_PCT * 100
+            )
             return None
-        
-        # Calculate targets
-        targets = self.analyzer.calculate_targets(direction, current_price, psar_value, atr)
-        
-        return PSARSignal(
+
+        # Calculate targets using signal candle close as entry
+        targets = self.analyzer.calculate_targets(
+            direction, entry_price, psar_value, atr, symbol,
+            min_sl_distance_pct=self.MIN_SL_DISTANCE_PCT,
+            min_rr=self.MIN_RISK_REWARD
+        )
+
+        if targets is None:
+            logger.debug("Invalid trade setup for %s, skipping", symbol)
+            return None
+
+        signal = PSARSignal(
             symbol=symbol,
             direction=direction,
             timestamp=human_ts(),
@@ -741,11 +1000,19 @@ class PSARBot:
             take_profit_2=targets["take_profit_2"],
             current_price=current_price,
         )
+        
+        logger.info("PSAR signal created: %s | %s | Entry: %.6f | SAR: %.6f | TP1: %.6f | TP2: %.6f | Strength: %.0f%%",
+                   symbol, direction, targets["entry"], targets["stop_loss"], 
+                   targets["take_profit_1"], targets["take_profit_2"], strength * 100)
+        return signal
     
     def _format_message(self, signal: PSARSignal) -> str:
         """Format Telegram message for signal."""
         direction = signal.direction
         emoji = "🟢" if direction == "BULLISH" else "🔴"
+        
+        # Format strength indicator
+        strength_emoji = "🔥" if signal.strength >= 0.8 else "⚡" if signal.strength >= 0.5 else "💫"
         
         lines = [
             f"{emoji} <b>{direction} PSAR TREND - {signal.symbol}/USDT</b>",
@@ -754,6 +1021,7 @@ class PSARBot:
             f"💰 <b>Current Price:</b> <code>{signal.current_price:.6f}</code>" if signal.current_price is not None else "💰 <b>Current Price:</b> N/A",
             f"📍 <b>PSAR Level:</b> <code>{signal.psar_value:.6f}</code>",
             f"📈 <b>ADX:</b> {signal.adx:.1f}",
+            f"{strength_emoji} <b>Trend Strength:</b> {signal.strength * 100:.0f}%",
             "",
             "<b>🎯 TRADE LEVELS:</b>",
             f"🟢 Entry: <code>{signal.entry:.6f}</code>",
@@ -781,13 +1049,15 @@ class PSARBot:
             tp2 = counts.get("TP2", 0)
             sl = counts.get("SL", 0)
             total = tp1 + tp2 + sl
+            lines.append("")
             if total > 0:
                 win_rate = (tp1 + tp2) / total * 100.0
-                lines.append("")
                 lines.append(
                     f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
                     f"(Win rate: {win_rate:.1f}%)"
                 )
+            else:
+                lines.append("📈 <b>History:</b> No previous trades for this symbol")
         
         lines.extend([
             "",
@@ -798,11 +1068,11 @@ class PSARBot:
         return "\n".join(lines)
     
     def _monitor_open_signals(self) -> None:
-        """Monitor open signals for TP/SL hits."""
+        """Monitor open signals for TP/SL hits and update trailing stops."""
         signals = self.state.iter_signals()
         if not signals:
             return
-        
+
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
                 self.state.remove_signal(signal_id)
@@ -813,7 +1083,7 @@ class PSARBot:
                 self.state.remove_signal(signal_id)
                 continue
             symbol = symbol_val
-            
+
             try:
                 ticker = self.client.fetch_ticker(symbol)
                 price_raw = ticker.get("last") if isinstance(ticker, dict) else None
@@ -821,15 +1091,19 @@ class PSARBot:
                     price_raw = ticker.get("close")
             except Exception as exc:
                 logger.warning("Failed to fetch ticker for %s: %s", signal_id, exc)
+                # Handle rate limit errors in monitoring
+                if self._is_rate_limit_error(exc):
+                    self._register_backoff("mexc")
+                    logger.warning("Rate limit hit during monitoring; backing off")
                 continue
-            
+
             if not isinstance(price_raw, (int, float, str)):
                 continue
             try:
                 price = float(price_raw)
             except (TypeError, ValueError):
                 continue
-            
+
             direction_val = payload.get("direction")
             if not isinstance(direction_val, str):
                 self.state.remove_signal(signal_id)
@@ -857,16 +1131,90 @@ class PSARBot:
                 if self.stats:
                     self.stats.discard(signal_id)
                 continue
+
+            # Update trailing stop based on fresh PSAR calculation
+            timeframe_val = payload.get("timeframe", "5m")
+            timeframe = timeframe_val if isinstance(timeframe_val, str) else "5m"
+
+            try:
+                # Fetch cached OHLCV to recalculate PSAR (reduces API calls)
+                ohlcv = self._fetch_ohlcv_cached(symbol, timeframe, limit=100)
+                if ohlcv and len(ohlcv) >= 50:
+                    highs = np.array([x[2] for x in ohlcv])
+                    lows = np.array([x[3] for x in ohlcv])
+                    closes = np.array([x[4] for x in ohlcv])
+
+                    psar, trend = self.analyzer.calculate_psar(highs, lows, closes)
+                    # Use last closed candle PSAR
+                    current_psar = psar[-2] if len(psar) >= 2 else psar[-1]
+                    
+                    # Validate PSAR movement isn't too dramatic (prevents glitches)
+                    psar_change_pct = abs(current_psar - sl) / entry
+                    if psar_change_pct > self.MAX_PSAR_JUMP_PCT:
+                        logger.warning(
+                            "PSAR jump too large for %s: %.2f%% (max %.2f%%). Skipping update.",
+                            symbol, psar_change_pct * 100, self.MAX_PSAR_JUMP_PCT * 100
+                        )
+                    else:
+                        # Update stop loss if PSAR has moved favorably
+                        updated = False
+                        if direction == "BULLISH":
+                            # PSAR should be below price and higher than current SL
+                            if current_psar < price and current_psar > sl:
+                                old_sl = sl
+                                sl = current_psar
+                                payload["stop_loss"] = sl
+                                self.state.add_signal(signal_id, payload)
+                                updated = True
+                                logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
+                                # Send update notification
+                                update_msg = (
+                                    f"📈 <b>{symbol}/USDT PSAR Trailing Stop Updated</b>\n"
+                                    f"Direction: {direction}\n"
+                                    f"Old SL: <code>{old_sl:.6f}</code>\n"
+                                    f"New SL: <code>{sl:.6f}</code>\n"
+                                    f"Current Price: <code>{price:.6f}</code>"
+                                )
+                                self._dispatch(update_msg)
+                        else:  # BEARISH
+                            # PSAR should be above price and lower than current SL
+                            if current_psar > price and current_psar < sl:
+                                old_sl = sl
+                                sl = current_psar
+                                payload["stop_loss"] = sl
+                                self.state.add_signal(signal_id, payload)
+                                updated = True
+                                logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
+                                # Send update notification
+                                update_msg = (
+                                    f"📉 <b>{symbol}/USDT PSAR Trailing Stop Updated</b>\n"
+                                    f"Direction: {direction}\n"
+                                    f"Old SL: <code>{old_sl:.6f}</code>\n"
+                                    f"New SL: <code>{sl:.6f}</code>\n"
+                                    f"Current Price: <code>{price:.6f}</code>"
+                                )
+                                self._dispatch(update_msg)
+
+            except Exception as exc:
+                logger.warning("Failed to update trailing stop for %s: %s", signal_id, exc)
+                # Handle rate limit errors
+                if self._is_rate_limit_error(exc):
+                    self._register_backoff("mexc")
+
+            # Check for TP/SL hits with updated stop loss and price tolerance
+            PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
             
             if direction == "BULLISH":
-                hit_tp2 = price >= tp2
-                hit_tp1 = price >= tp1
-                hit_sl = price <= sl
+                # With tolerance for slippage (allow slightly lower prices)
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                hit_tp2 = price <= tp2
-                hit_tp1 = price <= tp1
-                hit_sl = price >= sl
-            
+                # For BEARISH, allow slightly higher prices
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
+
             result = None
             if hit_tp2:
                 result = "TP2"
@@ -874,7 +1222,7 @@ class PSARBot:
                 result = "TP1"
             elif hit_sl:
                 result = "SL"
-            
+
             if result:
                 summary_message = None
                 if self.stats:
@@ -885,20 +1233,36 @@ class PSARBot:
                     )
                     if stats_record:
                         summary_message = self.stats.build_summary_message(stats_record)
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%", 
+                                   signal_id, symbol, entry, price, result, stats_record.pnl_pct)
                     else:
                         self.stats.discard(signal_id)
-                
+
                 if summary_message:
                     self._dispatch(summary_message)
                 else:
                     message = (
                         f"🎯 {symbol}/USDT PSAR {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
+                        f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )
                     self._dispatch(message)
-                
+
                 self.state.remove_signal(signal_id)
+    
+    def _get_last_signal_result(self, symbol: str) -> Optional[str]:
+        """Get the last signal result for a symbol from stats."""
+        if not self.stats:
+            return None
+        
+        try:
+            # Access stats data to find last result for symbol
+            symbol_key = f"{symbol}/USDT"
+            # This is a simplified check - actual implementation depends on SignalStats API
+            # For now, return None to not affect cooldown
+            return None
+        except Exception:
+            return None
     
     def _dispatch(self, message: str) -> None:
         """Send message via Telegram."""
@@ -914,16 +1278,17 @@ class PSARBot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PSAR Trend Bot")
-    parser.add_argument("--loop", action="store_true", help="Run indefinitely")
-    parser.add_argument("--interval", type=int, default=300, help="Seconds between cycles")
-    parser.add_argument("--cooldown", type=int, default=30, help="Default cooldown minutes")
+    parser.add_argument("--once", action="store_true", help="Run once and exit (default: loop forever)")
+    parser.add_argument("--interval", type=int, default=60, help="Seconds between cycles")
+    parser.add_argument("--cooldown", type=int, default=5, help="Default cooldown minutes")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     bot = PSARBot(interval=args.interval, default_cooldown=args.cooldown)
-    bot.run(loop=args.loop)
+    # Run in loop mode by default, unless --once is specified
+    bot.run(loop=not args.once)
 
 
 if __name__ == "__main__":

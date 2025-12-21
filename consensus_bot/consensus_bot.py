@@ -19,7 +19,6 @@ import hashlib
 import json
 import logging
 import os
-import signal
 import sys
 import tempfile
 import time
@@ -57,18 +56,11 @@ try:
 except Exception:
     pass
 
-# Import shared modules if available; otherwise keep None and warn
-try:
-    from notifier import TelegramNotifier  # type: ignore
-except Exception as e:
-    logger.warning(f"TelegramNotifier import failed: {e}")
-    TelegramNotifier = None  # type: ignore
+# Safe imports with independent error handling
+from safe_import import safe_import
 
-try:
-    from health_monitor import HealthMonitor  # type: ignore
-except Exception as e:
-    logger.warning(f"HealthMonitor import failed: {e}")
-    HealthMonitor = None  # type: ignore
+TelegramNotifier = safe_import('notifier', 'TelegramNotifier', logger_instance=logger)
+HealthMonitor = safe_import('health_monitor', 'HealthMonitor', logger_instance=logger)
 
 
 def safe_float(value: Any, fallback: float = 0.0) -> float:
@@ -480,11 +472,22 @@ class ConsensusDetector:
                     consensus_tp1 = consensus_entry + risk
                 if consensus_tp2 <= consensus_entry:
                     consensus_tp2 = consensus_entry + (risk * 2)
+                # Validate LONG setup
+                assert consensus_sl < consensus_entry, f"Consensus LONG: SL {consensus_sl} should be < entry {consensus_entry}"
+                assert consensus_tp1 > consensus_entry, f"Consensus LONG: TP1 {consensus_tp1} should be > entry {consensus_entry}"
+                assert consensus_tp2 > consensus_entry, f"Consensus LONG: TP2 {consensus_tp2} should be > entry {consensus_entry}"
             else:
                 if consensus_tp1 >= consensus_entry:
                     consensus_tp1 = consensus_entry - risk
                 if consensus_tp2 >= consensus_entry:
                     consensus_tp2 = consensus_entry - (risk * 2)
+                # Validate SHORT setup
+                assert consensus_sl > consensus_entry, f"Consensus SHORT: SL {consensus_sl} should be > entry {consensus_entry}"
+                assert consensus_tp1 < consensus_entry, f"Consensus SHORT: TP1 {consensus_tp1} should be < entry {consensus_entry}"
+                assert consensus_tp2 < consensus_entry, f"Consensus SHORT: TP2 {consensus_tp2} should be < entry {consensus_entry}"
+            
+            logger.debug("%s %s Consensus | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | Bots: %d",
+                       symbol, direction, consensus_entry, consensus_sl, consensus_tp1, consensus_tp2, len(valid_group))
 
             # Compute R:R for TP1 and TP2 and require at least one to meet min_risk_reward
             reward1 = abs(consensus_tp1 - consensus_entry)
@@ -733,7 +736,7 @@ class ConsensusBot:
                 logger.warning(f"Health monitor startup failed: {e}")
 
         try:
-            while not shutdown_requested:
+            while True:
                 try:
                     self._check_consensus()
                     if self.health_monitor:
@@ -743,10 +746,9 @@ class ConsensusBot:
                             logger.debug(f"Health monitor record_cycle failed: {e}")
                     if not loop:
                         break
-
-                    if shutdown_requested:
-                        break
-                    time.sleep(self.check_interval)
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(self.check_interval):
+                        time.sleep(1)
                 except Exception as exc:
                     logger.error(f"Error in consensus check: {exc}")
                     if self.health_monitor:
@@ -1039,7 +1041,7 @@ class ConsensusBot:
 
 def main():
     parser = argparse.ArgumentParser(description="Consensus Bot - Multi-Signal Aggregator (patched)")
-    parser.add_argument("--loop", action="store_true", help="Run continuously")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
     parser.add_argument("--interval", type=int, default=30, help="Check interval in seconds")
     parser.add_argument("--window", type=int, default=30, help="Time window for consensus in minutes")
     parser.add_argument("--min-rr", type=float, default=1.7, help="Minimum R:R ratio to send alert (default: 1.7)")
@@ -1047,7 +1049,7 @@ def main():
     args = parser.parse_args()
 
     bot = ConsensusBot(check_interval=args.interval, time_window=args.window, min_risk_reward=args.min_rr, min_bots=args.min_bots)
-    bot.run(loop=args.loop)
+    bot.run(loop=not args.once)
 
 
 if __name__ == "__main__":

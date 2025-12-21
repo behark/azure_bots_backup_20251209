@@ -1,131 +1,123 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Get the directory where this script is located
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$DIR"
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
 
-# Define Log Directory and PID File
-LOG_DIR="logs"
-PID_FILE="active_bots.pid"
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_DIR="$BASE_DIR/venv"
 
-# Create logs directory if it doesn't exist
-mkdir -p "$LOG_DIR"
-
-# Clear previous PID file
-> "$PID_FILE"
-
-# Ensure git commands inside bots resolve even from subdirectories
-if [ -d "$DIR/.git" ]; then
-    export GIT_DIR="$DIR/.git"
-    export GIT_WORK_TREE="$DIR"
-fi
-
-echo "╔══════════════════════════════════════════════════════════════════════╗"
-echo "║                                                                      ║"
-echo "║          🚀 STARTING THE HIVE MIND (Corrected Paths) 🚀             ║"
-echo "║                                                                      ║"
-echo "╚══════════════════════════════════════════════════════════════════════╝"
-echo ""
-echo "📂 Working Directory: $DIR"
-
-# --- 0. LOAD ENVIRONMENT VARIABLES ---
-if [ -f "$DIR/.env" ]; then
-    echo "🔑 Loading environment variables from .env..."
-    export $(grep -v '^#' "$DIR/.env" | xargs)
-fi
-
-# --- 1. VIRTUAL ENVIRONMENT CHECK ---
-if [ -d "venv" ]; then
-    echo "🔌 Activating virtual environment (venv)..."
-    source venv/bin/activate
-elif [ -d "../venv" ]; then
-    echo "🔌 Activating virtual environment (../venv)..."
-    source ../venv/bin/activate
-else
-    echo "⚠️  WARNING: No 'venv' folder found. Running with system Python."
-    echo "    (If imports fail, ensure you are in the correct directory)"
-fi
-
-echo "📄 Logs stored in:    $DIR/$LOG_DIR/"
+echo -e "${GREEN}=== Starting All Trading Bots ===${NC}"
+echo "Base directory: $BASE_DIR"
 echo ""
 
-# Function to start a bot
-# Usage: start_bot "path/to/script.py" "LogName" "Interval" "Cooldown" [extra args...]
-start_bot() {
-    local script_path="$1"
-    local name="$2"
-    local interval="${3:-300}" # Default 5 minutes
-    local cooldown="${4:-15}"  # Default 15 minutes
-    shift 4
-    local extra_args=("$@")
-    local logfile="$LOG_DIR/${name}.log"
+# Check if virtual environment exists
+if [[ ! -d "$VENV_DIR" ]]; then
+    echo -e "${RED}Error: Virtual environment not found at $VENV_DIR${NC}" >&2
+    exit 1
+fi
 
-    if [ ! -f "$script_path" ]; then
-        echo "  ❌ ERROR: Script not found: $script_path"
-        return
+# Check if screen is installed
+if ! command -v screen >/dev/null 2>&1; then
+    echo -e "${RED}Error: screen command not found. Please install it:${NC}" >&2
+    echo "  sudo apt-get install screen   # Debian/Ubuntu" >&2
+    echo "  sudo yum install screen        # CentOS/RHEL" >&2
+    exit 1
+fi
+
+# Define bots with their configurations
+# Format: "bot_name:script_path:args"
+declare -a BOTS=(
+    "candlestick_bot:candlestick_bot/candlestick_bot.py:"
+    "consensus_bot:consensus_bot/consensus_bot.py:--loop --interval 30 --window 30"
+    "diy_bot:diy_bot/diy_bot.py:"
+    "fib_reversal_bot:fib_reversal_bot/fib_reversal_bot.py:"
+    "fib_swing_bot:fib_swing_bot/fib_swing_bot.py:"
+    "funding_bot:funding_bot/funding_bot.py:--loop --interval 300 --cooldown 45"
+    "harmonic_bot:harmonic_bot/harmonic_bot.py:"
+    "liquidation_bot:liquidation_bot/liquidation_bot.py:--loop --interval 300 --cooldown 45"
+    "most_bot:most_bot/most_bot.py:"
+    "mtf_bot:mtf_bot/mtf_bot.py:"
+    "orb_bot:orb_bot/orb_bot.py:"
+    "psar_bot:psar_bot/psar_bot.py:"
+    "strat_bot:strat_bot/strat_bot.py:"
+    "volume_vn_bot:volume_bot/volume_vn_bot.py:"
+    "volume_profile_bot:volume_profile_bot/volume_profile_bot.py:"
+)
+
+started=0
+already_running=0
+failed=0
+
+for bot_config in "${BOTS[@]}"; do
+    IFS=':' read -r bot_name script_path args <<< "$bot_config"
+
+    full_script_path="$BASE_DIR/$script_path"
+    bot_dir="$(dirname "$full_script_path")"
+    script_basename="$(basename "$full_script_path")"
+
+    # Check if bot script exists
+    if [[ ! -f "$full_script_path" ]]; then
+        echo -e "${RED}✗ $bot_name: Script not found at $script_path${NC}"
+        ((failed++))
+        continue
     fi
 
-    echo "  🚀 Starting $name..."
+    # Check if bot is already running
+    if pgrep -f "[p]ython.*${script_basename}" >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ $bot_name: Already running${NC}"
+        ((already_running++))
+        continue
+    fi
 
-    if [ ${#extra_args[@]} -gt 0 ]; then
-        nohup python3 "$script_path" "${extra_args[@]}" >> "$logfile" 2>&1 &
+    # Start bot in screen session
+    echo -e "${GREEN}▶ Starting $bot_name...${NC}"
+
+    # Build the command to run
+    if [[ -n "$args" ]]; then
+        cmd="cd '$bot_dir' && source '$VENV_DIR/bin/activate' && python '$script_basename' $args"
     else
-        nohup python3 "$script_path" --interval "$interval" --cooldown "$cooldown" --loop >> "$logfile" 2>&1 &
+        cmd="cd '$bot_dir' && source '$VENV_DIR/bin/activate' && python '$script_basename'"
     fi
 
-    pid=$!
-    echo $pid >> "$PID_FILE"
-}
+    # Start in screen session with logging
+    screen -dmS "$bot_name" bash -c "$cmd >> '$bot_dir/${bot_name}.log' 2>&1"
 
-# --- NEW BOTS ---
-echo "🎨 Starting Strategy Bots..."
-start_bot "harmonic_bot/harmonic_bot.py"         "harmonic"     300 15
-start_bot "candlestick_bot/candlestick_bot.py"   "candlestick"  300 15
-start_bot "mtf_bot/mtf_bot.py"                   "mtf"          300 15
-start_bot "psar_bot/psar_bot.py"                 "psar"         300 15
-start_bot "diy_bot/diy_bot.py"                   "diy"          300 15
-start_bot "most_bot/most_bot.py"                 "most"         300 15
-start_bot "strat_bot/strat_bot.py"               "strat"        300 15
-start_bot "fib_reversal_bot/fib_reversal_bot.py" "fib_reversal" 300 15
-start_bot "fib_swing_bot/fib_swing_bot.py"       "fib_swing"    300 15 --interval 300 --loop
-start_bot "orb_bot/orb_bot.py"                   "orb"          60 15 --loop
+    # Give it a moment to start
+    sleep 0.5
 
-# --- OLD BOTS ---
+    # Verify it started
+    if pgrep -f "[p]ython.*${script_basename}" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ $bot_name started successfully${NC}"
+        ((started++))
+    else
+        echo -e "${RED}✗ $bot_name failed to start (check logs at $bot_dir/${bot_name}.log)${NC}"
+        ((failed++))
+    fi
+done
+
 echo ""
-echo "📊 Starting Data Bots..."
-start_bot "funding_bot/funding_bot.py"           "funding"      300 15
-start_bot "liquidation_bot/liquidation_bot.py"   "liquidation"  300 15 --interval 300 --loop
-start_bot "volume_bot/volume_vn_bot.py"          "volume"       60 15 --loop
-start_bot "volume_profile_bot/volume_profile_bot.py" "volume_profile" 60 15 --interval 60 --loop
-
-# --- CONSENSUS ---
+echo -e "${GREEN}=== Summary ===${NC}"
+echo "Started: $started"
+echo "Already running: $already_running"
+echo "Failed: $failed"
 echo ""
-echo "🏆 Starting MASTER MANAGER..."
-if [ -f "consensus_bot/consensus_bot.py" ]; then
-    nohup python3 consensus_bot/consensus_bot.py --interval 30 --window 30 --min-rr 1.2 --loop >> "$LOG_DIR/consensus.log" 2>&1 &
-    pid=$!
-    echo $pid >> "$PID_FILE"
-    echo "  ✅ Consensus Bot started (PID: $pid)"
-else
-    echo "  ❌ ERROR: consensus_bot/consensus_bot.py not found!"
+
+if [[ $started -gt 0 ]]; then
+    echo -e "${GREEN}To view running bots, use:${NC}"
+    echo "  screen -ls"
+    echo ""
+    echo -e "${GREEN}To attach to a bot session:${NC}"
+    echo "  screen -r <bot_name>"
+    echo ""
+    echo -e "${GREEN}To detach from a session:${NC}"
+    echo "  Press Ctrl+A then D"
 fi
 
-echo ""
-echo "⏳ Initializing..."
-sleep 2
-
-# Validation
-RUNNING_COUNT=$(wc -l < "$PID_FILE")
-REAL_COUNT=$(ps aux | grep "python3.*_bot.py" | grep -v grep | wc -l)
-
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🤖 STATUS CHECK:"
-echo "   PIDs Recorded: $RUNNING_COUNT / 15"
-echo "   Actual Process Count: $REAL_COUNT"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "💡 COMMANDS:"
-echo "   Monitor Consensus:  tail -f logs/consensus.log"
-echo "   Stop All:           ./stop_all_bots.sh"
-echo ""
+if [[ $failed -gt 0 ]]; then
+    echo -e "${YELLOW}Some bots failed to start. Check the logs in their respective directories.${NC}"
+    exit 1
+fi

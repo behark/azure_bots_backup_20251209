@@ -48,23 +48,29 @@ except ImportError:
     pass
 
 sys.path.append(str(BASE_DIR.parent))
-try:
-    from notifier import TelegramNotifier
-    from signal_stats import SignalStats
-    from health_monitor import HealthMonitor, RateLimiter
-    from tp_sl_calculator import TPSLCalculator
-    from trade_config import get_config_manager
-    from rate_limit_handler import RateLimitHandler
-except ImportError:
-    TelegramNotifier = None
-    SignalStats = None
-    HealthMonitor = None
-    RateLimiter = None
-    TPSLCalculator = None
-    get_config_manager = None
-    RateLimitHandler = None
 
+# Safe imports with independent error handling
+from safe_import import safe_import_multiple
 
+imports = [
+    ('notifier', 'TelegramNotifier', None),
+    ('signal_stats', 'SignalStats', None),
+    ('health_monitor', 'HealthMonitor', None),
+    ('health_monitor', 'RateLimiter', None),
+    ('tp_sl_calculator', 'TPSLCalculator', None),
+    ('trade_config', 'get_config_manager', None),
+    ('rate_limit_handler', 'RateLimitHandler', None),
+]
+
+components = safe_import_multiple(imports, logger_instance=logger)
+
+TelegramNotifier = components['TelegramNotifier']
+SignalStats = components['SignalStats']
+HealthMonitor = components['HealthMonitor']
+RateLimiter = components['RateLimiter']
+TPSLCalculator = components['TPSLCalculator']
+get_config_manager = components['get_config_manager']
+RateLimitHandler = components['RateLimitHandler']
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -304,13 +310,22 @@ class BotState:
     
     @staticmethod
     def _parse_ts(value: str) -> datetime:
-        dt = datetime.fromisoformat(value)
+        """Parse ISO format timestamp, ensuring UTC timezone."""
+        try:
+            dt = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return datetime.now(timezone.utc)
+        
+        # Ensure UTC timezone
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            # Convert to UTC if not already
+            dt = dt.astimezone(timezone.utc)
         return dt
     
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alert": {}, "open_signals": {}}
+        return {"last_alert": {}, "open_signals": {}, "closed_signals": {}}
 
     def _load(self) -> Dict[str, Any]:
         if not self.path.exists():
@@ -321,9 +336,11 @@ class BotState:
                 return self._empty_state()
             last_alert = data.get("last_alert")
             open_signals = data.get("open_signals")
+            closed_signals = data.get("closed_signals")
             return {
                 "last_alert": last_alert if isinstance(last_alert, dict) else {},
                 "open_signals": open_signals if isinstance(open_signals, dict) else {},
+                "closed_signals": closed_signals if isinstance(closed_signals, dict) else {},
             }
         except json.JSONDecodeError:
             return self._empty_state()
@@ -332,6 +349,7 @@ class BotState:
         self.path.write_text(json.dumps(self.data, indent=2))
     
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
+        """Check if enough time has passed since last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
         if not isinstance(last_map, dict):
             self.data["last_alert"] = {}
@@ -339,16 +357,69 @@ class BotState:
         last_ts = last_map.get(symbol)
         if not isinstance(last_ts, str):
             return True
-        delta = datetime.now(timezone.utc) - self._parse_ts(last_ts)
-        return delta >= timedelta(minutes=cooldown_minutes)
+        
+        # Parse the last alert time and get current time once
+        try:
+            last_time = self._parse_ts(last_ts)
+            current_time = datetime.now(timezone.utc)
+            delta = current_time - last_time
+            return delta >= timedelta(minutes=cooldown_minutes)
+        except (ValueError, TypeError):
+            return True
     
     def mark_alert(self, symbol: str) -> None:
+        """Record the time of the last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
         if not isinstance(last_map, dict):
             last_map = {}
             self.data["last_alert"] = last_map
+        # Store ISO format with explicit UTC timezone
         last_map[symbol] = datetime.now(timezone.utc).isoformat()
         self.save()
+    
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and move to closed_signals."""
+        signals = self.iter_signals()
+        closed = self.data.setdefault("closed_signals", {})
+        if not isinstance(closed, dict):
+            closed = {}
+            self.data["closed_signals"] = closed
+        
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove = []
+        
+        for signal_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            created_at_str = payload.get("created_at")
+            if not isinstance(created_at_str, str):
+                signal_ids_to_remove.append(signal_id)
+                continue
+            
+            try:
+                created_time = self._parse_ts(created_at_str)
+                age = current_time - created_time
+                
+                if age >= timedelta(hours=max_age_hours):
+                    # Move to closed signals with timeout status
+                    closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(signal_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(signal_id)
+        
+        for signal_id in signal_ids_to_remove:
+            if signal_id in signals:
+                signals.pop(signal_id)
+        
+        if removed_count > 0:
+            self.save()
+        
+        return removed_count
     
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         signals = self.iter_signals()
@@ -372,7 +443,7 @@ class BotState:
 class MOSTBot:
     """Main MOST Bot."""
     
-    def __init__(self, interval: int = 300, default_cooldown: int = 30):
+    def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
         self.default_cooldown = default_cooldown
         self.watchlist: List[WatchItem] = load_watchlist()
@@ -438,6 +509,12 @@ class MOSTBot:
             while not shutdown_requested:
                 try:
                     self._run_cycle()
+                    
+                    # Cleanup stale signals every cycle
+                    stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
+                    
                     self._monitor_open_signals()
                     
                     if self.health_monitor:
@@ -449,7 +526,9 @@ class MOSTBot:
                     if shutdown_requested:
                         break
                     logger.info("Cycle complete; sleeping %ds", self.interval)
-                    time.sleep(self.interval)
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(self.interval):
+                        time.sleep(1)
                 except Exception as exc:
                     logger.error("Error in cycle: %s", exc)
                     if self.health_monitor:
@@ -593,6 +672,18 @@ class MOSTBot:
         
         entry = current_price
         
+        # Validate BEARISH/BULLISH setup before TP/SL calculation
+        if direction == "BULLISH":
+            # For BULLISH: MOST should be below entry (support level)
+            if most_value >= entry:
+                logger.error("Invalid BULLISH setup: MOST %.6f >= entry %.6f (direction contradiction)", most_value, entry)
+                return None
+        else:  # BEARISH
+            # For BEARISH: MOST should be above entry (resistance level)
+            if most_value <= entry:
+                logger.error("Invalid BEARISH setup: MOST %.6f <= entry %.6f (direction contradiction)", most_value, entry)
+                return None
+        
         if TPSLCalculator is not None:
             if get_config_manager is not None:
                 config_mgr = get_config_manager()
@@ -617,6 +708,19 @@ class MOSTBot:
                 sl = most_value  # Keep MOST as trailing stop
                 tp1 = levels.take_profit_1
                 tp2 = levels.take_profit_2
+                
+                # Validate TP/SL consistency after calculation
+                if direction == "BULLISH":
+                    assert sl < entry, f"MOST BULLISH: SL {sl} should be < entry {entry}"
+                    assert tp1 > entry, f"MOST BULLISH: TP1 {tp1} should be > entry {entry}"
+                    assert tp2 > entry, f"MOST BULLISH: TP2 {tp2} should be > entry {entry}"
+                else:  # BEARISH
+                    assert sl > entry, f"MOST BEARISH: SL {sl} should be > entry {entry}"
+                    assert tp1 < entry, f"MOST BEARISH: TP1 {tp1} should be < entry {entry}"
+                    assert tp2 < entry, f"MOST BEARISH: TP2 {tp2} should be < entry {entry}"
+                
+                logger.debug("%s %s signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f / 1:%.2f",
+                           symbol, direction, entry, sl, tp1, tp2, levels.risk_reward_1, levels.risk_reward_2)
             else:
                 logger.info("Signal rejected for %s: %s", symbol, levels.rejection_reason)
                 return None
@@ -628,8 +732,16 @@ class MOSTBot:
             else:
                 tp1 = entry - (atr * 2.0)
                 tp2 = entry - (atr * 3.5)
+            
+            # Validate fallback TP/SL
+            if direction == "BULLISH":
+                assert sl < entry, f"MOST BULLISH fallback: SL {sl} should be < entry {entry}"
+                assert tp1 > entry, f"MOST BULLISH fallback: TP1 {tp1} should be > entry {entry}"
+            else:  # BEARISH
+                assert sl > entry, f"MOST BEARISH fallback: SL {sl} should be > entry {entry}"
+                assert tp1 < entry, f"MOST BEARISH fallback: TP1 {tp1} should be < entry {entry}"
         
-        return MOSTSignal(
+        signal = MOSTSignal(
             symbol=symbol,
             direction=direction,
             timestamp=human_ts(),
@@ -640,6 +752,10 @@ class MOSTBot:
             take_profit_2=tp2,
             current_price=current_price,
         )
+        
+        logger.info("MOST signal created: %s | %s | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f",
+                   symbol, direction, entry, sl, tp1, tp2)
+        return signal
     
     def _format_message(self, signal: MOSTSignal) -> str:
         """Format Telegram message for signal."""
@@ -697,7 +813,7 @@ class MOSTBot:
         sl = counts.get("SL", 0)
         total = tp1 + tp2 + sl
         if total == 0:
-            return None
+            return "📈 <b>History:</b> No previous trades for this symbol"
         win_rate = (tp1 + tp2) / total * 100.0
         return (
             f"📈 <b>History:</b> TP1 {tp1} | TP2 {tp2} | SL {sl} "
@@ -705,10 +821,13 @@ class MOSTBot:
         )
     
     def _monitor_open_signals(self) -> None:
-        """Monitor open signals for TP/SL hits."""
+        """Monitor open signals for TP/SL hits with improved tolerance."""
         signals = self.state.iter_signals()
         if not signals:
             return
+        
+        # Price tolerance for partial fills/slippage (0.5%)
+        PRICE_TOLERANCE = 0.005
         
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
@@ -765,16 +884,20 @@ class MOSTBot:
                     self.stats.discard(signal_id)
                 continue
             
-            if direction == "BULLISH":
-                hit_tp2 = price >= tp2
-                hit_tp1 = price >= tp1
-                hit_sl = price <= sl
-            else:
-                hit_tp2 = price <= tp2
-                hit_tp1 = price <= tp1
-                hit_sl = price >= sl
-            
+            # Check for TP/SL with tolerance for slippage
             result = None
+            if direction == "BULLISH":
+                # With tolerance for slippage (allow slightly lower prices)
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
+            else:
+                # For BEARISH, allow slightly higher prices
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
+            
+            # Priority: TP2 > TP1 > SL
             if hit_tp2:
                 result = "TP2"
             elif hit_tp1:
@@ -792,6 +915,8 @@ class MOSTBot:
                     )
                     if stats_record:
                         summary_message = self.stats.build_summary_message(stats_record)
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%", 
+                                   signal_id, symbol, entry, price, result, stats_record.pnl_pct)
                     else:
                         self.stats.discard(signal_id)
                 
@@ -800,7 +925,7 @@ class MOSTBot:
                 else:
                     message = (
                         f"🎯 {symbol}/USDT MOST {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
+                        f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )
                     self._dispatch(message)
@@ -821,16 +946,16 @@ class MOSTBot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MOST Bot")
-    parser.add_argument("--loop", action="store_true", help="Run indefinitely")
-    parser.add_argument("--interval", type=int, default=300, help="Seconds between cycles")
-    parser.add_argument("--cooldown", type=int, default=30, help="Default cooldown minutes")
+    parser.add_argument("--once", action="store_true", help="Run only one cycle")
+    parser.add_argument("--interval", type=int, default=60, help="Seconds between cycles")
+    parser.add_argument("--cooldown", type=int, default=5, help="Default cooldown minutes")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     bot = MOSTBot(interval=args.interval, default_cooldown=args.cooldown)
-    bot.run(loop=args.loop)
+    bot.run(loop=not args.once)
 
 
 if __name__ == "__main__":

@@ -1,33 +1,13 @@
 [
   {
-    "symbol": "APR",
+    "symbol": "AIOT",
     "period": "5m",
-    "cooldown_minutes": 15
+    "cooldown_minutes": 3
   },
   {
-    "symbol": "CLO",
+    "symbol": "ALCH",
     "period": "5m",
-    "cooldown_minutes": 15
-  },
-  {
-    "symbol": "JELLYJELLY",
-    "period": "5m",
-    "cooldown_minutes": 15
-  },
-  {
-    "symbol": "ON",
-    "period": "5m",
-    "cooldown_minutes": 15
-  },
-  {
-    "symbol": "RIVER",
-    "period": "5m",
-    "cooldown_minutes": 15
-  },
-  {
-    "symbol": "NIGHT",
-    "period": "5m",
-    "cooldown_minutes": 15
+    "cooldown_minutes": 3
   },
   {
     "symbol": "ALMANAK",
@@ -35,9 +15,24 @@
     "cooldown_minutes": 15
   },
   {
-    "symbol": "TRUTH",
+    "symbol": "APR",
     "period": "5m",
     "cooldown_minutes": 15
+  },
+  {
+    "symbol": "BAY",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "CLO",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "CORL",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "DOGE",
@@ -45,13 +40,63 @@
     "cooldown_minutes": 15
   },
   {
-    "symbol": "WET",
+    "symbol": "DSYNC",
     "period": "5m",
-    "cooldown_minutes": 15
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "FHE",
+    "period": "5m",
+    "cooldown_minutes": 3
   },
   {
     "symbol": "FRANKLIN",
     "period": "5m",
     "cooldown_minutes": 15
+  },
+  {
+    "symbol": "H",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ICNT",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "IRYS",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "LONG",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "ON",
+    "period": "5m",
+    "cooldown_minutes": 15
+  },
+  {
+    "symbol": "POWR",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "RVV",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "TRUTH",
+    "period": "5m",
+    "cooldown_minutes": 3
+  },
+  {
+    "symbol": "TYCOON",
+    "period": "5m",
+    "cooldown_minutes": 3
   }
 ]

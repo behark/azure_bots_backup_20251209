@@ -1,0 +1,54 @@
+{
+  "exchange_settings": {
+    "active_exchange": "mexc",
+    "check_exchange_for_duplicates": true,
+    "check_timeframe_for_duplicates": true
+  },
+  "execution": {
+    "cycle_interval_seconds": 180,
+    "symbol_delay_seconds": 3,
+    "health_check_interval_seconds": 3600,
+    "enable_startup_notification": true,
+    "enable_shutdown_notification": true,
+    "log_level": "INFO",
+    "enable_detailed_logging": false
+  },
+  "risk": {
+    "max_open_signals": 45,
+    "min_risk_reward_ratio": 2.0,
+    "max_risk_per_trade_pct": 1.0,
+    "enable_stop_loss": true
+  },
+  "analysis": {
+    "candle_limit": 100,
+    "request_timeout_seconds": 30,
+    "timeframe_override": "5m",
+    "breakout_buffer_pct": 0.001,
+    "session_times": {
+        "london_open": "08:00",
+        "ny_open": "14:00",
+        "asia_open": "00:00"
+    },
+    "orb_window_minutes": 60,
+    "trend_ema_period": 200,
+    "volume_confirmation_factor": 1.2
+  },
+  "rate_limit": {
+    "calls_per_minute": 60,
+    "max_retries": 5,
+    "base_delay_seconds": 0.5,
+    "backoff_multiplier": 2.0,
+    "rate_limit_backoff_base": 60,
+    "rate_limit_backoff_max": 300
+  },
+  "signal": {
+    "cooldown_minutes": 60,
+    "max_signal_age_hours": 12,
+    "result_notification_cooldown_minutes": 15
+  },
+  "telegram": {
+    "bot_token_env_var": "TELEGRAM_BOT_TOKEN_ORB",
+    "chat_id_env_var": "TELEGRAM_CHAT_ID",
+    "enabled": true
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "_comment": "OPTIMIZED DIY Bot Configuration - Maximum Accuracy & Performance",
+  "_version": "2.0",
+  "_last_updated": "2025-12-20",
+  "exchange_settings": {
+    "_description": "Which exchange to use for trading data",
+    "active_exchange": "mexc",
+    "check_exchange_for_duplicates": false,
+    "check_timeframe_for_duplicates": false
+  },
+  "execution": {
+    "_description": "How often the bot runs and checks for signals",
+    "cycle_interval_seconds": 300,
+    "symbol_delay_seconds": 5.0,
+    "health_check_interval_seconds": 3600,
+    "enable_startup_notification": true,
+    "enable_shutdown_notification": true,
+    "log_level": "INFO",
+    "enable_detailed_logging": true
+  },
+  "risk": {
+    "_description": "Risk management settings - VERY IMPORTANT for protecting your capital",
+    "max_open_signals": 45,
+    "min_risk_reward_ratio": 1.8,
+    "max_risk_per_trade_pct": 1.0,
+    "enable_stop_loss": true,
+    "max_same_symbol_signals": 1
+  },
+  "analysis": {
+    "_description": "Technical analysis settings - These control signal accuracy",
+    "candle_limit": 250,
+    "request_timeout_seconds": 30,
+    "min_confidence_threshold": 30.0,
+    "indicator_weights": {
+      "_description": "How much weight each indicator has in trending vs ranging markets",
+      "trending_market": {
+        "RSI": 1.0,
+        "MACD": 2.5,
+        "EMA": 2.5,
+        "ADX": 2.0,
+        "BollingerBands": 0.5,
+        "Volume": 1.5,
+        "Momentum": 1.5,
+        "StochRSI": 1.0,
+        "TrendPosition": 2.5
+      },
+      "ranging_market": {
+        "RSI": 2.5,
+        "MACD": 1.0,
+        "EMA": 0.5,
+        "ADX": 0.5,
+        "BollingerBands": 2.5,
+        "Volume": 1.5,
+        "Momentum": 2.0,
+        "StochRSI": 2.0,
+        "TrendPosition": 0.5
+      }
+    },
+    "rsi_period": 14,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "ema_trend_fast": 50,
+    "ema_trend_slow": 200,
+    "adx_period": 14,
+    "adx_threshold": 20,
+    "adx_trending": 25,
+    "bb_period": 20,
+    "bb_std_dev": 2.0,
+    "volume_sma_period": 20,
+    "volume_surge_multiplier": 1.5,
+    "stoch_rsi_period": 14,
+    "stoch_rsi_smooth": 3
+  },
+  "tp_sl": {
+    "_description": "Take Profit and Stop Loss settings - Critical for profitability",
+    "use_tpsl_calculator": false,
+    "calculation_method": "ATR",
+    "atr_period": 14,
+    "atr_sl_multiplier": 1.0,
+    "atr_tp1_multiplier": 1.5,
+    "atr_tp2_multiplier": 3.6,
+    "min_risk_reward_tp1": 0.9,
+    "min_risk_reward_tp2": 2.5,
+    "price_tolerance": 0.0025,
+    "min_sl_percent": 0.01
+  },
+  "rate_limit": {
+    "_description": "API rate limiting to avoid being blocked by the exchange",
+    "calls_per_minute": 30,
+    "max_retries": 3,
+    "base_delay_seconds": 1.0,
+    "backoff_multiplier": 2.0,
+    "rate_limit_backoff_base": 60,
+    "rate_limit_backoff_max": 300
+  },
+  "signal": {
+    "_description": "Signal generation and notification settings",
+    "cooldown_minutes": 15,
+    "max_signal_age_hours": 24,
+    "result_notification_cooldown_minutes": 1,
+    "no_signal_alert_hours": 1
+  },
+  "telegram": {
+    "_description": "Telegram notification settings",
+    "bot_token_env_var": "TELEGRAM_BOT_TOKEN_DIY",
+    "chat_id_env_var": "TELEGRAM_CHAT_ID",
+    "enabled": true
+  },
+  "cache": {
+    "_description": "Caching settings to reduce API calls and improve speed",
+    "ohlcv_ttl_seconds": 120,
+    "ticker_ttl_seconds": 10
+  }
+}

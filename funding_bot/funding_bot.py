@@ -145,7 +145,7 @@ class FundingSignal:
 
 class FundingAnalyzer:
     """Analyzes Funding Rates and Open Interest for signals."""
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.funding_thresholds = config.get("analysis", {}).get("funding_thresholds", {})
@@ -154,42 +154,42 @@ class FundingAnalyzer:
     def analyze(self, symbol: str, funding_rate: float, oi: Optional[float], oi_change: Optional[float], price: float, ema: Optional[float]) -> Optional[Dict[str, Any]]:
         score = 0
         reasons = []
-        
+
         # Funding Rate Logic (Contrarian)
         extreme_pos = self.funding_thresholds.get("extreme_positive", 0.0005)
         extreme_neg = self.funding_thresholds.get("extreme_negative", -0.0005)
-        
+
         direction = "NEUTRAL"
-        
+
         if funding_rate >= extreme_pos:
             score -= 2
             reasons.append(f"Extreme Positive Funding ({funding_rate*100:.4f}%)")
             if ema and price < ema:
                 score -= 1
                 reasons.append("Downtrend alignment (Price < EMA)")
-        
+
         elif funding_rate <= extreme_neg:
             score += 2
             reasons.append(f"Extreme Negative Funding ({funding_rate*100:.4f}%)")
             if ema and price > ema:
                 score += 1
                 reasons.append("Uptrend alignment (Price > EMA)")
-                
+
         if oi_change:
             limit = self.oi_thresholds.get("strong_increase_pct", 5.0)
             if oi_change >= limit:
                 reasons.append(f"Strong OI Increase (+{oi_change:.1f}%)")
                 if abs(score) >= 2:
                     score = int(score * 1.5)
-        
+
         if score >= 2:
             direction = "BULLISH"
         elif score <= -2:
             direction = "BEARISH"
-            
+
         if direction == "NEUTRAL":
             return None
-            
+
         return {
             "direction": direction,
             "reasons": reasons,
@@ -280,12 +280,12 @@ class SignalTracker:
         signals = self.state.setdefault("open_signals", {})
         sig_id = f"{signal.symbol}-{signal.timestamp}"
         signals[sig_id] = signal.as_dict()
-        
+
         last_alerts = self.state.setdefault("last_alerts", {})
         last_alerts[f"{signal.symbol}-{signal.exchange}"] = signal.timestamp
-        
+
         self._save_state()
-        
+
         if self.stats:
             self.stats.record_open(
                 sig_id, signal.symbol, signal.direction, signal.entry, signal.timestamp,
@@ -377,14 +377,14 @@ class SignalTracker:
 
 class FundingBot:
     """Refactored Funding Bot."""
-    
+
     def __init__(self, config_path: Path):
         self.config = load_json_config(config_path)
         self.watchlist = self._load_watchlist()
         self.analyzer = FundingAnalyzer(self.config)
         self.tracker = SignalTracker(SignalStats("Funding Bot", STATS_FILE), self.config)
         self.notifier = self._init_notifier()
-        
+
         # Init Health Monitor
         heartbeat = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
         self.health_monitor = HealthMonitor("Funding Bot", self.notifier, heartbeat_interval=heartbeat) if HealthMonitor and self.notifier else None
@@ -430,7 +430,7 @@ class FundingBot:
     def run(self, run_once: bool = False) -> None:
         logger.info("Starting Refactored Funding Bot...")
         if self.health_monitor: self.health_monitor.send_startup_message()
-        
+
         while True:
             try:
                 for item in self.watchlist:
@@ -443,23 +443,23 @@ class FundingBot:
 
                     client = self.clients.get(exchange)
                     if not client: continue
-                    
+
                     # 1. Fetch Data via CCXT
                     try:
                         # Funding Rate
                         fr_data = client.fetch_funding_rate(resolve_symbol(symbol))
                         funding_rate = fr_data.get('fundingRate')
                         funding_ts = fr_data.get('fundingTimestamp') # Unique ID for this funding interval
-                        
+
                         # Ticker (Price)
                         ticker = client.fetch_ticker(resolve_symbol(symbol))
                         price = ticker.get('last')
-                        
+
                         # EMA (needs history)
                         ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=50)
                         closes = [c[4] for c in ohlcv]
                         ema = sum(closes[-20:]) / 20 if len(closes) >= 20 else None
-                        
+
                         # Open Interest (Try fetch, handle if not supported)
                         oi = None
                         oi_change = None
@@ -469,16 +469,16 @@ class FundingBot:
                                 oi = oi_data.get('openInterestAmount')
                         except Exception as exc:
                             logger.debug("Open interest not available for %s: %s", symbol, exc)
-                        
+
                     except Exception as e:
                         logger.error(f"Error fetching {symbol}: {e}")
                         continue
-                        
+
                     # 2. Analyze
                     if funding_rate is None or price is None: continue
-                    
+
                     result = self.analyzer.analyze(symbol, funding_rate, oi, oi_change, price, ema)
-                    
+
                     if result:
                         # Check direction filter
                         allowed_dirs = self.config.get("signal", {}).get("allowed_directions", ["BULLISH", "BEARISH"])
@@ -501,27 +501,27 @@ class FundingBot:
                             funding_timestamp=funding_ts,
                             timeframe=timeframe, exchange=exchange, reasons=result['reasons']
                         )
-                        
+
                         # 4. Alert & Track
                         cooldown = self.config.get("signal", {}).get("cooldown_minutes", 60)
                         if self.tracker.should_alert(symbol, exchange, cooldown, funding_ts=funding_ts):
                             self.tracker.check_reversal(symbol, signal.direction, self.notifier)
                             self.tracker.add_signal(signal)
                             self._send_alert(signal)
-                            
+
                 self.tracker.check_open_signals(self.clients, self.notifier)
-                
+
                 if self.health_monitor: self.health_monitor.record_cycle()
-                
+
                 if run_once: break
                 time.sleep(60)
-                
+
             except Exception as e:
                 logger.error(f"Cycle error: {e}")
                 if self.health_monitor: self.health_monitor.record_error(str(e))
                 if run_once: raise
                 time.sleep(10)
-        
+
         if self.health_monitor: self.health_monitor.send_shutdown_message()
 
     def _send_alert(self, signal: FundingSignal) -> None:
@@ -544,11 +544,11 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    
+
     global logger
     log_level = "DEBUG" if args.debug else "INFO"
     logger = setup_logging(log_level=log_level)
-    
+
     # Load dotenv here too
     try:
         from dotenv import load_dotenv
@@ -556,7 +556,7 @@ def main() -> None:
         load_dotenv(BASE_DIR.parent / ".env", override=True)
     except ImportError:
         logger.debug("python-dotenv not installed, skipping .env loading")
-    
+
     bot = FundingBot(BASE_DIR / args.config)
     bot.run(run_once=args.once)
 

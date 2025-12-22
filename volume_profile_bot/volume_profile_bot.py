@@ -10,6 +10,7 @@ respect per-symbol cooldowns from the watchlist file.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 from types import FrameType
 from uuid import uuid4
@@ -34,6 +36,9 @@ LOG_DIR = ROOT_DIR / "logs"
 STATE_FILE = BASE_DIR / "state.json"
 WATCHLIST_FILE = BASE_DIR / "watchlist.json"
 STATS_FILE = LOG_DIR / "volume_profile_stats.json"
+
+# Module-level lock for state file access
+_state_lock = Lock()
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +116,19 @@ def load_state() -> Dict[str, Any]:
 
 
 def save_state(state: Dict[str, Any]) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    """Save state to file with file locking for concurrent access safety."""
+    with _state_lock:
+        temp_file = STATE_FILE.with_suffix('.tmp')
+        try:
+            with open(temp_file, 'w') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                json.dump(state, f, indent=2)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            temp_file.replace(STATE_FILE)
+        except Exception as e:
+            logger.error("Failed to save state: %s", e)
+            if temp_file.exists():
+                temp_file.unlink()
 
 
 @dataclass
@@ -402,7 +419,7 @@ class VolumeProfileBot:
     def _dispatch(self, symbol: str, event_name: str, message: str) -> None:
         self._record_alert(symbol, event_name)
         logger.info("Alert %s: %s", symbol, message)
-        
+
         # Enhanced message format
         formatted_msg = f"📊 <b>Volume Profile Bot</b>\n\n{message}\n\n⏱️ {datetime.now(timezone.utc).isoformat()}"
         self._send_message(formatted_msg)

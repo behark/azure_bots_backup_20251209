@@ -712,7 +712,7 @@ class MultiIndicatorAnalyzer:
         bb_lower = sma20 - bb_std * std
         bb_range = bb_upper[-1] - bb_lower[-1]
         bb_pos = ((closes[-1] - bb_lower[-1]) / bb_range * 100) if bb_range > 1e-10 else 50.0
-        
+
         # FIXED: Check if market is trending (bands expanding) or ranging
         # Get historical BB width to detect expansion/contraction
         if len(std) > 20:
@@ -721,7 +721,7 @@ class MultiIndicatorAnalyzer:
             bandwidth_ratio = current_width / max(historical_avg_width, 1e-10)
         else:
             bandwidth_ratio = 1.0
-        
+
         # Context-dependent logic
         if bandwidth_ratio > 1.5:  # Bands expanded = trending market
             # In trends: bands are price boundaries, not reversals
@@ -735,7 +735,7 @@ class MultiIndicatorAnalyzer:
             # In ranges: bands are mean reversion levels
             bb_signal = 'LONG' if bb_pos < 30 else 'SHORT' if bb_pos > 70 else 'NEUTRAL'
             bb_strength = abs(bb_pos - 50)
-        
+
         results['BollingerBands'] = {
             'signal': bb_signal,
             'strength': max(20.0, min(bb_strength, 100.0)),
@@ -756,25 +756,25 @@ class MultiIndicatorAnalyzer:
         # 7. Momentum (5-period)
         # FIXED: Adaptive momentum with available data + volatility normalization
         momentum_period = min(5, len(closes) - 1)  # Use available data if < 5 candles
-        
+
         if len(closes) >= 2 and closes[-momentum_period] != 0:
             momentum_pct = ((closes[-1] - closes[-momentum_period]) / closes[-momentum_period]) * 100
-            
+
             # FIXED: Normalize by volatility (ATR) for context
             atr_period = self.config.get("atr_period", 14)
             atr = max(self.calculate_atr(highs, lows, closes, atr_period), 1e-10)
             atr_pct = (atr / closes[-1]) * 100
-            
+
             # Normalize: momentum relative to volatility
             momentum = momentum_pct / max(atr_pct, 0.1)  # Avoid division by zero
-            
+
             # Calculate signal strength
             momentum_strength = min(abs(momentum) * 15, 100)  # Scale appropriately
         else:
             momentum = 0.0
             momentum_strength = 20.0
             logger.debug("Momentum: Insufficient data (used %d candles), returning neutral", momentum_period)
-        
+
         results['Momentum'] = {
             'signal': 'LONG' if momentum > 0.1 else 'SHORT' if momentum < -0.1 else 'NEUTRAL',
             'strength': momentum_strength,
@@ -821,12 +821,12 @@ class MultiIndicatorAnalyzer:
     def detect_market_regime(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]]) -> Dict[str, Any]:
         """
         ISSUE #2 FIX: Detect market regime (trending vs ranging/choppy).
-        
+
         Analyzes:
         - ADX: Trend strength (> 25 = trending, < 20 = ranging)
         - Bollinger Bands bandwidth: High = volatile trending, Low = ranging/choppy
         - Momentum persistence: How long direction is consistent
-        
+
         Returns dict with:
         - regime: 'TRENDING', 'RANGING', or 'CHOPPY'
         - adx_strength: ADX value (0-100)
@@ -840,27 +840,27 @@ class MultiIndicatorAnalyzer:
         adx_value = float(adx[-1]) if len(adx) > 0 else 0.0
         adx_trending_threshold = self.config.get("adx_trending", 25)
         adx_ranging_threshold = self.config.get("adx_threshold", 20)
-        
+
         # Get volatility from Bollinger Bands
         bb_period = self.config.get("bb_period", 20)
         bb_std = self.config.get("bb_std_dev", 2.0)
-        
+
         # Simple SMA calculation using numpy convolve (same as Volume calculation)
         sma = np.convolve(closes, np.ones(bb_period)/bb_period, mode='same')
         std_dev = self._calculate_rolling_std(closes, bb_period)
-        
+
         # Bollinger Bands bandwidth ratio (normalized between 0-1)
         # High bandwidth = volatile (more trending potential)
         # Low bandwidth = compressed (ranging/choppy)
         current_sma = sma[-1] if len(sma) > 0 else closes[-1]
         current_std = std_dev[-1] if len(std_dev) > 0 else 0.0
         current_close = closes[-1]
-        
+
         # Bandwidth = (Upper - Lower) / Middle * 100 = (4 * std) / SMA
         bandwidth = (4 * current_std) / (current_sma + 1e-10)  # Normalized
         max_bandwidth = 0.20  # 20% is high volatility
         volatility_score = min(1.0, bandwidth / max_bandwidth)
-        
+
         # Get momentum consistency (how many consecutive closes in same direction)
         momentum_period = min(5, len(closes) - 1)
         if momentum_period > 0:
@@ -870,7 +870,7 @@ class MultiIndicatorAnalyzer:
             momentum_strength = float(same_direction) / max(len(price_changes), 1)
         else:
             momentum_strength = 0.5
-        
+
         # Determine regime
         if adx_value > adx_trending_threshold:
             # Strong trend
@@ -892,10 +892,10 @@ class MultiIndicatorAnalyzer:
             else:
                 regime = 'RANGING'
                 confidence = 0.5
-        
+
         logger.debug("Market Regime: %s (ADX=%.1f, Volatility=%.2f, Momentum=%.2f, Conf=%.2f%%)",
                     regime, adx_value, volatility_score, momentum_strength, confidence * 100)
-        
+
         return {
             'regime': regime,
             'adx_strength': adx_value,
@@ -958,14 +958,14 @@ class MultiIndicatorAnalyzer:
                     proposed_direction = 'SHORT'
             else:
                 neutral_count += 1
-        
+
         # FIXED: Apply veto mechanism - if veto indicators strongly oppose the signal, reduce confidence
         if veto_indicators:
             veto_opposing_count = 0
             for veto_name, veto_signal in veto_indicators.items():
                 if proposed_direction and veto_signal != proposed_direction:
                     veto_opposing_count += 1
-            
+
             # If 50%+ of veto indicators oppose, reduce overall score by 20%
             if veto_opposing_count > 0 and len(veto_indicators) > 0:
                 veto_ratio = veto_opposing_count / len(veto_indicators)
@@ -1487,7 +1487,7 @@ class DIYBot:
 
         # Initialize state
         self.state = BotState(STATE_FILE)
-        
+
         # ISSUE #3 FIX: Add thread-safe signal monitoring lock to prevent race conditions
         # Prevents concurrent cycles from missing TP/SL hits by serializing signal updates
         self.signal_monitor_lock = threading.Lock()
@@ -1917,7 +1917,7 @@ class DIYBot:
 
         # Calculate confluence
         direction, confidence, long_score, short_score = self.analyzer.calculate_confluence(results)
-        
+
         # Apply market regime filter to confidence
         # In CHOPPY markets, reduce confidence by 30% (avoid false signals in noise)
         # In RANGING markets, reduce confidence by 15% (lower quality signals)
@@ -1934,7 +1934,7 @@ class DIYBot:
             confidence_penalty = 0.0
             logger.debug("%s: Market is TRENDING, no confidence penalty",
                         symbol)
-        
+
         # Apply the penalty
         adjusted_confidence = confidence * (1.0 - confidence_penalty)
         logger.debug("%s: Confidence adjusted from %.1f%% to %.1f%% due to %s market",
@@ -2057,7 +2057,7 @@ class DIYBot:
 
     def _monitor_open_signals(self) -> List[Dict[str, Any]]:
         """Monitor open signals for TP/SL hits using batch ticker fetches.
-        
+
         ISSUE #3 FIX: Thread-safe signal monitoring with locking to prevent race conditions.
         Uses signal_monitor_lock to ensure only one cycle monitors/updates signals at a time.
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean, pstdev
+from threading import Lock
 from types import FrameType
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
@@ -267,6 +269,7 @@ class LiquidationEvaluator:
 class LiquidationState:
     def __init__(self, path: Path):
         self.path = path
+        self.state_lock = Lock()
         self.data: Dict[str, Any] = self._load()
 
     def _empty_state(self) -> Dict[str, Any]:
@@ -291,7 +294,19 @@ class LiquidationState:
             return self._empty_state()
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2))
+        """Save state to file with file locking for concurrent access safety."""
+        with self.state_lock:
+            temp_file = self.path.with_suffix('.tmp')
+            try:
+                with open(temp_file, 'w') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    json.dump(self.data, f, indent=2)
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                temp_file.replace(self.path)
+            except Exception as e:
+                logger.error("Failed to save state: %s", e)
+                if temp_file.exists():
+                    temp_file.unlink()
 
     @staticmethod
     def _parse_ts(value: str) -> datetime:
@@ -419,21 +434,21 @@ class LiquidationBot:
             return
 
         logger.info("Starting liquidation bot for %d symbols", len(self.watchlist))
-        
+
         # Send startup notification
         if self.health_monitor:
             self.health_monitor.send_startup_message()
-        
+
         try:
             while not shutdown_requested:
                 try:
                     self._run_cycle()
-                    
+
                     # Cleanup stale signals every cycle
                     stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
                     if stale_count > 0:
                         logger.info("Cleaned up %d stale signals", stale_count)
-                    
+
                     self._monitor_open_signals()
 
                     # Record successful cycle
@@ -477,11 +492,11 @@ class LiquidationBot:
                 cooldown = 30
             timeframe_val = item.get("timeframe") if isinstance(item, dict) else None
             timeframe = timeframe_val if isinstance(timeframe_val, str) else "5m"
-            
+
             # Apply rate limiting
             if self.rate_limiter:
                 self.rate_limiter.wait_if_needed()
-            
+
             try:
                 snapshot = self._collect(symbol, timeframe)
                 if self.rate_limiter:
@@ -502,7 +517,7 @@ class LiquidationBot:
                 continue
 
             trade_levels = self._build_trade_levels(snapshot, evaluation, timeframe)
-            
+
             message = self._format_message(snapshot, evaluation, trade_levels)
             self._dispatch(message)
             self.state.mark_alert(symbol)
@@ -528,7 +543,7 @@ class LiquidationBot:
                         current_open, MAX_OPEN_SIGNALS, symbol
                     )
                     continue
-                
+
                 trade_levels["exchange"] = "MEXC"
                 trade_levels.setdefault("timeframe", timeframe)
                 self.state.add_signal(signal_id_val, trade_levels)
@@ -882,7 +897,7 @@ class LiquidationBot:
 
             # Check for TP/SL hits with price tolerance
             PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
-            
+
             if direction == "BULLISH":
                 # With tolerance for slippage (allow slightly lower prices)
                 hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))

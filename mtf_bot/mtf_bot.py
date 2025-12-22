@@ -139,7 +139,7 @@ def human_ts() -> str:
 
 class MultiTimeframeAnalyzer:
     """Analyzes trends across multiple timeframes."""
-    
+
     # Timeframe hierarchy for confluence analysis
     TIMEFRAME_MAP = {
         "5m": ["15m", "1h"],
@@ -148,14 +148,14 @@ class MultiTimeframeAnalyzer:
         "1h": ["4h", "1d"],
         "4h": ["1d", "1w"],
     }
-    
+
     def __init__(self) -> None:
         pass
-    
+
     def get_higher_timeframes(self, base_tf: str) -> List[str]:
         """Get higher timeframes for analysis."""
         return self.TIMEFRAME_MAP.get(base_tf, ["1h", "4h"])
-    
+
     def calculate_ema(self, closes: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         """Calculate EMA."""
         ema = np.zeros_like(closes)
@@ -190,7 +190,7 @@ class MultiTimeframeAnalyzer:
         rsi[:period] = 50
         rsi[-1] = 50 if np.isnan(rsi[-1]) else rsi[-1]
         return rsi
-    
+
     def detect_trend(self, ohlcv: List[Any]) -> Tuple[str, float]:
         """
         Detect trend direction and strength.
@@ -198,7 +198,7 @@ class MultiTimeframeAnalyzer:
         """
         if len(ohlcv) < 50:
             return ("NEUTRAL", 0.0)
-        
+
         closes = np.array([x[4] for x in ohlcv])
         rsi = self.calculate_rsi(closes, period=14)
         sma50 = self.calculate_sma(closes, 50)
@@ -215,9 +215,9 @@ class MultiTimeframeAnalyzer:
         else:
             direction = "NEUTRAL"
             confidence = 0.0
-        
+
         return (direction, confidence)
-    
+
     def analyze_confluence(
         self,
         base_ohlcv: List[Any],
@@ -229,10 +229,10 @@ class MultiTimeframeAnalyzer:
         """
         # Detect trend on base timeframe
         base_trend, base_conf = self.detect_trend(base_ohlcv)
-        
+
         if base_trend == "NEUTRAL" or base_conf < 0.3:
             return None
-        
+
         higher_trends = {}
         score = 0
         ordered_tfs = list(higher_ohlcvs.keys())
@@ -243,7 +243,7 @@ class MultiTimeframeAnalyzer:
             if trend == base_trend:
                 weight = 2 if idx == 0 else 1
                 score += weight
-        
+
         if score < 2:
             return None
         total_possible = 2 + max(0, len(higher_trends) - 1)
@@ -254,7 +254,7 @@ class MultiTimeframeAnalyzer:
             strength = "MODERATE"
         else:
             strength = "WEAK"
-        
+
         return {
             "direction": base_trend,
             "strength": strength,
@@ -262,7 +262,7 @@ class MultiTimeframeAnalyzer:
             "base_conf": base_conf,
             "higher_trends": higher_trends,
         }
-    
+
     def calculate_targets(
         self,
         direction: str,
@@ -273,7 +273,7 @@ class MultiTimeframeAnalyzer:
     ) -> Optional[Dict[str, float]]:
         """Calculate entry, stop loss, and targets."""
         entry = current_price
-        
+
         # Adjust SL multiplier based on signal strength
         sl_adjust = {"STRONG": 3.0, "MODERATE": 2.0, "WEAK": 1.5}
         strength_mult = sl_adjust.get(strength, 2.0)
@@ -427,7 +427,7 @@ class BotState:
     def save(self) -> None:
         """Save state to file with file locking."""
         safe_write_json(self.path, self.data)
-    
+
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
         """Check if enough time has passed since last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
@@ -437,7 +437,7 @@ class BotState:
         last_ts = last_map.get(symbol)
         if not isinstance(last_ts, str):
             return True
-        
+
         try:
             last_time = self._parse_ts(last_ts)
             current_time = datetime.now(timezone.utc)
@@ -445,7 +445,7 @@ class BotState:
             return delta >= timedelta(minutes=cooldown_minutes)
         except (ValueError, TypeError):
             return True
-    
+
     def mark_alert(self, symbol: str) -> None:
         """Record the time of the last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
@@ -454,7 +454,7 @@ class BotState:
             self.data["last_alert"] = last_map
         last_map[symbol] = datetime.now(timezone.utc).isoformat()
         self.save()
-    
+
     def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
         """Remove signals older than max_age_hours and move to closed_signals."""
         signals = self.iter_signals()
@@ -462,25 +462,25 @@ class BotState:
         if not isinstance(closed, dict):
             closed = {}
             self.data["closed_signals"] = closed
-        
+
         current_time = datetime.now(timezone.utc)
         removed_count = 0
         signal_ids_to_remove = []
-        
+
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
                 signal_ids_to_remove.append(signal_id)
                 continue
-            
+
             created_at_str = payload.get("created_at")
             if not isinstance(created_at_str, str):
                 signal_ids_to_remove.append(signal_id)
                 continue
-            
+
             try:
                 created_time = self._parse_ts(created_at_str)
                 age = current_time - created_time
-                
+
                 if age >= timedelta(hours=max_age_hours):
                     closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
                     signal_ids_to_remove.append(signal_id)
@@ -488,27 +488,27 @@ class BotState:
                     logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
             except (ValueError, TypeError):
                 signal_ids_to_remove.append(signal_id)
-        
+
         for signal_id in signal_ids_to_remove:
             if signal_id in signals:
                 signals.pop(signal_id)
-        
+
         if removed_count > 0:
             self.save()
-        
+
         return removed_count
-    
+
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         signals = self.iter_signals()
         signals[signal_id] = payload
         self.save()
-    
+
     def remove_signal(self, signal_id: str) -> None:
         signals = self.iter_signals()
         if signal_id in signals:
             signals.pop(signal_id)
             self.save()
-    
+
     def iter_signals(self) -> OpenSignals:
         signals = self.data.setdefault("open_signals", {})
         if not isinstance(signals, dict):
@@ -519,7 +519,7 @@ class BotState:
 
 class MTFBot:
     """Main Multi-Timeframe Bot."""
-    
+
     def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
         self.default_cooldown = default_cooldown
@@ -537,7 +537,7 @@ class MTFBot:
             RateLimitHandler(base_delay=0.5, max_retries=5)
             if RateLimitHandler else None
         )
-    
+
     def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
@@ -552,32 +552,32 @@ class MTFBot:
             chat_id=chat_id,
             signals_log_file=str(LOG_DIR / "mtf_signals.json")
         )
-    
+
     def run(self, loop: bool = False) -> None:
         if not self.watchlist:
             logger.error("Empty watchlist; exiting")
             return
-        
+
         logger.info("Starting Multi-Timeframe Bot for %d symbols", len(self.watchlist))
-        
+
         if self.health_monitor:
             self.health_monitor.send_startup_message()
-        
+
         try:
             while not shutdown_requested:
                 try:
                     self._run_cycle()
-                    
+
                     # Cleanup stale signals every cycle (using config)
                     stale_count = self.state.cleanup_stale_signals(max_age_hours=BOT_CONFIG["max_signal_age_hours"])
                     if stale_count > 0:
                         logger.info("Cleaned up %d stale signals", stale_count)
-                    
+
                     self._monitor_open_signals()
-                    
+
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
-                    
+
                     if not loop:
                         break
 
@@ -599,7 +599,7 @@ class MTFBot:
         finally:
             if self.health_monitor:
                 self.health_monitor.send_shutdown_message()
-    
+
     def _run_cycle(self) -> None:
         for item in self.watchlist:
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
@@ -688,31 +688,31 @@ class MTFBot:
                 )
 
             time.sleep(0.5)
-    
+
     def _analyze_symbol(self, symbol: str, timeframe: str) -> Optional[MTFSignal]:
         """Analyze symbol across multiple timeframes."""
         # Fetch base timeframe data
         base_ohlcv = self.client.fetch_ohlcv(symbol, timeframe, limit=100)
-        
+
         if len(base_ohlcv) < 50:
             return None
-        
+
         # Fetch higher timeframes
         higher_tfs = self.analyzer.get_higher_timeframes(timeframe)
         higher_ohlcvs: Dict[str, List[Any]] = {}
-        
+
         for htf in higher_tfs:
             try:
                 higher_ohlcvs[htf] = self.client.fetch_ohlcv(symbol, htf, limit=100)
             except Exception as exc:
                 logger.warning("Failed to fetch %s %s: %s", symbol, htf, exc)
-        
+
         if not higher_ohlcvs:
             return None
-        
+
         # Analyze confluence
         result = self.analyzer.analyze_confluence(base_ohlcv, higher_ohlcvs)
-        
+
         if result is None or not isinstance(result, dict):
             return None
         direction_val = result.get("direction")
@@ -724,12 +724,12 @@ class MTFBot:
             confluence_pct = float(confluence_val)
         else:
             return None
-        
+
         # Calculate ATR
         # Use shared ATR calculation from tp_sl_calculator
         atr_value = calculate_atr(base_ohlcv)
         atr = float(atr_value) if atr_value is not None else 0.0
-        
+
         # Get current price
         ticker = self.client.fetch_ticker(symbol)
         current_price_raw = ticker.get("last") if isinstance(ticker, dict) else None
@@ -741,7 +741,7 @@ class MTFBot:
             current_price = float(current_price_raw)
         except (TypeError, ValueError):
             return None
-        
+
         # Calculate targets
         targets = self.analyzer.calculate_targets(
             direction_val,
@@ -767,7 +767,7 @@ class MTFBot:
             take_profit_2=targets["take_profit_2"],
             current_price=current_price,
         )
-    
+
     def _format_message(self, signal: MTFSignal) -> str:
         """Format Telegram message for signal using centralized template."""
         # Map strength to a numeric value for the template
@@ -811,13 +811,13 @@ class MTFBot:
             performance_stats=perf_stats,
             extra_info=extra_info,
         )
-    
+
     def _monitor_open_signals(self) -> None:
         """Monitor open signals for TP/SL hits."""
         signals = self.state.iter_signals()
         if not signals:
             return
-        
+
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
                 self.state.remove_signal(signal_id)
@@ -828,7 +828,7 @@ class MTFBot:
                 self.state.remove_signal(signal_id)
                 continue
             symbol = symbol_val
-            
+
             try:
                 ticker = self.client.fetch_ticker(symbol)
                 price_raw = ticker.get("last") if isinstance(ticker, dict) else None
@@ -837,14 +837,14 @@ class MTFBot:
             except Exception as exc:
                 logger.warning("Failed to fetch ticker for %s: %s", signal_id, exc)
                 continue
-            
+
             if not isinstance(price_raw, (int, float, str)):
                 continue
             try:
                 price = float(price_raw)
             except (TypeError, ValueError):
                 continue
-            
+
             direction_val = payload.get("direction")
             if not isinstance(direction_val, str):
                 self.state.remove_signal(signal_id)
@@ -872,7 +872,7 @@ class MTFBot:
                 if self.stats:
                     self.stats.discard(signal_id)
                 continue
-            
+
             # Check for TP/SL hits with price tolerance (from config)
             price_tol = BOT_CONFIG["price_tolerance"]
 
@@ -886,7 +886,7 @@ class MTFBot:
                 hit_tp2 = price <= (tp2 * (1 + price_tol))
                 hit_tp1 = price <= (tp1 * (1 + price_tol)) and price > (tp2 * (1 + price_tol))
                 hit_sl = price >= (sl * (1 - price_tol))
-            
+
             result = None
             if hit_tp2:
                 result = "TP2"
@@ -894,7 +894,7 @@ class MTFBot:
                 result = "TP1"
             elif hit_sl:
                 result = "SL"
-            
+
             if result:
                 summary_message = None
                 if self.stats:
@@ -905,11 +905,11 @@ class MTFBot:
                     )
                     if stats_record:
                         summary_message = self.stats.build_summary_message(stats_record)
-                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%", 
+                        logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%",
                                    signal_id, symbol, entry, price, result, stats_record.pnl_pct)
                     else:
                         self.stats.discard(signal_id)
-                
+
                 if summary_message:
                     self._dispatch(summary_message)
                 else:
@@ -919,9 +919,9 @@ class MTFBot:
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )
                     self._dispatch(message)
-                
+
                 self.state.remove_signal(signal_id)
-    
+
     def _dispatch(self, message: str) -> None:
         """Send message via Telegram."""
         if self.notifier:

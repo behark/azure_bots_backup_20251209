@@ -53,7 +53,7 @@ from tp_sl_calculator import calculate_atr as shared_calculate_atr
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = safe_import('health_monitor', 'RateLimiter')
+RateLimiter = None  # Legacy rate limiter disabled - using RateLimitHandler instead
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
@@ -164,7 +164,7 @@ class HarmonicSignal:
 
 class HarmonicPatternDetector:
     """Core logic for Harmonic Pattern Detection (unchanged, just imported/encapsulated)."""
-    
+
     PATTERNS = {
         "Cypher": {"xab": (0.382, 0.618), "abc": (1.13, 1.414), "bcd": (1.272, 2.0), "xad": (0.76, 0.80)},
         "Deep Crab": {"xab": (0.88, 0.895), "abc": (0.382, 0.886), "bcd": (2.0, 3.618), "xad": (1.60, 1.63)},
@@ -175,7 +175,7 @@ class HarmonicPatternDetector:
         "Shark": {"xab": (0.5, 0.875), "abc": (1.13, 1.618), "bcd": (1.27, 2.24), "xad": (0.886, 1.13)},
         "ABCD": {"xab": (0.0, 999.0), "abc": (0.382, 0.886), "bcd": (1.13, 2.618), "xad": (0.0, 999.0)},
     }
-    
+
     PATTERN_IDEALS = {
         "Cypher": {"xab": 0.5, "abc": 1.272, "bcd": 1.414, "xad": 0.786},
         "Deep Crab": {"xab": 0.886, "abc": 0.618, "bcd": 2.618, "xad": 1.618},
@@ -221,7 +221,7 @@ class HarmonicPatternDetector:
         # Increased ZigZag multiplier (Pro Upgrade)
         mult = self.config.get("analysis", {}).get("zigzag_atr_multiplier", 3.0)
         atr_threshold = max(atr * mult, 1e-8)
-        
+
         # ... (ZigZag Logic)
         highs_arr = np.asarray(highs, dtype=float)
         lows_arr = np.asarray(lows, dtype=float)
@@ -229,7 +229,7 @@ class HarmonicPatternDetector:
         opens_arr = np.asarray(opens, dtype=float)
         n = closes_arr.size
         if n < 2: return []
-        
+
         candle_dirs = np.where(closes_arr >= opens_arr, 1, -1)
         change_points = np.flatnonzero(candle_dirs[1:] != candle_dirs[:-1]) + 1
         if change_points.size == 0: return []
@@ -280,7 +280,7 @@ class HarmonicPatternDetector:
         except (IndexError, TypeError) as e:
             logger.error(f"Malformed OHLCV data for {symbol}: {e}")
             return None
-        
+
         atr = self.calculate_atr(highs, lows, closes)
         if atr <= 0:
             # Fix 1.9: Use average high-low range instead of std deviation
@@ -288,37 +288,37 @@ class HarmonicPatternDetector:
             highs_arr = np.array(highs[-fallback_period:])
             lows_arr = np.array(lows[-fallback_period:])
             atr = max(float(np.mean(highs_arr - lows_arr)), 1e-6)
-        
+
         pivots = self.find_pivots(highs, lows, closes, opens, atr)
         if len(pivots) < 5:
             logger.debug(f"{symbol}: Insufficient pivots ({len(pivots)}/5 needed)")
             return None
-        
+
         # Use last 5 pivots
         x_idx, x, x_type = pivots[-5]
         a_idx, a, a_type = pivots[-4]
         b_idx, b, b_type = pivots[-3]
         c_idx, c, c_type = pivots[-2]
         d_idx, d, d_type = pivots[-1]
-        
+
         # Check separation with configurable minimum leg candles (Fix 1.3)
         min_leg_candles = self.config.get("analysis", {}).get("min_leg_candles", 3)
         if any((p2 - p1) < min_leg_candles for p1, p2 in [(x_idx, a_idx), (a_idx, b_idx), (b_idx, c_idx), (c_idx, d_idx)]):
             logger.debug(f"{symbol}: Pivots too close together (need {min_leg_candles}+ candles separation)")
             return None
-        
+
         # Check patterns
         ratios = self._get_ratios(x, a, b, c, d)
         if not ratios:
             logger.debug(f"{symbol}: Invalid ratios (division by zero)")
             return None
         xab, xad, abc, bcd = ratios
-        
+
         # Determine direction from XA leg (Fix 1.2)
         # Bullish: A < X (price moved down from X to A, expecting reversal up)
         # Bearish: A > X (price moved up from X to A, expecting reversal down)
         direction = "BULLISH" if a < x else "BEARISH"
-        
+
         best_pattern = None
         for name, ranges in self.PATTERNS.items():
             # Range checks - validate ALL ratios including BCD (Fix 1.1)
@@ -327,7 +327,7 @@ class HarmonicPatternDetector:
                     ranges["bcd"][0] <= bcd <= ranges["bcd"][1] and
                     ranges["xad"][0] <= xad <= ranges["xad"][1]):
                 continue
-            
+
             # Error score
             ideals = self.PATTERN_IDEALS.get(name, {})
             score = 0.0
@@ -335,12 +335,12 @@ class HarmonicPatternDetector:
             score += abs(abc - ideals.get("abc", abc))
             score += abs(bcd - ideals.get("bcd", bcd))
             score += abs(xad - ideals.get("xad", xad))
-            
+
             thresh = self.error_thresholds.get(name, 0.15)
             if score <= thresh:
                 if best_pattern is None or score < best_pattern[2]:
                     best_pattern = (name, direction, score)
-        
+
         if not best_pattern:
             logger.debug(f"{symbol}: No pattern match (ratios: XAB={xab:.3f}, ABC={abc:.3f}, BCD={bcd:.3f}, XAD={xad:.3f})")
             return None
@@ -363,7 +363,7 @@ class HarmonicPatternDetector:
         if d_age > self.config.get("analysis", {}).get("max_pattern_age_candles", 3):
             logger.debug(f"{symbol}: Pattern too old ({d_age} candles, max 3)")
             return None
-        
+
         # Targets
         targets = self._calculate_targets(c, d, direction, atr, symbol)
 
@@ -615,13 +615,13 @@ class SignalTracker:
         if signal.d_timestamp not in history[key]:
             history[key].append(signal.d_timestamp)
             if len(history[key]) > history_limit: history[key] = history[key][-history_limit:]
-            
+
         # Add open signal
         signals = self.state.setdefault("open_signals", {})
         sig_id = f"{signal.symbol}-{signal.pattern_name}-{signal.timestamp}"
         signals[sig_id] = signal.as_dict()
         self._save_state()
-        
+
         if self.stats:
             self.stats.record_open(sig_id, signal.symbol, signal.direction, signal.entry, signal.timestamp)
 
@@ -803,7 +803,7 @@ class SignalTracker:
                     if self.stats: self.stats.record_close(sig_id, price, res)
                     del signals[sig_id]
                     updated = True
-        
+
         if updated: self._save_state()
 
     def should_alert(self, symbol: str, pattern: str, cooldown_minutes: int) -> bool:
@@ -1307,7 +1307,7 @@ class HarmonicBot:
                     if run_once:
                         break
                     time.sleep(cycle_interval)
-                    
+
                 except Exception as e:
                     logger.error(f"Cycle error: {e}")
                     if self.health_monitor: self.health_monitor.record_error(f"Cycle Error: {e}")

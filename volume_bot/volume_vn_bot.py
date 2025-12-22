@@ -252,14 +252,14 @@ class VolumeAnalyzer:
         if client_key not in self.clients:
             cfg = EXCHANGE_CONFIG[exchange_key]
             params = json.loads(json.dumps(cfg["params"])) if isinstance(cfg["params"], dict) else {}
-            
+
             # Add timeout configuration (FIX: Issue #3 - Add request timeouts)
             params['timeout'] = self.request_timeout * 1000  # ccxt uses milliseconds
-            
+
             options = params.get("options", {}).copy()
             options["defaultType"] = market_type
             params["options"] = options
-            
+
             # Add credentials if available
             if self.config:
                 get_creds = getattr(self.config, 'get_exchange_credentials', None)
@@ -271,7 +271,7 @@ class VolumeAnalyzer:
 
             self.clients[client_key] = cfg["factory"](params)
         return self.clients[client_key]
-    
+
     def validate_exchange_credentials(self, exchange_key: str, market_type: str = "swap") -> bool:
         """Validate exchange API credentials (FIX: Security - API Key Validation)."""
         try:
@@ -297,7 +297,7 @@ class VolumeAnalyzer:
         client = self.get_client(exchange_key, market_type)
         market_symbol = resolve_symbol(symbol, market_type)
         logger.debug("📊 Fetching OHLCV for %s %s on %s", market_symbol, timeframe, exchange_key)
-        
+
         # FIX: Issue #3 - Add specific exception handling for network requests
         try:
             if self.rate_limiter:
@@ -334,7 +334,7 @@ class VolumeAnalyzer:
         vp_result_raw = vp.calculate_volume_profile(highs[-100:], lows[-100:], closes[-100:], volumes[-100:])
         vp_result: Dict[str, Any] = vp_result_raw
         rsi = float(vp.calculate_rsi(np.array(closes)))
-        
+
         # FIX: Issue #6 - Look-ahead bias: Use only CLOSED candles for pattern detection
         pattern_raw = vp.detect_candlestick_pattern(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
         pattern = pattern_raw if isinstance(pattern_raw, str) else None
@@ -491,7 +491,7 @@ class VolumeAnalyzer:
             sample_size = getattr(getattr(self.config, 'analysis', None), 'buying_pressure_sample_size', 3) if self.config else 3
         if threshold is None:
             threshold = getattr(getattr(self.config, 'analysis', None), 'buying_pressure_threshold', 1.2) if self.config else 1.2
-        
+
         if len(candles) < sample_size * 2:
             return False
 
@@ -528,7 +528,7 @@ class VolumeAnalyzer:
             # Use configurable stop loss percentage (FIX: Externalized configuration)
             # Default is now 1.5% to avoid premature stops
             custom_sl = min(raw_sl, current_price * (1 - 0.015))  # 1.5% stop loss
-            
+
             try:
                 config_mgr = get_config_manager()
                 risk_config = config_mgr.get_effective_risk("volume_bot", symbol)
@@ -570,7 +570,7 @@ class VolumeAnalyzer:
             # Use configurable stop loss percentage (FIX: Externalized configuration)
             # Default is now 1.5% to avoid premature stops
             custom_sl = max(raw_sl, current_price * (1 + 0.015))  # 1.5% stop loss
-            
+
             try:
                 config_mgr = get_config_manager()
                 risk_config = config_mgr.get_effective_risk("volume_bot", symbol)
@@ -626,12 +626,12 @@ class SignalTracker:
             try:
                 with open(STATE_FILE, 'r') as f:
                     data = json.load(f)
-                
+
                 # Validate structure
                 if not isinstance(data, dict):
                     logger.warning(f"State file has invalid structure (expected dict, got {type(data)}), rebuilding")
                     return self._empty_state()
-                
+
                 if not isinstance(data.get("last_alerts"), dict):
                     data["last_alerts"] = {}
                 if not isinstance(data.get("open_signals"), dict):
@@ -639,7 +639,7 @@ class SignalTracker:
                 if not isinstance(data.get("last_result_notifications"), dict):
                     data["last_result_notifications"] = {}
                 return data
-                
+
             except json.JSONDecodeError as e:
                 logger.error(f"State file has invalid JSON: {e}, rebuilding from scratch")
                 return self._empty_state()
@@ -659,7 +659,7 @@ class SignalTracker:
                     fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.state, f, indent=2)
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                
+
                 # Atomic rename
                 temp_file.replace(STATE_FILE)
             except Exception as e:
@@ -671,11 +671,11 @@ class SignalTracker:
         """Sync open signals from state to stats (for signals created before stats integration)."""
         if not self.stats:
             return
-        
+
         signals = self.state.get("open_signals", {}) if isinstance(self.state.get("open_signals", {}), dict) else {}
         stats_open = self.stats.data.get("open", {}) if isinstance(self.stats.data.get("open", {}), dict) else {}
         synced = 0
-        
+
         for signal_id, payload in signals.items():
             if signal_id not in stats_open and isinstance(payload, dict):
                 self.stats.record_open(
@@ -691,7 +691,7 @@ class SignalTracker:
                     },
                 )
                 synced += 1
-        
+
         if synced > 0:
             logger.info("Synced %d existing signals to stats tracker", synced)
 
@@ -725,71 +725,71 @@ class SignalTracker:
     def has_open_signal(self, symbol: str, exchange: Optional[str] = None, timeframe: Optional[str] = None) -> bool:
         """Check if there's already an open signal (FIX: Issue #1 - Proper duplicate detection)."""
         signals = self.state.get("open_signals", {}) if isinstance(self.state.get("open_signals", {}), dict) else {}
-        
+
         # Normalize symbol for comparison (remove :USDT suffix)
         normalized_symbol = symbol.split(":")[0]
-        
-        check_exchange = (self.config.signal.check_exchange_for_duplicates 
+
+        check_exchange = (self.config.signal.check_exchange_for_duplicates
                          if self.config else True)
-        check_timeframe = (self.config.signal.check_timeframe_for_duplicates 
+        check_timeframe = (self.config.signal.check_timeframe_for_duplicates
                           if self.config else False)
-        
+
         for signal_data in signals.values():
             if not isinstance(signal_data, dict):
                 continue
-            
+
             stored_symbol = signal_data.get("symbol", "").split(":")[0]
-            
+
             # Basic symbol match
             if stored_symbol != normalized_symbol:
                 continue
-            
+
             # Check exchange if required and provided
             if check_exchange and exchange:
                 if signal_data.get("exchange") != exchange:
                     continue
-            
+
             # Check timeframe if required and provided
             if check_timeframe and timeframe:
                 if signal_data.get("timeframe") != timeframe:
                     continue
-            
+
             # Found a match
             return True
-        
+
         return False
 
     def cleanup_stale_signals(self, max_age_hours: Optional[int] = None) -> int:
         """Remove stale signals and archive to stats (FIX: Issue #2 - Enable cleanup)."""
         if max_age_hours is None:
             max_age_hours = self.config.signal.max_signal_age_hours if self.config else 24
-        
+
         signals = self.state.get("open_signals", {})
         if not isinstance(signals, dict) or not signals:
             return 0
-        
+
         now = datetime.now(timezone.utc)
         removed = []
-        
+
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
                 signals.pop(signal_id, None)
                 removed.append(signal_id)
                 continue
-            
+
             created_str = payload.get("created_at")
             if not isinstance(created_str, str):
                 signals.pop(signal_id, None)
                 removed.append(signal_id)
                 continue
-            
+
             try:
                 created_dt = datetime.fromisoformat(created_str)
                 if created_dt.tzinfo is None:
                     created_dt = created_dt.replace(tzinfo=timezone.utc)
-                
+
                 age_hours = (now - created_dt).total_seconds() / 3600
-                
+
                 if age_hours > max_age_hours:
                     # Archive to stats as expired before removing
                     if self.stats:
@@ -798,21 +798,21 @@ class SignalTracker:
                             exit_price=payload.get("entry", 0),
                             result="EXPIRED"
                         )
-                    
+
                     removed.append(signal_id)
                     signals.pop(signal_id)
                     logger.info(f"Removed stale signal {signal_id} (age: {age_hours:.1f}h)")
-                    
+
             except (ValueError, AttributeError) as e:
                 logger.warning(f"Invalid timestamp in signal {signal_id}: {e}")
                 signals.pop(signal_id, None)
                 removed.append(signal_id)
                 continue
-        
+
         if removed:
             self._save_state()
             logger.info(f"Cleaned up {len(removed)} stale signals")
-        
+
         return len(removed)
 
     def add_signal(self, signal: VolumeSignal) -> bool:
@@ -822,7 +822,7 @@ class SignalTracker:
             logger.debug("Duplicate signal caught in add_signal() for %s (%s, %s) - failsafe triggered",
                        signal.symbol, signal.exchange, signal.timeframe)
             return False
-        
+
         signals = self.state.setdefault("open_signals", {})
         if not isinstance(signals, dict):
             signals = {}
@@ -830,7 +830,7 @@ class SignalTracker:
         signal_id = f"{signal.symbol}-{signal.timeframe}-{signal.exchange}-{signal.created_at}"
         signals[signal_id] = signal.as_dict()
         self._save_state()
-        
+
         # Record signal opening in stats
         if self.stats:
             self.stats.record_open(
@@ -845,7 +845,7 @@ class SignalTracker:
                     "display_symbol": signal.symbol,
                 },
             )
-        
+
         return True
 
     def _should_notify_result(self, symbol: str, signal_id: str, cooldown_minutes: int) -> bool:
@@ -981,7 +981,7 @@ class SignalTracker:
         stale_count = self.cleanup_stale_signals(max_age_hours=24)
         if stale_count > 0:
             logger.info("Cleaned up %d stale signals", stale_count)
-        
+
         signals = self.state.get("open_signals", {}) if isinstance(self.state.get("open_signals", {}), dict) else {}
         if not signals:
             return
@@ -1111,7 +1111,7 @@ class VolumeVNBOT:
     def __init__(self, cooldown_minutes: Optional[int] = None, config: Optional[Any] = None) -> None:
         # Load configuration
         self.config = config if config else (load_config() if load_config else None)
-        
+
         self.watchlist = ensure_watchlist()
         self.analyzer = VolumeAnalyzer(config=self.config)
         self.cooldown = cooldown_minutes if cooldown_minutes is not None else (
@@ -1120,16 +1120,16 @@ class VolumeVNBOT:
         self.notifier = self._build_notifier()
         self.stats = SignalStats("Volume Bot", STATS_FILE)
         self.tracker = SignalTracker(self.analyzer, stats=self.stats, config=self.config)
-        
+
         heartbeat_interval = int(self.config.execution.health_check_interval_seconds) if self.config and hasattr(self.config, 'execution') and hasattr(self.config.execution, 'health_check_interval_seconds') and self.config.execution.health_check_interval_seconds is not None else 3600
         self.health_monitor = HealthMonitor("Volume Bot", self.notifier, heartbeat_interval=heartbeat_interval) if HealthMonitor and self.notifier else None
-        
+
         calls_per_min = int(self.config.rate_limit.calls_per_minute) if self.config and hasattr(self.config, 'rate_limit') and hasattr(self.config.rate_limit, 'calls_per_minute') and self.config.rate_limit.calls_per_minute is not None else 60
         self.rate_limiter = RateLimiter(calls_per_minute=calls_per_min, backoff_file=LOG_DIR / "rate_limiter.json") if RateLimiter else None
-        
+
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
-        
+
         # Validate exchange credentials on startup (FIX: Security - API Key Validation)
         self._validate_exchanges()
 
@@ -1138,7 +1138,7 @@ class VolumeVNBOT:
         if not self.config:
             logger.warning("No config available, skipping exchange validation")
             return
-        
+
         exchanges = set(item.get("exchange", "binanceusdm") for item in self.watchlist)
         for exchange in exchanges:
             creds = self.config.get_exchange_credentials(exchange)
@@ -1186,7 +1186,7 @@ class VolumeVNBOT:
             base_delay = self.config.rate_limit.rate_limit_backoff_base if self.config else 60
         if max_delay is None:
             max_delay = self.config.rate_limit.rate_limit_backoff_max if self.config else 300
-        
+
         prev = self.exchange_delay.get(exchange, base_delay)
         multiplier = self.config.rate_limit.backoff_multiplier if self.config and self.config.rate_limit and hasattr(self.config.rate_limit, 'backoff_multiplier') else 2.0
         # Ensure prev, multiplier, max_delay are not None
@@ -1213,17 +1213,17 @@ class VolumeVNBOT:
         """Main bot cycle with improved error handling and configuration."""
         if delay_seconds is None:
             delay_seconds = self.config.execution.symbol_delay_seconds if self.config else 5
-        
+
         cycle_interval = self.config.execution.cycle_interval_seconds if self.config else 60
         max_open_signals = self.config.risk.max_open_signals if self.config else 50
-        
+
         logger.info("Starting Volume VN cycle for %d pairs", len(self.watchlist))
         logger.info(f"Config: Max open signals={max_open_signals}, Cooldown={self.cooldown}min, Cycle interval={cycle_interval}s")
-        
+
         # Send startup notification
         if self.health_monitor and self.config and self.config.execution.enable_startup_notification:
             self.health_monitor.send_startup_message()
-        
+
         try:
             while True:
                 try:
@@ -1282,7 +1282,7 @@ class VolumeVNBOT:
                                 current_open, max_open_signals, symbol
                             )
                             continue
-                        
+
                         try:
                             signal_payload = self._build_signal(snapshot)
 
@@ -1307,7 +1307,7 @@ class VolumeVNBOT:
                         time.sleep(float(delay_seconds) if delay_seconds is not None else 1.0)
 
                     self.tracker.check_open_signals(self.notifier)
-                    
+
                     # Record successful cycle
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
@@ -1475,11 +1475,11 @@ class VolumeVNBOT:
                 tp += 1
             elif result == "SL":
                 sl += 1
-        
+
         # Calculate win rate
         total = tp + sl
         win_rate = (tp / total * 100) if total > 0 else 0.0
-        
+
         return f"📈 {symbol_key} history: TP {tp} / SL {sl} (Win rate: {win_rate:.1f}%)"
 
     def _symbol_tp_sl_line(self, symbol: str) -> Optional[str]:
@@ -1504,44 +1504,44 @@ class VolumeVNBOT:
                 sl += 1
         if tp1 == 0 and tp2 == 0 and sl == 0:
             return None
-        
+
         # Calculate win rate
         total = tp1 + tp2 + sl
         win_rate = ((tp1 + tp2) / total * 100) if total > 0 else 0.0
-        
+
         return f"📊 TP/SL history: TP1 {tp1} | TP2 {tp2} | SL {sl} (Win rate: {win_rate:.1f}%)"
-    
+
     @staticmethod
     def _normalize_symbol_for_comparison(symbol: str) -> str:
         """Normalize symbol to base form for comparison (FIX: Issue #4)."""
         # Remove /USDT and :USDT suffixes, keep only base currency
         return symbol.upper().split("/")[0].replace("USDT", "").replace(":USDT", "")
-    
+
     def _check_signal_reversal(self, symbol: str, new_direction: str) -> None:
         """Check if new signal is opposite direction to open position (FIX: Issue #4)."""
         open_signals = self.tracker.state.get("open_signals", {})
         if not isinstance(open_signals, dict):
             return
-        
+
         normalized_new = self._normalize_symbol_for_comparison(symbol)
-        
+
         for signal_id, signal_data in open_signals.items():
             if not isinstance(signal_data, dict):
                 continue
-            
+
             signal_symbol = signal_data.get("symbol", "")
             normalized_open = self._normalize_symbol_for_comparison(signal_symbol)
-            
+
             # Check if same base symbol (e.g., both BTC)
             if normalized_new != normalized_open:
                 continue
-            
+
             open_direction = signal_data.get("direction", "")
             opposite = (
                 (new_direction == "LONG" and open_direction == "SHORT") or
                 (new_direction == "SHORT" and open_direction == "LONG")
             )
-            
+
             if opposite:
                 # Escape HTML special characters to prevent Telegram API errors
                 safe_symbol = html.escape(symbol)
@@ -1571,23 +1571,23 @@ def validate_environment() -> bool:
         "TELEGRAM_BOT_TOKEN": "Telegram bot token (or TELEGRAM_BOT_TOKEN_VOLUME)",
         "TELEGRAM_CHAT_ID": "Telegram chat ID",
     }
-    
+
     optional_warning = {
         "BINANCEUSDM_API_KEY": "Binance USDⓈ-M API key",
         "BINANCEUSDM_SECRET": "Binance USDⓈ-M secret",
     }
-    
+
     missing = []
-    
+
     # Check Telegram (at least one token must exist)
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN_VOLUME") or os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
+
     if not bot_token:
         missing.append("  - TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN_VOLUME: Telegram bot token")
     if not chat_id:
         missing.append("  - TELEGRAM_CHAT_ID: Telegram chat ID")
-    
+
     if missing:
         logger.critical("❌ Missing required environment variables:")
         for item in missing:
@@ -1595,9 +1595,9 @@ def validate_environment() -> bool:
         logger.critical("\nPlease create a .env file with these variables.")
         logger.critical("See .env.example for a template.")
         return False
-    
+
     logger.info("✅ All required environment variables present")
-    
+
     # Check optional (at least one exchange should be configured)
     has_exchange = False
     for exchange in ['binanceusdm', 'mexc', 'bybit']:
@@ -1606,12 +1606,12 @@ def validate_environment() -> bool:
         if api_key and secret:
             has_exchange = True
             logger.info(f"✅ {exchange.upper()} credentials configured")
-    
+
     if not has_exchange:
         logger.warning("⚠️ No exchange credentials configured")
         logger.warning("   The bot will run but cannot execute trades")
         logger.warning("   Configure at least one: BINANCEUSDM, MEXC, or BYBIT")
-    
+
     return True
 
 
@@ -1700,7 +1700,7 @@ Examples:
             for error in errors:
                 logger.error(f"  - {error}")
             sys.exit(1)
-    
+
     # Initialize bot
     bot = VolumeVNBOT(cooldown_minutes=args.cooldown, config=config)
 

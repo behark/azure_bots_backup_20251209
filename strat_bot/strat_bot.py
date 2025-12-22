@@ -75,13 +75,13 @@ def load_watchlist() -> List[WatchItem]:
     if not WATCHLIST_FILE.exists():
         logger.error("Watchlist file missing: %s", WATCHLIST_FILE)
         return []
-    
+
     try:
         data = json.loads(WATCHLIST_FILE.read_text())
     except json.JSONDecodeError as exc:
         logger.error("Invalid watchlist JSON: %s", exc)
         return []
-    
+
     normalized: List[WatchItem] = []
     skipped_count = 0
     for idx, item in enumerate(data):
@@ -123,7 +123,7 @@ def human_ts() -> str:
 
 class STRATAnalyzer:
     """Analyzes STRAT 1-2-3 bar patterns and combos."""
-    
+
     @staticmethod
     def get_bar_type(high: float, low: float, prev_high: float, prev_low: float) -> str:
         """
@@ -135,7 +135,7 @@ class STRATAnalyzer:
         """
         is_higher_high = high > prev_high
         is_lower_low = low < prev_low
-        
+
         if is_higher_high and is_lower_low:
             return '3'
         elif is_higher_high and not is_lower_low:
@@ -144,17 +144,17 @@ class STRATAnalyzer:
             return '2d'
         else:
             return '1'
-    
+
     def classify_candles(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]]) -> List[str]:
         """Classify all candles as 1, 2u, 2d, or 3."""
         bar_types = ['1']  # First bar is neutral
-        
+
         for i in range(1, len(highs)):
             bar_type = self.get_bar_type(highs[i], lows[i], highs[i-1], lows[i-1])
             bar_types.append(bar_type)
-        
+
         return bar_types
-    
+
     def detect_actionable_patterns(
         self,
         opens: npt.NDArray[np.floating[Any]],
@@ -169,21 +169,21 @@ class STRATAnalyzer:
         candle_range = highs[current] - lows[current]
         if candle_range == 0:
             return None
-        
+
         wick_threshold = candle_range * 0.75
         shooter_top = highs[current] - wick_threshold
         hammer_bottom = lows[current] + wick_threshold
-        
+
         # Shooter: open and close in bottom 25% (bearish)
         if opens[current] < shooter_top and closes[current] < shooter_top:
             return ('SHOOTER', 'BEARISH')
-        
+
         # Hammer: open and close in top 25% (bullish)
         if opens[current] > hammer_bottom and closes[current] > hammer_bottom:
             return ('HAMMER', 'BULLISH')
-        
+
         return None
-    
+
     def detect_strat_combos(self, bar_types: List[str]) -> List[Tuple[str, str]]:
         """
         Detect STRAT combos from bar sequence.
@@ -196,45 +196,45 @@ class STRATAnalyzer:
             return []
         combos: List[Tuple[str, str]] = []
         b0, b1, b2 = closed[-1], closed[-2], closed[-3]
-        
+
         # 222 Continuations (strong momentum)
         if b0 == '2d' and b1 == '2d' and b2 == '2d':
             combos.append(('222 Bearish Continuation', 'BEARISH'))
         if b0 == '2u' and b1 == '2u' and b2 == '2u':
             combos.append(('222 Bullish Continuation', 'BULLISH'))
-        
+
         # 212 Measured Move (consolidation then continuation)
         if b0 == '2d' and b1 == '1' and b2 == '2d':
             combos.append(('212 Bearish Measured Move', 'BEARISH'))
         if b0 == '2u' and b1 == '1' and b2 == '2u':
             combos.append(('212 Bullish Measured Move', 'BULLISH'))
-        
+
         # 212 Reversals
         if b0 == '2d' and b1 == '1' and b2 == '2u':
             combos.append(('212 Bearish Reversal', 'BEARISH'))
         if b0 == '2u' and b1 == '1' and b2 == '2d':
             combos.append(('212 Bullish Reversal', 'BULLISH'))
-        
+
         # 22 Reversals (simple direction change)
         if b0 == '2d' and b1 == '2u':
             combos.append(('22 Bearish Reversal', 'BEARISH'))
         if b0 == '2u' and b1 == '2d':
             combos.append(('22 Bullish Reversal', 'BULLISH'))
-        
+
         # 322 Reversals (outside bar followed by reversal)
         if b0 == '2d' and b1 == '2u' and b2 == '3':
             combos.append(('322 Bearish Reversal', 'BEARISH'))
         if b0 == '2u' and b1 == '2d' and b2 == '3':
             combos.append(('322 Bullish Reversal', 'BULLISH'))
-        
+
         # 32 Reversals (outside bar then directional)
         if b0 == '2d' and b1 == '3':
             combos.append(('32 Bearish Reversal', 'BEARISH'))
         if b0 == '2u' and b1 == '3':
             combos.append(('32 Bullish Reversal', 'BULLISH'))
-        
+
         return combos
-    
+
     @staticmethod
     def calculate_atr(highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], period: int = 14) -> float:
         """Calculate ATR."""
@@ -242,7 +242,7 @@ class STRATAnalyzer:
         tr[0] = highs[0] - lows[0]
         for i in range(1, len(closes)):
             tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-        
+
         if len(tr) >= period:
             return float(np.mean(tr[-period:]))
         return float(np.mean(tr)) if len(tr) > 0 else 0.0
@@ -258,13 +258,13 @@ class MexcClient:
         })
         self.exchange.load_markets()
         self.rate_limiter: Any = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
-    
+
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
         # Handle both FHE and FHE/USDT formats
         sym = symbol.upper().replace("/USDT", "")
         return f"{sym}/USDT:USDT"
-    
+
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
         if self.rate_limiter:
@@ -279,7 +279,7 @@ class MexcClient:
             timeframe=timeframe,
             limit=limit
         ))
-    
+
     def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch ticker data."""
         if self.rate_limiter:
@@ -309,11 +309,11 @@ OpenSignals = Dict[str, Dict[str, Any]]
 
 class BotState:
     """Manages bot state persistence."""
-    
+
     def __init__(self, path: Path):
         self.path = path
         self.data: Dict[str, Any] = self._load()
-    
+
     @staticmethod
     def _parse_ts(value: str) -> datetime:
         """Parse ISO format timestamp, ensuring UTC timezone."""
@@ -321,7 +321,7 @@ class BotState:
             dt = datetime.fromisoformat(value)
         except (ValueError, TypeError):
             return datetime.now(timezone.utc)
-        
+
         # Ensure UTC timezone
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -329,7 +329,7 @@ class BotState:
             # Convert to UTC if not already
             dt = dt.astimezone(timezone.utc)
         return dt
-    
+
     def _empty_state(self) -> Dict[str, Any]:
         return {"last_alert": {}, "open_signals": {}, "closed_signals": {}}
 
@@ -350,10 +350,10 @@ class BotState:
             }
         except json.JSONDecodeError:
             return self._empty_state()
-    
+
     def save(self) -> None:
         self.path.write_text(json.dumps(self.data, indent=2))
-    
+
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
         """Check if enough time has passed since last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
@@ -363,7 +363,7 @@ class BotState:
         last_ts = last_map.get(symbol)
         if not isinstance(last_ts, str):
             return True
-        
+
         # Parse the last alert time and get current time once
         try:
             last_time = self._parse_ts(last_ts)
@@ -372,7 +372,7 @@ class BotState:
             return delta >= timedelta(minutes=cooldown_minutes)
         except (ValueError, TypeError):
             return True
-    
+
     def mark_alert(self, symbol: str) -> None:
         """Record the time of the last alert for this symbol."""
         last_map = self.data.setdefault("last_alert", {})
@@ -382,7 +382,7 @@ class BotState:
         # Store ISO format with explicit UTC timezone
         last_map[symbol] = datetime.now(timezone.utc).isoformat()
         self.save()
-    
+
     def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
         """Remove signals older than max_age_hours and move to closed_signals."""
         signals = self.iter_signals()
@@ -390,25 +390,25 @@ class BotState:
         if not isinstance(closed, dict):
             closed = {}
             self.data["closed_signals"] = closed
-        
+
         current_time = datetime.now(timezone.utc)
         removed_count = 0
         signal_ids_to_remove = []
-        
+
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
                 signal_ids_to_remove.append(signal_id)
                 continue
-            
+
             created_at_str = payload.get("created_at")
             if not isinstance(created_at_str, str):
                 signal_ids_to_remove.append(signal_id)
                 continue
-            
+
             try:
                 created_time = self._parse_ts(created_at_str)
                 age = current_time - created_time
-                
+
                 if age >= timedelta(hours=max_age_hours):
                     # Move to closed signals with timeout status
                     closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
@@ -417,26 +417,26 @@ class BotState:
                     logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
             except (ValueError, TypeError):
                 signal_ids_to_remove.append(signal_id)
-        
+
         for signal_id in signal_ids_to_remove:
             if signal_id in signals:
                 signals.pop(signal_id)
-        
+
         if removed_count > 0:
             self.save()
-        
+
         return removed_count
-    
+
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         self.data.setdefault("open_signals", {})[signal_id] = payload
         self.save()
-    
+
     def remove_signal(self, signal_id: str) -> None:
         signals = self.iter_signals()
         if signal_id in signals:
             signals.pop(signal_id)
             self.save()
-    
+
     def iter_signals(self) -> OpenSignals:
         signals = self.data.setdefault("open_signals", {})
         if not isinstance(signals, dict):
@@ -447,7 +447,7 @@ class BotState:
 
 class STRATBot:
     """Main STRAT Bot."""
-    
+
     # Configuration constants
     MAX_OPEN_SIGNALS = 50  # Maximum concurrent signals
     MIN_RISK_PCT = 0.003  # 0.3% minimum risk threshold (increased from 0.1%)
@@ -457,7 +457,7 @@ class STRATBot:
     ATR_TP1_MULTIPLIER = 2.5  # ATR multiplier for TP1
     ATR_TP2_MULTIPLIER = 4.0  # ATR multiplier for TP2
     MIN_RR_RATIO = 1.8  # Minimum risk/reward ratio
-    
+
     def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
         self.default_cooldown = default_cooldown
@@ -482,7 +482,7 @@ class STRATBot:
         self.shutdown_requested = False
         signal_module.signal(signal_module.SIGTERM, self._signal_handler)
         signal_module.signal(signal_module.SIGINT, self._signal_handler)
-    
+
     def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
             logger.warning("Telegram notifier unavailable")
@@ -534,27 +534,27 @@ class STRATBot:
         self.exchange_backoff[exchange] = until
         self.exchange_delay[exchange] = new_delay
         logger.warning("%s rate limit; backing off for %.0fs", exchange, new_delay)
-    
+
     def _signal_handler(self, signum: int, frame: Optional[FrameType]) -> None:
         """Handle shutdown signals gracefully."""
         logger.info("Received signal %d, initiating graceful shutdown...", signum)
         self.shutdown_requested = True
-    
+
     def _cleanup_cache(self) -> None:
         """Remove old cache entries to prevent memory leak."""
         if len(self.ohlcv_cache) <= self.max_cache_size:
             return
-        
+
         now = time.time()
         # Remove entries older than TTL
         expired_keys = [
             key for key, (_, timestamp) in self.ohlcv_cache.items()
             if now - timestamp > self.cache_ttl
         ]
-        
+
         for key in expired_keys:
             del self.ohlcv_cache[key]
-        
+
         # If still too large, remove oldest entries
         if len(self.ohlcv_cache) > self.max_cache_size:
             sorted_items = sorted(self.ohlcv_cache.items(), key=lambda x: x[1][1])
@@ -562,21 +562,21 @@ class STRATBot:
             for key in keys_to_remove:
                 del self.ohlcv_cache[key]
             logger.debug("Cache cleanup: removed %d entries", len(keys_to_remove))
-    
+
     def _fetch_ohlcv_cached(self, symbol: str, timeframe: str, limit: int = 50) -> Optional[List[Any]]:
         """Fetch OHLCV with caching to reduce API calls."""
         cache_key = f"{symbol}-{timeframe}"
         now = time.time()
-        
+
         # Periodic cache cleanup
         self._cleanup_cache()
-        
+
         # Check cache
         if cache_key in self.ohlcv_cache:
             cached_data, cached_time = self.ohlcv_cache[cache_key]
             if now - cached_time < self.cache_ttl:
                 return cached_data
-        
+
         # Fetch fresh data
         try:
             ohlcv = self.client.fetch_ohlcv(symbol, timeframe, limit)
@@ -588,36 +588,36 @@ class STRATBot:
             if cache_key in self.ohlcv_cache:
                 return self.ohlcv_cache[cache_key][0]
             return None
-    
+
     def run(self, loop: bool = False) -> None:
         if not self.watchlist:
             logger.error("Empty watchlist; exiting")
             return
-        
+
         logger.info("Starting STRAT Bot for %d symbols", len(self.watchlist))
-        
+
         if self.health_monitor:
             self.health_monitor.send_startup_message()
-        
+
         try:
             while True:
                 if self.shutdown_requested:
                     logger.info("Shutdown requested, exiting gracefully...")
                     break
-                
+
                 try:
                     self._run_cycle()
-                    
+
                     # Cleanup stale signals every cycle
                     stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
                     if stale_count > 0:
                         logger.info("Cleaned up %d stale signals", stale_count)
-                    
+
                     self._monitor_open_signals()
-                    
+
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
-                    
+
                     if not loop:
                         break
                     logger.info("Cycle complete; sleeping %ds", self.interval)
@@ -636,7 +636,7 @@ class STRATBot:
         finally:
             if self.health_monitor:
                 self.health_monitor.send_shutdown_message()
-    
+
     def _run_cycle(self) -> None:
         for item in self.watchlist:
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
@@ -650,12 +650,12 @@ class STRATBot:
                 cooldown = int(cooldown_raw) if cooldown_raw is not None else self.default_cooldown
             except Exception:
                 cooldown = self.default_cooldown
-            
+
             # Check if backoff is active for exchange
             if self._backoff_active("binanceusdm"):
                 logger.debug("Backoff active for binanceusdm; skipping %s", symbol)
                 continue
-            
+
             try:
                 signal = self._analyze_symbol(symbol, period)
             except Exception as exc:
@@ -666,15 +666,15 @@ class STRATBot:
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
-            
+
             if signal is None:
                 logger.debug("%s: No STRAT pattern", symbol)
                 continue
-            
+
             if not self.state.can_alert(symbol, cooldown):
                 logger.debug("Cooldown active for %s", symbol)
                 continue
-            
+
             # Max open signals limit
             current_open = len(self.state.iter_signals())
             if current_open >= self.MAX_OPEN_SIGNALS:
@@ -683,12 +683,12 @@ class STRATBot:
                     current_open, self.MAX_OPEN_SIGNALS, symbol
                 )
                 continue
-            
+
             # Send alert
             message = self._format_message(signal)
             self._dispatch(message)
             self.state.mark_alert(symbol)
-            
+
             # Track signal
             signal_id = f"{symbol}-STRAT-{signal.timestamp}"
             trade_data = {
@@ -722,14 +722,14 @@ class STRATBot:
                         "pattern": signal.pattern_name,
                     },
                 )
-            
+
             time.sleep(0.5)
-    
+
     def _analyze_symbol(self, symbol: str, timeframe: str) -> Optional[STRATSignal]:
         """Analyze symbol for STRAT patterns."""
         # Fetch OHLCV data with caching
         ohlcv = self._fetch_ohlcv_cached(symbol, timeframe, limit=50)
-        
+
         if ohlcv is None:
             return None
 
@@ -737,7 +737,7 @@ class STRATBot:
         if len(ohlcv) < 20:
             logger.debug("Insufficient OHLCV data for %s: %d bars (need 20+)", symbol, len(ohlcv))
             return None
-        
+
         opens = np.array([x[1] for x in ohlcv])
         highs = np.array([x[2] for x in ohlcv])
         lows = np.array([x[3] for x in ohlcv])
@@ -754,7 +754,7 @@ class STRATBot:
         except (TypeError, ValueError, Exception) as exc:
             logger.debug("Failed to get current price for %s: %s", symbol, exc)
             return None
-        
+
         # Calculate SMA for early filtering (before expensive pattern detection)
         closes_for_sma = closes[:-1] if len(closes) > 1 else closes
         if len(closes_for_sma) >= 50:
@@ -806,18 +806,18 @@ class STRATBot:
         setup_high = float(highs[-2])
         setup_low = float(lows[-2])
         setup_close = float(closes[-2])
-        
+
         # Use current price as entry (more realistic) instead of trigger price
         entry = current_price
         stop_loss = setup_low if direction == "BULLISH" else setup_high
-        
+
         # Calculate ATR for volatility filter and target sizing
         atr = float(self.analyzer.calculate_atr(highs, lows, closes))
-        
+
         if atr == 0:
             logger.debug("%s: ATR is 0, skipping", symbol)
             return None
-        
+
         # Volatility filter - reject if ATR is too high relative to price
         volatility_ratio = atr / entry if entry > 0 else 0
         if volatility_ratio > self.MAX_VOLATILITY_PCT:
@@ -826,7 +826,7 @@ class STRATBot:
                 symbol, volatility_ratio * 100, self.MAX_VOLATILITY_PCT * 100
             )
             return None
-        
+
         # Signal staleness check - reject if price moved too far from setup close
         price_deviation = abs(current_price - setup_close) / setup_close if setup_close > 0 else 0
         if price_deviation > self.MAX_PRICE_DEVIATION_PCT:
@@ -835,23 +835,23 @@ class STRATBot:
                 symbol, price_deviation * 100, self.MAX_PRICE_DEVIATION_PCT * 100
             )
             return None
-        
+
         # Validate stop loss position
         risk = abs(entry - stop_loss)
-        
+
         # Validate minimum risk threshold (increased to 0.3%)
         min_risk = entry * self.MIN_RISK_PCT
         if risk < min_risk:
             logger.debug("%s: Risk too low: %.6f < %.6f (%.2f%%)", symbol, risk, min_risk, self.MIN_RISK_PCT * 100)
             return None
-        
+
         if direction == "BULLISH" and stop_loss >= entry:
             logger.debug("%s: Invalid BULLISH setup - SL %.6f >= entry %.6f", symbol, stop_loss, entry)
             return None
         if direction == "BEARISH" and stop_loss <= entry:
             logger.debug("%s: Invalid BEARISH setup - SL %.6f <= entry %.6f", symbol, stop_loss, entry)
             return None
-        
+
         # Calculate targets using centralized TPSLCalculator
         # STRAT uses structure-based SL (setup bar high/low), so we pass custom_sl
         config_mgr = get_config_manager()
@@ -884,7 +884,7 @@ class STRATBot:
         # Add detailed debug logging for successful signal
         logger.debug("%s %s STRAT signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f | R:R: 1:%.2f | Bars: %s",
                    symbol, direction, entry, stop_loss, tp1, tp2, rr_ratio, bar_sequence)
-        
+
         return STRATSignal(
             symbol=symbol,
             pattern_name=pattern_name,
@@ -897,7 +897,7 @@ class STRATBot:
             take_profit_2=tp2,
             current_price=current_price,
         )
-    
+
     def _format_message(self, signal: STRATSignal) -> str:
         """Format Telegram message for signal using centralized template."""
         # Get performance stats
@@ -939,13 +939,13 @@ class STRATBot:
             performance_stats=perf_stats,
             extra_info=extra_info,
         )
-    
+
     def _monitor_open_signals(self) -> None:
         """Monitor open signals for TP/SL hits."""
         signals = self.state.iter_signals()
         if not signals:
             return
-        
+
         for signal_id, payload_obj in list(signals.items()):
             if not isinstance(payload_obj, dict):
                 self.state.remove_signal(signal_id)
@@ -956,7 +956,7 @@ class STRATBot:
                 self.state.remove_signal(signal_id)
                 continue
             symbol = symbol_val
-            
+
             try:
                 ticker = self.client.fetch_ticker(symbol)
                 price_raw = ticker.get("last") if isinstance(ticker, dict) else None
@@ -969,14 +969,14 @@ class STRATBot:
                     self._register_backoff("binanceusdm")
                     logger.warning("Rate limit hit during monitoring; backing off")
                 continue
-            
+
             if not isinstance(price_raw, (int, float, str)):
                 continue
             try:
                 price = float(price_raw)
             except (TypeError, ValueError):
                 continue
-            
+
             direction_val = payload_obj.get("direction")
             if not isinstance(direction_val, str):
                 self.state.remove_signal(signal_id)
@@ -1021,7 +1021,7 @@ class STRATBot:
                 if self.stats:
                     self.stats.discard(signal_id)
                 continue
-            
+
             # Check TP/SL hits based on direction
             # Priority order: TP2 > TP1 > SL (maximize profit if multiple levels hit)
             if direction == "BULLISH":
@@ -1041,7 +1041,7 @@ class STRATBot:
                 result = "TP1"
             elif hit_sl:
                 result = "SL"
-            
+
             if result:
                 summary_message = None
                 if self.stats:
@@ -1054,7 +1054,7 @@ class STRATBot:
                         summary_message = self.stats.build_summary_message(stats_record)
                     else:
                         self.stats.discard(signal_id)
-                
+
                 if summary_message:
                     self._dispatch(summary_message)
                 else:
@@ -1067,9 +1067,9 @@ class STRATBot:
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )
                     self._dispatch(message)
-                
+
                 self.state.remove_signal(signal_id)
-    
+
     def _dispatch(self, message: str) -> None:
         """Send message via Telegram."""
         if self.notifier:

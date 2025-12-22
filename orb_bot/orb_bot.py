@@ -139,7 +139,7 @@ class ORBSignal:
     orb_high: float
     orb_low: float
     range_pct: float
-    
+
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -149,7 +149,7 @@ class ORBLevel:
     low: float
     mid: float
     range_pct: float
-    
+
     @property
     def range_dollars(self) -> float:
         return self.high - self.low
@@ -175,19 +175,19 @@ class ORBAnalyzer:
         # Filter candles that fall within the ORB window
         # session_start_ts is in milliseconds
         window_end_ts = session_start_ts + (self.window_minutes * 60 * 1000)
-        
+
         relevant_candles = [c for c in ohlcv if session_start_ts <= c[0] < window_end_ts]
-        
+
         if not relevant_candles:
             return None
-            
+
         high = max(c[2] for c in relevant_candles)
         low = min(c[3] for c in relevant_candles)
-        
+
         # Check if the window is actually complete (optional, but good for accuracy)
         last_candle_ts = relevant_candles[-1][0]
         # If last candle is significantly before window end, maybe data is missing, but we proceed for now
-        
+
         return ORBLevel(
             high=high,
             low=low,
@@ -310,18 +310,18 @@ class SignalTracker:
     def check_open_signals(self, client_map: Dict[str, Any], notifier: Optional[Any]) -> None:
         signals = self.state.get("open_signals", {})
         if not signals: return
-        
+
         # Result Notification Cooldown
         last_notifs = self.state.setdefault("last_result_notifications", {})
         cooldown_mins = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
-        
+
         updated = False
         for sig_id, payload in list(signals.items()):
             symbol = payload.get("symbol")
             display_symbol = symbol if "/" in symbol else f"{symbol}/USDT"
             exchange = payload.get("exchange", "mexc")
             direction = payload.get("direction")
-            
+
             # Cooldown check
             last_ts = last_notifs.get(display_symbol)
             if last_ts:
@@ -344,13 +344,13 @@ class SignalTracker:
             except Exception as e:
                 logger.error(f"Unexpected error fetching {symbol}: {e}")
                 continue
-            
+
             if not price: continue
-            
+
             tp1, tp2 = payload.get("take_profit_1"), payload.get("take_profit_2")
             sl = payload.get("stop_loss")
             entry = payload.get("entry")
-            
+
             res = None
             if direction == "BULLISH":
                 if price >= tp2: res = "TP2"
@@ -360,7 +360,7 @@ class SignalTracker:
                 if price <= tp2: res = "TP2"
                 elif price <= tp1: res = "TP1"
                 elif price >= sl: res = "SL"
-            
+
             if res:
                 msg = format_result_message(
                     symbol=display_symbol,
@@ -382,7 +382,7 @@ class SignalTracker:
 
                 del signals[sig_id]
                 updated = True
-        
+
         if updated: self._save_state()
 
     def check_reversal(self, symbol: str, new_direction: str, notifier: Optional[Any]) -> None:
@@ -466,11 +466,11 @@ class ORBBot:
     def run(self, run_once: bool = False) -> None:
         logger.info("Starting Refactored ORB Bot...")
         if self.health_monitor: self.health_monitor.send_startup_message()
-        
+
         while True:
             try:
                 session_start = self.get_session_start_ts()
-                
+
                 for item in self.watchlist:
                     symbol: Optional[str] = item.get("symbol")
                     exchange: str = item.get("exchange", "mexc")
@@ -535,7 +535,7 @@ class ORBBot:
                                 self.tracker.check_reversal(symbol, direction, self.notifier)
                                 self.tracker.add_signal(signal)
                                 self._send_alert(signal)
-                
+
                 self.tracker.check_open_signals(self.clients, self.notifier)
 
                 if self.health_monitor: self.health_monitor.record_cycle()
@@ -543,13 +543,13 @@ class ORBBot:
                 logger.info("Cycle complete; sleeping 60s")
                 if run_once: break
                 time.sleep(60)
-                
+
             except Exception as e:
                 logger.error(f"Cycle error: {e}")
                 if self.health_monitor: self.health_monitor.record_error(str(e))
                 if run_once: raise
                 time.sleep(10)
-        
+
         if self.health_monitor: self.health_monitor.send_shutdown_message()
 
     def _send_alert(self, signal: ORBSignal) -> None:
@@ -577,18 +577,18 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    
+
     global logger
     log_level = "DEBUG" if args.debug else "INFO"
     logger = setup_logging(log_level=log_level)
-    
+
     try:
         from dotenv import load_dotenv
         load_dotenv(BASE_DIR / ".env", override=True)
         load_dotenv(BASE_DIR.parent / ".env", override=True)
     except ImportError:
         logger.debug("python-dotenv not installed, skipping .env loading")
-    
+
     bot = ORBBot(BASE_DIR / args.config)
     bot.run(run_once=args.once)
 

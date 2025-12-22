@@ -283,7 +283,6 @@ class FibSignalEvaluator:
 
         signal_direction = None
         swing_high = swing_low = 0.0
-        recent_idx = prev_idx = 0
 
         if uptrend:
             # Use previous swing low as anchor, recent swing high as reference
@@ -356,9 +355,8 @@ class FibSignalEvaluator:
         direction = signal_direction
         config_mgr = get_config_manager()
         risk_config = config_mgr.get_effective_risk("fib_swing_bot", symbol)
-        min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=current_price,
             direction=direction,

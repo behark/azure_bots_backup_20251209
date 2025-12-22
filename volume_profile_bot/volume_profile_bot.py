@@ -37,6 +37,9 @@ STATE_FILE = BASE_DIR / "state.json"
 WATCHLIST_FILE = BASE_DIR / "watchlist.json"
 STATS_FILE = LOG_DIR / "volume_profile_stats.json"
 
+# Exchange configuration - actual exchange used for data
+EXCHANGE_NAME = "Binance Futures"
+
 # Module-level lock for state file access
 _state_lock = Lock()
 
@@ -68,6 +71,7 @@ from tp_sl_calculator import TPSLCalculator, CalculationMethod
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor', logger_instance=logger)
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler', logger_instance=logger)
 
 
 shutdown_requested = False
@@ -244,12 +248,19 @@ class VolumeProfileBot:
         self.interval = interval
         self.watchlist = load_watchlist()
         self.state = load_state()
-        self.client = ccxt.binanceusdm({"options": {"defaultType": "swap"}})
+        self.client = ccxt.binanceusdm({
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"}
+        })
         self.notifier = self._init_notifier()
         self.indicator = PivotVolumeProfile(IndicatorConfig())
         self.trade_settings = TradeSettings()
         self.stats = SignalStats("Volume Profile Bot", STATS_FILE)
-        self.exchange = "MEXC"
+        self.exchange = EXCHANGE_NAME
+        self.rate_limiter = (
+            RateLimitHandler(base_delay=0.5, max_retries=5)
+            if RateLimitHandler else None
+        )
         self.health_monitor = (
             HealthMonitor("Volume Profile Bot", self.notifier, heartbeat_interval=3600)
             if 'HealthMonitor' in globals() and HealthMonitor is not None
@@ -349,7 +360,15 @@ class VolumeProfileBot:
 
     def fetch_ohlcv(self, symbol: str, timeframe: str) -> Sequence[Sequence[float]]:
         market = f"{symbol.replace("/USDT", "")}/USDT:USDT"
-        candles = self.client.fetch_ohlcv(market, timeframe=timeframe, limit=500)
+        if self.rate_limiter:
+            candles = self.rate_limiter.execute(
+                self.client.fetch_ohlcv,
+                market,
+                timeframe=timeframe,
+                limit=500
+            )
+        else:
+            candles = self.client.fetch_ohlcv(market, timeframe=timeframe, limit=500)
         return cast(Sequence[Sequence[float]], candles)
 
     def evaluate_events(
@@ -477,7 +496,6 @@ class VolumeProfileBot:
         sl = calc_levels.stop_loss
         tp1 = calc_levels.take_profit_1
         tp2 = calc_levels.take_profit_2
-        risk_amount = calc_levels.risk_amount
 
         signal_id = f"VP-{symbol}-{int(time.time())}-{uuid4().hex[:4]}"
         created_at = utcnow().isoformat()

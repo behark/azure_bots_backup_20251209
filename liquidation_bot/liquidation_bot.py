@@ -27,6 +27,9 @@ STATE_FILE = BASE_DIR / "liquidation_state.json"
 WATCHLIST_FILE = BASE_DIR / "liquidation_watchlist.json"
 STATS_FILE = LOG_DIR / "liquidation_stats.json"
 
+# Exchange configuration - actual exchange used for data
+EXCHANGE_NAME = "Binance Futures"
+
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -544,7 +547,7 @@ class LiquidationBot:
                     )
                     continue
 
-                trade_levels["exchange"] = "MEXC"
+                trade_levels["exchange"] = EXCHANGE_NAME
                 trade_levels.setdefault("timeframe", timeframe)
                 self.state.add_signal(signal_id_val, trade_levels)
                 if self.stats:
@@ -556,7 +559,7 @@ class LiquidationBot:
                         created_at=created_at_val,
                         extra={
                             "timeframe": trade_levels.get("timeframe", timeframe),
-                            "exchange": "MEXC",
+                            "exchange": EXCHANGE_NAME,
                             "display_symbol": normalize_symbol(symbol),
                         },
                     )
@@ -688,9 +691,8 @@ class LiquidationBot:
         sl_mult = risk_config.sl_atr_multiplier
         tp1_mult = risk_config.tp1_atr_multiplier
         tp2_mult = risk_config.tp2_atr_multiplier
-        min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=price,
             direction=direction,
@@ -818,7 +820,7 @@ class LiquidationBot:
             tp1=tp1,
             tp2=tp2,
             reasons=reasons if reasons else None,
-            exchange="MEXC",
+            exchange=EXCHANGE_NAME,
             timeframe=timeframe,
             current_price=float(snapshot.price) if snapshot.price else None,
             performance_stats=perf_stats,

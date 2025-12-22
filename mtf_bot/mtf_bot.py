@@ -285,9 +285,8 @@ class MultiTimeframeAnalyzer:
         sl_mult = base_sl_mult * (strength_mult / 2.0)
         tp1_mult = risk_config.tp1_atr_multiplier
         tp2_mult = risk_config.tp2_atr_multiplier
-        min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,
@@ -882,10 +881,12 @@ class MTFBot:
                 hit_tp1 = price >= (tp1 * (1 - price_tol)) and price < (tp2 * (1 - price_tol))
                 hit_sl = price <= (sl * (1 + price_tol))
             else:
-                # For BEARISH, allow slightly higher prices
-                hit_tp2 = price <= (tp2 * (1 + price_tol))
-                hit_tp1 = price <= (tp1 * (1 + price_tol)) and price > (tp2 * (1 + price_tol))
-                hit_sl = price >= (sl * (1 - price_tol))
+                # For BEARISH/SHORT: TP is below entry, SL is above entry
+                # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
+                # Allow slightly LOWER prices for SL (price doesn't rise quite as far)
+                hit_tp2 = price <= (tp2 * (1 - price_tol))
+                hit_tp1 = price <= (tp1 * (1 - price_tol)) and price > (tp2 * (1 - price_tol))
+                hit_sl = price >= (sl * (1 + price_tol))
 
             result = None
             if hit_tp2:

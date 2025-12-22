@@ -31,6 +31,9 @@ STATE_FILE = BASE_DIR / "most_state.json"
 WATCHLIST_FILE = BASE_DIR / "most_watchlist.json"
 STATS_FILE = LOG_DIR / "most_stats.json"
 
+# Exchange configuration - actual exchange used for data
+EXCHANGE_NAME = "Binance Futures"
+
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -200,7 +203,6 @@ class MOSTAnalyzer:
         if len(trend) < self.ema_length + 3:
             return None
 
-        recent_trends = trend[-3:]
         current_trend = trend[-1]
         prev_trend = trend[-2]
 
@@ -239,8 +241,8 @@ class MOSTAnalyzer:
         return float(np.mean(tr)) if len(tr) > 0 else 0.0
 
 
-class MexcClient:
-    """MEXC exchange client wrapper."""
+class ExchangeClient:
+    """Exchange client wrapper for Binance Futures."""
 
     def __init__(self) -> None:
         self.exchange: Any = ccxt.binanceusdm({
@@ -468,7 +470,7 @@ class MOSTBot:
         self.interval = interval
         self.default_cooldown = default_cooldown
         self.watchlist: List[WatchItem] = load_watchlist()
-        self.client = MexcClient()
+        self.client = ExchangeClient()
         self.analyzer = MOSTAnalyzer()
         self.state = BotState(STATE_FILE)
         self.notifier = self._init_notifier()
@@ -578,8 +580,8 @@ class MOSTBot:
                 cooldown = self.default_cooldown
 
             # Exchange-level backoff for rate limits
-            if self._backoff_active("mexc"):
-                logger.debug("Backoff active for mexc; skipping %s", symbol)
+            if self._backoff_active("exchange"):
+                logger.debug("Backoff active for exchange; skipping %s", symbol)
                 continue
 
             if self.rate_limiter:
@@ -588,13 +590,13 @@ class MOSTBot:
             try:
                 signal = self._analyze_symbol(symbol, period)
                 if self.rate_limiter:
-                    self.rate_limiter.record_success(f"mexc_{symbol}")
+                    self.rate_limiter.record_success(f"exchange_{symbol}")
             except Exception as exc:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
                 if self._is_rate_limit_error(exc):
-                    self._register_backoff("mexc")
+                    self._register_backoff("exchange")
                 if self.rate_limiter:
-                    self.rate_limiter.record_error(f"mexc_{symbol}")
+                    self.rate_limiter.record_error(f"exchange_{symbol}")
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
@@ -634,7 +636,7 @@ class MOSTBot:
                 "take_profit_2": signal.take_profit_2,
                 "created_at": signal.timestamp,
                 "timeframe": period,
-                "exchange": "MEXC",
+                "exchange": EXCHANGE_NAME,
             }
             self.state.add_signal(signal_id, trade_data)
 
@@ -647,7 +649,7 @@ class MOSTBot:
                     created_at=signal.timestamp,
                     extra={
                         "timeframe": period,
-                        "exchange": "MEXC",
+                        "exchange": EXCHANGE_NAME,
                         "strategy": "MOST",
                     },
                 )
@@ -710,9 +712,8 @@ class MOSTBot:
         risk_config = config_mgr.get_effective_risk("most_bot", symbol)
         tp1_mult = risk_config.tp1_atr_multiplier
         tp2_mult = risk_config.tp2_atr_multiplier
-        min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,
@@ -780,7 +781,7 @@ class MOSTBot:
             tp2=signal.take_profit_2,
             indicator_value=signal.most_value,
             indicator_name="MOST",
-            exchange="MEXC",
+            exchange=EXCHANGE_NAME,
             timeframe="15m",
             current_price=signal.current_price,
             performance_stats=perf_stats,

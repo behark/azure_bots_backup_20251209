@@ -1124,7 +1124,6 @@ class PSARBot:
                         )
                     else:
                         # Update stop loss if PSAR has moved favorably
-                        updated = False
                         if direction == "BULLISH":
                             # PSAR should be below price and higher than current SL
                             if current_psar < price and current_psar > sl:
@@ -1132,7 +1131,6 @@ class PSARBot:
                                 sl = current_psar
                                 payload["stop_loss"] = sl
                                 self.state.add_signal(signal_id, payload)
-                                updated = True
                                 logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
                                 # Send update notification
                                 update_msg = (
@@ -1150,7 +1148,6 @@ class PSARBot:
                                 sl = current_psar
                                 payload["stop_loss"] = sl
                                 self.state.add_signal(signal_id, payload)
-                                updated = True
                                 logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
                                 # Send update notification
                                 update_msg = (
@@ -1223,8 +1220,6 @@ class PSARBot:
             return None
 
         try:
-            # Access stats data to find last result for symbol
-            symbol_key = normalize_symbol(symbol)
             # This is a simplified check - actual implementation depends on SignalStats API
             # For now, return None to not affect cooldown
             return None

@@ -1207,7 +1207,7 @@ class HarmonicBot:
                             # Record success if rate limiter is available
                             if self.rate_limiter:
                                 self.rate_limiter.record_success(f"{exchange}_{symbol}")
-                        except ccxt.RateLimitExceeded as e:
+                        except ccxt.RateLimitExceeded:
                             logger.warning(f"Rate limit hit for {symbol}, backing off...")
                             self._register_backoff(exchange)
                             if self.health_monitor: self.health_monitor.record_error(f"Rate Limit {symbol}")
@@ -1393,11 +1393,6 @@ class HarmonicBot:
 
 def validate_environment() -> bool:
     """Validate all required environment variables are set (from Volume Bot)."""
-    required = {
-        "TELEGRAM_BOT_TOKEN": "Telegram bot token (or TELEGRAM_BOT_TOKEN_HARMONIC)",
-        "TELEGRAM_CHAT_ID": "Telegram chat ID",
-    }
-
     missing = []
 
     # Check Telegram (at least one token must exist)

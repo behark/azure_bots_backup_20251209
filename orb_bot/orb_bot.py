@@ -164,8 +164,8 @@ class ORBAnalyzer:
         # Initialize TPSLCalculator if available
         self.tpsl_calc: Optional[Any] = None
         if TPSLCalculator is not None and self.use_tpsl_calculator:
-            min_rr = config.get("risk", {}).get("min_risk_reward_ratio", 1.5)
-            self.tpsl_calc = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+            min_rr = config.get("risk", {}).get("min_risk_reward_ratio", 0.8)
+            self.tpsl_calc = TPSLCalculator(min_risk_reward=min_rr, min_risk_reward_tp2=1.5)
 
     def calculate_orb(self, ohlcv: List[List[float]], session_start_ts: int) -> Optional[ORBLevel]:
         """Calculate High/Low/Mid for the defined opening window."""
@@ -180,10 +180,6 @@ class ORBAnalyzer:
 
         high = max(c[2] for c in relevant_candles)
         low = min(c[3] for c in relevant_candles)
-
-        # Check if the window is actually complete (optional, but good for accuracy)
-        last_candle_ts = relevant_candles[-1][0]
-        # If last candle is significantly before window end, maybe data is missing, but we proceed for now
 
         return ORBLevel(
             high=high,

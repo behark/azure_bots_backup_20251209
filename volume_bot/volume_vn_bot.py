@@ -276,7 +276,7 @@ class VolumeAnalyzer:
         try:
             client = self.get_client(exchange_key, market_type)
             # Try to fetch balance (requires authentication)
-            balance = client.fetch_balance()
+            client.fetch_balance()
             logger.info(f"✅ {exchange_key} credentials validated successfully")
             return True
         except ccxt.AuthenticationError as e:
@@ -522,7 +522,6 @@ class VolumeAnalyzer:
         if len(long_factors) >= 3 and len(long_factors) > len(short_factors):
             val = float(vp_result.get("val", current_price)) if isinstance(vp_result.get("val"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
-            poc = float(vp_result.get("poc", current_price)) if isinstance(vp_result.get("poc"), (int, float)) else current_price
             raw_sl = val - row_height
             # Use configurable stop loss percentage (FIX: Externalized configuration)
             # Default is now 1.5% to avoid premature stops
@@ -564,7 +563,6 @@ class VolumeAnalyzer:
         if len(short_factors) >= 3 and len(short_factors) > len(long_factors):
             vah = float(vp_result.get("vah", current_price)) if isinstance(vp_result.get("vah"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
-            poc = float(vp_result.get("poc", current_price)) if isinstance(vp_result.get("poc"), (int, float)) else current_price
             raw_sl = vah + row_height
             # Use configurable stop loss percentage (FIX: Externalized configuration)
             # Default is now 1.5% to avoid premature stops
@@ -577,11 +575,11 @@ class VolumeAnalyzer:
                 tp2_mult = risk_config.tp2_atr_multiplier
                 min_rr = risk_config.min_risk_reward
             except Exception:
-                tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
+                tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 0.8
 
             # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(custom_sl - current_price, current_price * 0.01)
-            calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+            calculator = TPSLCalculator(min_risk_reward=min_rr, min_risk_reward_tp2=1.5)
             levels = calculator.calculate(
                 entry=current_price,
                 direction="SHORT",
@@ -1082,7 +1080,7 @@ class SignalTracker:
 
                 # Update stats
                 if self.stats:
-                    stats_record = self.stats.record_close(
+                    self.stats.record_close(
                         signal_id,
                         exit_price=current_price,
                         result=result,
@@ -1566,16 +1564,6 @@ class VolumeVNBOT:
 
 def validate_environment() -> bool:
     """Validate all required environment variables are set (FIX: Environment validation)."""
-    required = {
-        "TELEGRAM_BOT_TOKEN": "Telegram bot token (or TELEGRAM_BOT_TOKEN_VOLUME)",
-        "TELEGRAM_CHAT_ID": "Telegram chat ID",
-    }
-
-    optional_warning = {
-        "BINANCEUSDM_API_KEY": "Binance USDⓈ-M API key",
-        "BINANCEUSDM_SECRET": "Binance USDⓈ-M secret",
-    }
-
     missing = []
 
     # Check Telegram (at least one token must exist)

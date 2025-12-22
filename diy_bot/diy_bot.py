@@ -834,7 +834,6 @@ class MultiIndicatorAnalyzer:
         - confidence: Overall regime confidence (0-1)
         """
         # Get ADX for trend strength
-        period = self.config.get("adx_period", 14)
         adx, plus_di, minus_di = self.calculate_adx(highs, lows, closes)
         adx_value = float(adx[-1]) if len(adx) > 0 else 0.0
         adx_trending_threshold = self.config.get("adx_trending", 25)
@@ -842,7 +841,6 @@ class MultiIndicatorAnalyzer:
 
         # Get volatility from Bollinger Bands
         bb_period = self.config.get("bb_period", 20)
-        bb_std = self.config.get("bb_std_dev", 2.0)
 
         # Simple SMA calculation using numpy convolve (same as Volume calculation)
         sma = np.convolve(closes, np.ones(bb_period)/bb_period, mode='same')
@@ -853,7 +851,6 @@ class MultiIndicatorAnalyzer:
         # Low bandwidth = compressed (ranging/choppy)
         current_sma = sma[-1] if len(sma) > 0 else closes[-1]
         current_std = std_dev[-1] if len(std_dev) > 0 else 0.0
-        current_close = closes[-1]
 
         # Bandwidth = (Upper - Lower) / Middle * 100 = (4 * std) / SMA
         bandwidth = (4 * current_std) / (current_sma + 1e-10)  # Normalized
@@ -1912,7 +1909,6 @@ class DIYBot:
         # ISSUE #2 FIX: Detect market regime and adjust confidence accordingly
         regime_info = self.analyzer.detect_market_regime(highs, lows, closes)
         regime = regime_info.get('regime', 'TRENDING')
-        regime_confidence = regime_info.get('confidence', 0.5)
 
         # Calculate confluence
         direction, confidence, long_score, short_score = self.analyzer.calculate_confluence(results)

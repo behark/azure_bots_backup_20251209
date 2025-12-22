@@ -84,6 +84,16 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 class WatchItem(TypedDict, total=False):
     symbol: str
     cooldown_minutes: int
@@ -525,14 +535,14 @@ class LiquidationBot:
                 if self.stats:
                     self.stats.record_open(
                         signal_id=signal_id_val,
-                        symbol=f"{symbol}/USDT",
+                        symbol=normalize_symbol(symbol),
                         direction=direction_val,
                         entry=float(entry_val),
                         created_at=created_at_val,
                         extra={
                             "timeframe": trade_levels.get("timeframe", timeframe),
                             "exchange": "MEXC",
-                            "display_symbol": f"{symbol}/USDT",
+                            "display_symbol": normalize_symbol(symbol),
                         },
                     )
             time.sleep(0.2)
@@ -762,7 +772,7 @@ class LiquidationBot:
         # Get performance stats
         perf_stats = None
         if self.stats is not None:
-            symbol_key = f"{snapshot.symbol}/USDT"
+            symbol_key = normalize_symbol(snapshot.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
@@ -786,7 +796,7 @@ class LiquidationBot:
 
         return format_signal_message(
             bot_name="LIQUIDATION",
-            symbol=f"{snapshot.symbol}/USDT",
+            symbol=normalize_symbol(snapshot.symbol),
             direction=direction,
             entry=entry,
             stop_loss=sl,
@@ -905,7 +915,7 @@ class LiquidationBot:
                         logger.info("Trade closed: %s | %s | Entry: %.6f | Exit: %.6f | Result: %s | P&L: %.2f%%",
                                    signal_id, symbol, entry, price, result, stats_record.pnl_pct)
                         # Build perf stats for result message
-                        symbol_key = f"{symbol}/USDT"
+                        symbol_key = normalize_symbol(symbol)
                         counts = self.stats.symbol_tp_sl_counts(symbol_key)
                         tp1_count = counts.get("TP1", 0)
                         tp2_count = counts.get("TP2", 0)
@@ -924,7 +934,7 @@ class LiquidationBot:
 
                 # Use centralized result template
                 message = format_result_message(
-                    symbol=f"{symbol}/USDT",
+                    symbol=normalize_symbol(symbol),
                     direction=direction,
                     result=result,
                     entry=entry,

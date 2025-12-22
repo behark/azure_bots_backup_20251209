@@ -82,6 +82,16 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 def load_watchlist() -> List[Dict[str, object]]:
     if not WATCHLIST_FILE.exists():
         raise FileNotFoundError(f"Watchlist file missing: {WATCHLIST_FILE}")
@@ -457,7 +467,7 @@ class VolumeProfileBot:
         positions = self._open_positions()
         positions[signal_id] = {
             "symbol": symbol,
-            "pair": f"{symbol}/USDT",
+            "pair": normalize_symbol(symbol),
             "direction": direction,
             "entry": curr_close,
             "sl": sl,
@@ -469,7 +479,7 @@ class VolumeProfileBot:
         }
 
         extra = {
-            "display_symbol": f"{symbol}/USDT",
+            "display_symbol": normalize_symbol(symbol),
             "timeframe": timeframe,
             "exchange": self.exchange,
             "event": event_name,
@@ -479,7 +489,7 @@ class VolumeProfileBot:
         try:
             self.stats.record_open(
                 signal_id=signal_id,
-                symbol=f"{symbol}/USDT",
+                symbol=normalize_symbol(symbol),
                 direction=direction,
                 entry=curr_close,
                 created_at=created_at,
@@ -524,7 +534,7 @@ class VolumeProfileBot:
         msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
 
         # Get historical stats
-        symbol_key = f"{symbol}/USDT"
+        symbol_key = normalize_symbol(symbol)
         counts = self.stats.symbol_tp_sl_counts(symbol_key)
         tp1_count = counts.get("TP1", 0)
         tp2_count = counts.get("TP2", 0)

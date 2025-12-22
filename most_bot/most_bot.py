@@ -63,6 +63,18 @@ from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -614,7 +626,7 @@ class MOSTBot:
             if self.stats:
                 self.stats.record_open(
                     signal_id=signal_id,
-                    symbol=f"{symbol}/USDT",
+                    symbol=normalize_symbol(symbol),
                     direction=signal.direction,
                     entry=signal.entry,
                     created_at=signal.timestamp,
@@ -745,7 +757,7 @@ class MOSTBot:
 
         return format_signal_message(
             bot_name="MOST",
-            symbol=f"{signal.symbol}/USDT",
+            symbol=normalize_symbol(signal.symbol),
             direction=signal.direction,
             entry=signal.entry,
             stop_loss=signal.stop_loss,
@@ -882,7 +894,7 @@ class MOSTBot:
                     self._dispatch(summary_message)
                 else:
                     message = (
-                        f"🎯 {symbol}/USDT MOST {direction} {result} hit!\n"
+                        f"🎯 {normalize_symbol(symbol)} MOST {direction} {result} hit!\n"
                         f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )

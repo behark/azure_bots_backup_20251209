@@ -54,6 +54,7 @@ from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
 # Import configuration module (Same config structure as Volume Bot)
 # We assume we can load the JSON config similarly
@@ -949,14 +950,31 @@ class HarmonicBot:
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
 
-        # Init Exchanges with timeout
+        # Init Exchanges with timeout and rate limiting
         request_timeout = self.config.get("analysis", {}).get("request_timeout_seconds", 30)
+        rate_cfg = self.config.get("rate_limit", {})
+        self.rate_handler = None
+        if RateLimitHandler:
+            self.rate_handler = RateLimitHandler(
+                base_delay=rate_cfg.get("base_delay_seconds", 0.5),
+                max_retries=rate_cfg.get("max_retries", 5),
+                backoff_factor=rate_cfg.get("backoff_multiplier", 2.0),
+                max_backoff=rate_cfg.get("rate_limit_backoff_max", 30.0)
+            )
+            logger.info("RateLimitHandler initialized for API protection")
+
         self.clients = {}
         for name, cfg in EXCHANGE_CONFIG.items():
             try:
                 params = dict(cfg["params"])
                 params['timeout'] = request_timeout * 1000  # ccxt uses milliseconds
-                self.clients[name] = cfg["factory"](params)
+                raw_client = cfg["factory"](params)
+                # Wrap with rate limiting if available
+                if RateLimitedExchange and self.rate_handler:
+                    self.clients[name] = RateLimitedExchange(raw_client, self.rate_handler)
+                    logger.debug(f"Exchange {name} wrapped with RateLimitedExchange")
+                else:
+                    self.clients[name] = raw_client
             except Exception as e:
                 logger.error(f"Failed to init {name}: {e}")
 

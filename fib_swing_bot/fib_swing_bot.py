@@ -74,6 +74,17 @@ def signal_handler(signum: int, frame: Optional[FrameType]) -> None:  # pragma: 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 class WatchItem(TypedDict, total=False):
     symbol: str
     timeframe: str
@@ -533,7 +544,7 @@ class SignalTracker:
             try:
                 self.stats.record_open(
                     signal_id=signal.signal_id,
-                    symbol=f"{signal.symbol}/USDT",
+                    symbol=normalize_symbol(signal.symbol),
                     direction=signal.direction,
                     entry=signal.entry,
                     created_at=signal.created_at,
@@ -645,7 +656,7 @@ class SignalTracker:
                     timeframe_val = signal_data.get("timeframe", "")
                     pnl = ((current_price - entry) / entry) * 100 if entry else 0.0
                     message = (
-                        f"🎯 {symbol}/USDT {timeframe_val} {result} hit!\n"
+                        f"🎯 {normalize_symbol(symbol)} {timeframe_val} {result} hit!\n"
                         f"Entry {entry:.6f} | Exit {current_price:.6f}\n"
                         f"P&L: {pnl:+.2f}%"
                     )
@@ -736,7 +747,7 @@ class FibSwingBot:
         # Get performance stats
         perf_stats = None
         if self.stats is not None:
-            symbol_key = f"{signal.symbol}/USDT"
+            symbol_key = normalize_symbol(signal.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
@@ -760,7 +771,7 @@ class FibSwingBot:
 
         return format_signal_message(
             bot_name="FIB SWING",
-            symbol=f"{signal.symbol}/USDT",
+            symbol=normalize_symbol(signal.symbol),
             direction=signal.direction,
             entry=signal.entry,
             stop_loss=signal.stop_loss,

@@ -73,6 +73,22 @@ class RateLimitHandler:
             'rate limit' in error_str or
             'too many requests' in error_str
         )
+
+    def _is_retryable_error(self, error: Exception) -> bool:
+        """Check if the error is retryable (network issues, timeouts, etc.)."""
+        error_str = str(error).lower()
+        return (
+            self._is_rate_limit_error(error) or
+            'network' in error_str or
+            'timeout' in error_str or
+            'connection' in error_str or
+            'temporary' in error_str or
+            '502' in error_str or
+            '503' in error_str or
+            '504' in error_str or
+            'bad gateway' in error_str or
+            'service unavailable' in error_str
+        )
     
     def execute(
         self,
@@ -113,24 +129,25 @@ class RateLimitHandler:
                 
             except Exception as e:
                 last_error = e
-                
-                # Check if it's a rate limit error
-                if self._is_rate_limit_error(e):
+
+                # Check if it's a retryable error (rate limit or network issue)
+                if self._is_retryable_error(e):
                     if attempt < self.max_retries - 1:
                         backoff_delay = self._calculate_backoff(attempt)
+                        error_type = "Rate limit" if self._is_rate_limit_error(e) else "Network error"
                         logger.warning(
-                            f"Rate limit hit (attempt {attempt + 1}/{self.max_retries}). "
+                            f"{error_type} (attempt {attempt + 1}/{self.max_retries}). "
                             f"Retrying in {backoff_delay:.2f}s... Error: {str(e)[:100]}"
                         )
                         time.sleep(backoff_delay)
                         continue
                     else:
                         logger.error(
-                            f"Rate limit error after {self.max_retries} attempts: {str(e)}"
+                            f"Retryable error after {self.max_retries} attempts: {str(e)}"
                         )
                 else:
-                    # Not a rate limit error, raise immediately
-                    logger.error(f"API call failed with non-rate-limit error: {str(e)}")
+                    # Not a retryable error, raise immediately
+                    logger.error(f"API call failed with non-retryable error: {str(e)}")
                     raise
         
         # All retries exhausted

@@ -63,6 +63,18 @@ from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -862,7 +874,7 @@ class PSARBot:
             if self.stats:
                 self.stats.record_open(
                     signal_id=signal_id,
-                    symbol=f"{symbol}/USDT",
+                    symbol=normalize_symbol(symbol),
                     direction=signal.direction,
                     entry=signal.entry,
                     created_at=signal.timestamp,
@@ -969,7 +981,7 @@ class PSARBot:
         # Get performance stats
         perf_stats = None
         if self.stats is not None:
-            symbol_key = f"{signal.symbol}/USDT"
+            symbol_key = normalize_symbol(signal.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
@@ -987,7 +999,7 @@ class PSARBot:
 
         return format_signal_message(
             bot_name="PSAR",
-            symbol=f"{signal.symbol}/USDT",
+            symbol=normalize_symbol(signal.symbol),
             direction=signal.direction,
             entry=signal.entry,
             stop_loss=signal.stop_loss,
@@ -1106,7 +1118,7 @@ class PSARBot:
                                 logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
                                 # Send update notification
                                 update_msg = (
-                                    f"📈 <b>{symbol}/USDT PSAR Trailing Stop Updated</b>\n"
+                                    f"📈 <b>{normalize_symbol(symbol)} PSAR Trailing Stop Updated</b>\n"
                                     f"Direction: {direction}\n"
                                     f"Old SL: <code>{old_sl:.6f}</code>\n"
                                     f"New SL: <code>{sl:.6f}</code>\n"
@@ -1124,7 +1136,7 @@ class PSARBot:
                                 logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
                                 # Send update notification
                                 update_msg = (
-                                    f"📉 <b>{symbol}/USDT PSAR Trailing Stop Updated</b>\n"
+                                    f"📉 <b>{normalize_symbol(symbol)} PSAR Trailing Stop Updated</b>\n"
                                     f"Direction: {direction}\n"
                                     f"Old SL: <code>{old_sl:.6f}</code>\n"
                                     f"New SL: <code>{sl:.6f}</code>\n"
@@ -1179,7 +1191,7 @@ class PSARBot:
                     self._dispatch(summary_message)
                 else:
                     message = (
-                        f"🎯 {symbol}/USDT PSAR {direction} {result} hit!\n"
+                        f"🎯 {normalize_symbol(symbol)} PSAR {direction} {result} hit!\n"
                         f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )
@@ -1191,10 +1203,10 @@ class PSARBot:
         """Get the last signal result for a symbol from stats."""
         if not self.stats:
             return None
-        
+
         try:
             # Access stats data to find last result for symbol
-            symbol_key = f"{symbol}/USDT"
+            symbol_key = normalize_symbol(symbol)
             # This is a simplified check - actual implementation depends on SignalStats API
             # For now, return None to not affect cooldown
             return None

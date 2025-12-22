@@ -14,6 +14,16 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy.typing as npt
 
 
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 def calculate_volume_profile(
     highs: List[float],
     lows: List[float],
@@ -393,7 +403,7 @@ def analyze_volume_profile(symbol: str, timeframe: str = "15m") -> None:
         - Lower timeframes (1m, 5m) generate more signals but higher noise
         - Higher timeframes (1h, 4h, 1d) generate fewer but more reliable signals
     """
-    symbol = symbol.upper()
+    symbol = symbol.upper().replace("/USDT", "").replace("_USDT", "")
     full_symbol = f"{symbol}/USDT:USDT"
 
     print("=" * 70)

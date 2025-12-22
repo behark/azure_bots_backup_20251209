@@ -62,7 +62,19 @@ from trade_config import get_config_manager
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
-RateLimitHandler = None  # Disabled - API mismatch with wait_if_needed()
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')  # Re-enabled for API protection
+
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to always have /USDT suffix (without duplication).
+
+    Handles cases where symbol may already contain /USDT to avoid
+    creating malformed symbols like 'NIGHT/USDT/USDT'.
+    """
+    base = symbol.replace("/USDT", "").replace("_USDT", "")
+    return f"{base}/USDT"
+
+
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -610,17 +622,10 @@ class MTFBot:
             except Exception:
                 cooldown = self.default_cooldown
             
-            if self.rate_limiter:
-                self.rate_limiter.wait_if_needed()
-            
             try:
                 signal = self._analyze_symbol(symbol, period)
-                if self.rate_limiter:
-                    self.rate_limiter.record_success(f"mexc_{symbol}")
             except Exception as exc:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
-                if self.rate_limiter:
-                    self.rate_limiter.record_error(f"mexc_{symbol}")
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
@@ -673,7 +678,7 @@ class MTFBot:
             if self.stats:
                 self.stats.record_open(
                     signal_id=signal_id,
-                    symbol=f"{symbol}/USDT",
+                    symbol=normalize_symbol(symbol),
                     direction=signal.direction,
                     entry=signal.entry,
                     created_at=signal.timestamp,
@@ -772,7 +777,7 @@ class MTFBot:
         # Get performance stats
         perf_stats = None
         if self.stats is not None:
-            symbol_key = f"{signal.symbol}/USDT"
+            symbol_key = normalize_symbol(signal.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
@@ -793,7 +798,7 @@ class MTFBot:
 
         return format_signal_message(
             bot_name="MTF",
-            symbol=f"{signal.symbol}/USDT",
+            symbol=normalize_symbol(signal.symbol),
             direction=signal.direction,
             entry=signal.entry,
             stop_loss=signal.stop_loss,
@@ -909,7 +914,7 @@ class MTFBot:
                     self._dispatch(summary_message)
                 else:
                     message = (
-                        f"🎯 {symbol}/USDT MTF {direction} {result} hit!\n"
+                        f"🎯 {normalize_symbol(symbol)} MTF {direction} {result} hit!\n"
                         f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )

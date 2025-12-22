@@ -54,7 +54,7 @@ except ImportError:
 sys.path.append(str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message, format_result_message
+from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator

@@ -102,7 +102,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import FrameType
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
@@ -174,7 +173,7 @@ sys.path.append(str(BASE_DIR.parent))
 from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
-from tp_sl_calculator import TPSLCalculator, CalculationMethod
+from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
 
 # Optional imports (safe fallback)

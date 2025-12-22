@@ -60,7 +60,7 @@ load_dotenv(BASE_DIR / ".env")
 sys.path.insert(0, str(ROOT_DIR))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message, format_result_message
+from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, CalculationMethod

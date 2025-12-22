@@ -23,8 +23,7 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import FrameType
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
@@ -46,8 +45,8 @@ except ImportError:
 import volume_profile as vp  # noqa: E402  pylint: disable=wrong-import-position
 
 # Safe imports with independent error handling
-from safe_import import safe_import_multiple, safe_import
-from message_templates import format_signal_message, format_result_message
+from safe_import import safe_import
+from message_templates import format_signal_message
 
 
 # Required imports (fail fast if missing)

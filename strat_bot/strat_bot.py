@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import FrameType
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
@@ -53,7 +53,7 @@ except ImportError:
 sys.path.append(str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message, format_result_message
+from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator

@@ -31,6 +31,9 @@ STATE_FILE = BASE_DIR / "psar_state.json"
 WATCHLIST_FILE = BASE_DIR / "psar_watchlist.json"
 STATS_FILE = LOG_DIR / "psar_stats.json"
 
+# Exchange configuration - actual exchange used for data
+EXCHANGE_NAME = "Binance Futures"
+
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -54,7 +57,7 @@ except ImportError:
 sys.path.append(str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message, format_result_message
+from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
@@ -424,8 +427,8 @@ class PSARAnalyzer:
         return adx
 
 
-class MexcClient:
-    """MEXC exchange client wrapper."""
+class ExchangeClient:
+    """Exchange client wrapper for Binance Futures."""
 
     def __init__(self) -> None:
         self.exchange: Any = ccxt.binanceusdm({
@@ -655,7 +658,7 @@ class PSARBot:
         self.interval = interval
         self.default_cooldown = default_cooldown
         self.watchlist: List[WatchItem] = load_watchlist()
-        self.client = MexcClient()
+        self.client = ExchangeClient()
         self.analyzer = PSARAnalyzer()
         self.state = BotState(STATE_FILE)
         self.notifier = self._init_notifier()
@@ -664,7 +667,7 @@ class PSARBot:
             HealthMonitor("PSAR Bot", self.notifier, heartbeat_interval=3600)
             if HealthMonitor and self.notifier else None
         )
-        # Rate limiting is handled by RateLimitHandler in MexcClient
+        # Rate limiting is handled by RateLimitHandler in ExchangeClient
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
         # Cache for OHLCV data to reduce API calls
@@ -825,8 +828,8 @@ class PSARBot:
                 cooldown = self.default_cooldown
 
             # Check backoff status before making API calls
-            if self._backoff_active("mexc"):
-                logger.debug("Backoff active for mexc; skipping %s", symbol)
+            if self._backoff_active("exchange"):
+                logger.debug("Backoff active for exchange; skipping %s", symbol)
                 continue
 
             try:
@@ -835,8 +838,8 @@ class PSARBot:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
                 # Handle rate limit errors
                 if self._is_rate_limit_error(exc):
-                    self._register_backoff("mexc")
-                    logger.warning("MEXC rate limit hit; backing off")
+                    self._register_backoff("exchange")
+                    logger.warning("Exchange rate limit hit; backing off")
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
@@ -882,7 +885,7 @@ class PSARBot:
                 "take_profit_2": signal.take_profit_2,
                 "created_at": signal.timestamp,
                 "timeframe": period,
-                "exchange": "MEXC",
+                "exchange": EXCHANGE_NAME,
             }
             self.state.add_signal(signal_id, trade_data)
 
@@ -895,7 +898,7 @@ class PSARBot:
                     created_at=signal.timestamp,
                     extra={
                         "timeframe": period,
-                        "exchange": "MEXC",
+                        "exchange": EXCHANGE_NAME,
                         "strategy": "PSAR Trend",
                     },
                 )
@@ -1024,7 +1027,7 @@ class PSARBot:
             indicator_value=signal.psar_value,
             indicator_name="PSAR",
             adx=signal.adx,
-            exchange="MEXC",
+            exchange=EXCHANGE_NAME,
             timeframe="15m",
             current_price=signal.current_price,
             performance_stats=perf_stats,
@@ -1057,7 +1060,7 @@ class PSARBot:
                 logger.warning("Failed to fetch ticker for %s: %s", signal_id, exc)
                 # Handle rate limit errors in monitoring
                 if self._is_rate_limit_error(exc):
-                    self._register_backoff("mexc")
+                    self._register_backoff("exchange")
                     logger.warning("Rate limit hit during monitoring; backing off")
                 continue
 
@@ -1163,7 +1166,7 @@ class PSARBot:
                 logger.warning("Failed to update trailing stop for %s: %s", signal_id, exc)
                 # Handle rate limit errors
                 if self._is_rate_limit_error(exc):
-                    self._register_backoff("mexc")
+                    self._register_backoff("exchange")
 
             # Check for TP/SL hits with updated stop loss and price tolerance
             PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage

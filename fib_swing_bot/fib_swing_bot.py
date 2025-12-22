@@ -27,8 +27,8 @@ from pathlib import Path
 from threading import Lock
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING, cast
 from types import FrameType
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message, format_result_message
+from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, CalculationMethod

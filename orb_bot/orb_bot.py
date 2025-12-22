@@ -14,21 +14,18 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import html
 import json
 import logging
 import os
-import signal
 import sys
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict, cast
+from typing import Any, Dict, List, Optional, cast
 
 import ccxt  # type: ignore[import-untyped]
-import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"

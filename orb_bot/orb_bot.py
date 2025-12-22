@@ -52,7 +52,6 @@ from trade_config import get_config_manager
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
@@ -331,14 +330,19 @@ class SignalTracker:
                     if last_dt.tzinfo is None: last_dt = last_dt.replace(tzinfo=timezone.utc)
                     if (datetime.now(timezone.utc) - last_dt) < timedelta(minutes=cooldown_mins):
                         continue
-                except ValueError: pass
+                except ValueError as exc:
+                    logger.debug("Invalid timestamp format for %s cooldown check: %s", symbol, exc)
 
             try:
                 client = client_map.get(exchange)
                 if not client: continue
                 ticker = client.fetch_ticker(resolve_symbol(symbol))
                 price = ticker.get("last")
-            except Exception:
+            except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+                logger.warning(f"Exchange error fetching {symbol}: {e}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error fetching {symbol}: {e}")
                 continue
             
             if not price: continue
@@ -482,13 +486,15 @@ class ORBBot:
                     try:
                         # Fetch OHLCV since session start (plus buffer)
                         # We need enough candles to form the ORB window (e.g. 60 mins)
-                        limit = 200 # Should cover 12h+ of 5m candles
+                        limit = 200  # Should cover 12h+ of 5m candles
                         ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=limit)
                         ticker = client.fetch_ticker(resolve_symbol(symbol))
                         price = ticker.get('last')
-
+                    except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+                        logger.warning(f"Exchange error for {symbol}: {e}")
+                        continue
                     except Exception as e:
-                        logger.error(f"Error fetching {symbol}: {e}")
+                        logger.error(f"Unexpected error fetching {symbol}: {e}")
                         continue
 
                     if not price: continue
@@ -580,7 +586,8 @@ def main() -> None:
         from dotenv import load_dotenv
         load_dotenv(BASE_DIR / ".env", override=True)
         load_dotenv(BASE_DIR.parent / ".env", override=True)
-    except ImportError: pass
+    except ImportError:
+        logger.debug("python-dotenv not installed, skipping .env loading")
     
     bot = ORBBot(BASE_DIR / args.config)
     bot.run(run_once=args.once)

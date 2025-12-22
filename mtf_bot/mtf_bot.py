@@ -65,7 +65,13 @@ HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 # Bot configuration (previously hardcoded values)
-BOT_CONFIG = {
+class BotConfigDict(TypedDict):
+    max_open_signals: int
+    max_signal_age_hours: int
+    price_tolerance: float
+    exchange: str
+
+BOT_CONFIG: BotConfigDict = {
     "max_open_signals": 50,
     "max_signal_age_hours": 24,
     "price_tolerance": 0.005,  # 0.5% tolerance for slippage

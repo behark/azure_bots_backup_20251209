@@ -521,7 +521,8 @@ class SignalTracker:
                     signal_ids_to_remove.append(signal_id)
                     removed_count += 1
                     logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid timestamp for signal %s, removing: %s", signal_id, exc)
                 signal_ids_to_remove.append(signal_id)
         
         for signal_id in signal_ids_to_remove:

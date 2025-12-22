@@ -467,7 +467,8 @@ class FundingBot:
                             if hasattr(client, 'fetch_open_interest'):
                                 oi_data = client.fetch_open_interest(resolve_symbol(symbol))
                                 oi = oi_data.get('openInterestAmount')
-                        except Exception: pass
+                        except Exception as exc:
+                            logger.debug("Open interest not available for %s: %s", symbol, exc)
                         
                     except Exception as e:
                         logger.error(f"Error fetching {symbol}: {e}")
@@ -553,7 +554,8 @@ def main() -> None:
         from dotenv import load_dotenv
         load_dotenv(BASE_DIR / ".env", override=True)
         load_dotenv(BASE_DIR.parent / ".env", override=True)
-    except ImportError: pass
+    except ImportError:
+        logger.debug("python-dotenv not installed, skipping .env loading")
     
     bot = FundingBot(BASE_DIR / args.config)
     bot.run(run_once=args.once)

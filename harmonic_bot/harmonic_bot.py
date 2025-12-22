@@ -48,11 +48,12 @@ from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from trade_config import get_config_manager
+from tp_sl_calculator import calculate_atr as shared_calculate_atr
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = None  # Disabled for testing
+RateLimiter = safe_import('health_monitor', 'RateLimiter')
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
@@ -194,13 +195,17 @@ class HarmonicPatternDetector:
         })
 
     def calculate_atr(self, highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+        """Calculate ATR using shared function from tp_sl_calculator."""
+        # Build OHLCV-like format for the shared function: [timestamp, open, high, low, close, volume]
+        # We only have highs, lows, closes - construct minimal OHLCV
+        ohlcv = [[0, 0, h, l, c, 0] for h, l, c in zip(highs, lows, closes)]
+        result = shared_calculate_atr(ohlcv, period)
+        if result is not None:
+            return float(result)
+        # Fallback if shared function returns None
         if len(closes) < period + 1:
             return float(np.mean(np.array(highs) - np.array(lows))) if highs and lows else 0.0
-        trs = []
-        for i in range(1, len(closes)):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-            trs.append(tr)
-        return float(np.mean(trs[-period:])) if len(trs) >= period else float(np.mean(trs) if trs else 0.0)
+        return 0.0
 
     def calculate_rsi(self, closes: List[float], period: int = 14) -> float:
         if len(closes) < period + 1: return 50.0

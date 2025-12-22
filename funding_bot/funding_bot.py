@@ -50,8 +50,8 @@ from trade_config import get_config_manager
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
 def load_json_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -388,11 +388,30 @@ class FundingBot:
         # Init Health Monitor
         heartbeat = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
         self.health_monitor = HealthMonitor("Funding Bot", self.notifier, heartbeat_interval=heartbeat) if HealthMonitor and self.notifier else None
-        
-        self.clients = {}
+
+        # Init Rate Limiter
+        rate_cfg = self.config.get("rate_limit", {})
+        self.rate_handler = None
+        if RateLimitHandler:
+            self.rate_handler = RateLimitHandler(
+                base_delay=rate_cfg.get("base_delay_seconds", 0.5),
+                max_retries=rate_cfg.get("max_retries", 5),
+                backoff_factor=rate_cfg.get("backoff_multiplier", 2.0),
+                max_backoff=rate_cfg.get("max_backoff_seconds", 30.0)
+            )
+            logger.info("RateLimitHandler initialized for API protection")
+
+        # Init Exchange Clients with rate limiting
+        self.clients: Dict[str, Any] = {}
         for name, cfg in EXCHANGE_CONFIG.items():
             try:
-                self.clients[name] = cfg["factory"](cfg["params"])
+                raw_client = cfg["factory"](cfg["params"])
+                # Wrap with rate limiting if available
+                if RateLimitedExchange and self.rate_handler:
+                    self.clients[name] = RateLimitedExchange(raw_client, self.rate_handler)
+                    logger.debug(f"Exchange {name} wrapped with RateLimitedExchange")
+                else:
+                    self.clients[name] = raw_client
             except Exception as e:
                 logger.error(f"Failed to init {name}: {e}")
 

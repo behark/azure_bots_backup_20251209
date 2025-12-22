@@ -55,14 +55,22 @@ sys.path.append(str(BASE_DIR.parent))
 from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
-from tp_sl_calculator import TPSLCalculator
+from tp_sl_calculator import TPSLCalculator, calculate_atr
 from trade_config import get_config_manager
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
+from file_lock import safe_read_json, safe_write_json
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = None  # Disabled for testing
-RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')  # Re-enabled for API protection
+RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+# Bot configuration (previously hardcoded values)
+BOT_CONFIG = {
+    "max_open_signals": 50,
+    "max_signal_age_hours": 24,
+    "price_tolerance": 0.005,  # 0.5% tolerance for slippage
+    "exchange": "binanceusdm",
+}
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -77,8 +85,10 @@ def normalize_symbol(symbol: str) -> str:
 
 class WatchItem(TypedDict, total=False):
     symbol: str
-    period: str
+    timeframe: str
     cooldown_minutes: int
+    exchange: str
+    market_type: str
 
 
 def load_watchlist() -> List[WatchItem]:
@@ -86,13 +96,13 @@ def load_watchlist() -> List[WatchItem]:
     if not WATCHLIST_FILE.exists():
         logger.error("Watchlist file missing: %s", WATCHLIST_FILE)
         return []
-    
+
     try:
         data = json.loads(WATCHLIST_FILE.read_text())
     except json.JSONDecodeError as exc:
         logger.error("Invalid watchlist JSON: %s", exc)
         return []
-    
+
     normalized: List[WatchItem] = []
     for item in data:
         if not isinstance(item, dict):
@@ -100,8 +110,9 @@ def load_watchlist() -> List[WatchItem]:
         symbol_val = item.get("symbol")
         if not isinstance(symbol_val, str):
             continue
-        period_val = item.get("period", "5m")
-        period = period_val if isinstance(period_val, str) else "5m"
+        # Use timeframe field (standardized across all bots)
+        timeframe_val = item.get("timeframe", "15m")
+        timeframe = timeframe_val if isinstance(timeframe_val, str) else "15m"
         cooldown_val = item.get("cooldown_minutes", 30)
         try:
             cooldown = int(cooldown_val)
@@ -109,7 +120,7 @@ def load_watchlist() -> List[WatchItem]:
             cooldown = 30
         normalized.append({
             "symbol": symbol_val.upper(),
-            "period": period,
+            "timeframe": timeframe,
             "cooldown_minutes": cooldown,
         })
     return normalized
@@ -293,35 +304,12 @@ class MultiTimeframeAnalyzer:
             "take_profit_1": levels.take_profit_1,
             "take_profit_2": levels.take_profit_2,
         }
-    
-    @staticmethod
-    def calculate_atr(ohlcv: List[Any], period: int = 14) -> float:
-        """Calculate ATR."""
-        if len(ohlcv) <= period:
-            highs = [x[2] for x in ohlcv]
-            lows = [x[3] for x in ohlcv]
-            return float(np.mean([high - low for high, low in zip(highs, lows)]))
-        
-        highs = [x[2] for x in ohlcv]
-        lows = [x[3] for x in ohlcv]
-        closes = [x[4] for x in ohlcv]
-        
-        trs = []
-        for i in range(1, len(ohlcv)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i-1]),
-                abs(lows[i] - closes[i-1])
-            )
-            trs.append(tr)
-        
-        if len(trs) >= period:
-            return float(np.mean(trs[-period:]))
-        return float(np.mean(trs)) if trs else 0.0
+
+    # Note: ATR calculation moved to shared tp_sl_calculator.calculate_atr()
 
 
-class MexcClient:
-    """MEXC exchange client wrapper."""
+class BinanceClient:
+    """Binance USDM Futures exchange client wrapper."""
 
     def __init__(self) -> None:
         self.exchange: Any = ccxt.binanceusdm({
@@ -330,15 +318,15 @@ class MexcClient:
         })
         self.exchange.load_markets()
         self.rate_limiter: Any = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
-    
+
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
-        # Handle both FHE and FHE/USDT formats
+        """Convert symbol to Binance USDM format (e.g., FHE/USDT -> FHE/USDT:USDT)."""
         sym = symbol.upper().replace("/USDT", "")
         return f"{sym}/USDT:USDT"
-    
+
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
-        """Fetch OHLCV data."""
+        """Fetch OHLCV data with rate limiting and network error retry."""
         if self.rate_limiter:
             return cast(List[Any], self.rate_limiter.execute(
                 self.exchange.fetch_ohlcv,
@@ -353,7 +341,7 @@ class MexcClient:
         ))
 
     def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Fetch ticker data."""
+        """Fetch ticker data with rate limiting and network error retry."""
         if self.rate_limiter:
             return cast(Dict[str, Any], self.rate_limiter.execute(self.exchange.fetch_ticker, self._swap_symbol(symbol)))
         return cast(Dict[str, Any], self.exchange.fetch_ticker(self._swap_symbol(symbol)))
@@ -393,12 +381,12 @@ OpenSignals = Dict[str, Dict[str, Any]]
 
 
 class BotState:
-    """Manages bot state persistence."""
-    
+    """Manages bot state persistence with file locking for thread safety."""
+
     def __init__(self, path: Path):
         self.path = path
         self.data: Dict[str, Any] = self._load()
-    
+
     @staticmethod
     def _parse_ts(value: str) -> datetime:
         """Parse ISO format timestamp, ensuring UTC timezone."""
@@ -411,30 +399,28 @@ class BotState:
         else:
             dt = dt.astimezone(timezone.utc)
         return dt
-    
+
     def _empty_state(self) -> Dict[str, Any]:
         return {"last_alert": {}, "open_signals": {}, "closed_signals": {}}
 
     def _load(self) -> Dict[str, Any]:
-        if not self.path.exists():
-            return self._empty_state()
-        try:
-            data = json.loads(self.path.read_text())
-            if not isinstance(data, dict):
-                return self._empty_state()
-            last_alert = data.get("last_alert")
-            open_signals = data.get("open_signals")
-            closed_signals = data.get("closed_signals")
-            return {
-                "last_alert": last_alert if isinstance(last_alert, dict) else {},
-                "open_signals": open_signals if isinstance(open_signals, dict) else {},
-                "closed_signals": closed_signals if isinstance(closed_signals, dict) else {},
-            }
-        except json.JSONDecodeError:
-            return self._empty_state()
-    
+        """Load state from file with file locking."""
+        default = self._empty_state()
+        data = safe_read_json(self.path, default)
+        if not isinstance(data, dict):
+            return default
+        last_alert = data.get("last_alert")
+        open_signals = data.get("open_signals")
+        closed_signals = data.get("closed_signals")
+        return {
+            "last_alert": last_alert if isinstance(last_alert, dict) else {},
+            "open_signals": open_signals if isinstance(open_signals, dict) else {},
+            "closed_signals": closed_signals if isinstance(closed_signals, dict) else {},
+        }
+
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2))
+        """Save state to file with file locking."""
+        safe_write_json(self.path, self.data)
     
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
         """Check if enough time has passed since last alert for this symbol."""
@@ -532,7 +518,7 @@ class MTFBot:
         self.interval = interval
         self.default_cooldown = default_cooldown
         self.watchlist: List[WatchItem] = load_watchlist()
-        self.client = MexcClient()
+        self.client = BinanceClient()
         self.analyzer = MultiTimeframeAnalyzer()
         self.state = BotState(STATE_FILE)
         self.notifier = self._init_notifier()
@@ -576,8 +562,8 @@ class MTFBot:
                 try:
                     self._run_cycle()
                     
-                    # Cleanup stale signals every cycle
-                    stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
+                    # Cleanup stale signals every cycle (using config)
+                    stale_count = self.state.cleanup_stale_signals(max_age_hours=BOT_CONFIG["max_signal_age_hours"])
                     if stale_count > 0:
                         logger.info("Cleaned up %d stale signals", stale_count)
                     
@@ -614,52 +600,58 @@ class MTFBot:
             if not isinstance(symbol_val, str):
                 continue
             symbol = symbol_val
-            period_val = item.get("period") if isinstance(item, dict) else None
-            period = period_val if isinstance(period_val, str) else "5m"
+            timeframe_val = item.get("timeframe") if isinstance(item, dict) else None
+            timeframe = timeframe_val if isinstance(timeframe_val, str) else "15m"
             cooldown_raw = item.get("cooldown_minutes") if isinstance(item, dict) else None
             try:
                 cooldown = int(cooldown_raw) if cooldown_raw is not None else self.default_cooldown
             except Exception:
                 cooldown = self.default_cooldown
-            
+
             try:
-                signal = self._analyze_symbol(symbol, period)
+                signal = self._analyze_symbol(symbol, timeframe)
+            except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+                logger.warning("Exchange error for %s: %s", symbol, exc)
+                if self.health_monitor:
+                    self.health_monitor.record_error(f"Exchange error for {symbol}: {exc}")
+                continue
             except Exception as exc:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
-            
+
             if signal is None:
                 logger.debug("%s: No confluence detected", symbol)
                 continue
-            
+
             # Only alert on STRONG signals
             if signal.strength != "STRONG":
                 logger.debug("%s: Confluence not strong enough (%s)", symbol, signal.strength)
                 continue
-            
+
             if not self.state.can_alert(symbol, cooldown):
                 logger.debug("Cooldown active for %s", symbol)
                 continue
-            
-            # Max open signals limit
-            MAX_OPEN_SIGNALS = 50
+
+            # Max open signals limit (from config)
+            max_signals = BOT_CONFIG["max_open_signals"]
             current_open = len(self.state.iter_signals())
-            if current_open >= MAX_OPEN_SIGNALS:
+            if current_open >= max_signals:
                 logger.info(
                     "Max open signals limit reached (%d/%d). Skipping %s",
-                    current_open, MAX_OPEN_SIGNALS, symbol
+                    current_open, max_signals, symbol
                 )
                 continue
-            
+
             # Send alert
             message = self._format_message(signal)
             self._dispatch(message)
             self.state.mark_alert(symbol)
-            
+
             # Track signal
             signal_id = f"{symbol}-MTF-{signal.timestamp}"
+            exchange_name = BOT_CONFIG["exchange"]
             trade_data = {
                 "id": signal_id,
                 "symbol": symbol,
@@ -669,12 +661,12 @@ class MTFBot:
                 "take_profit_1": signal.take_profit_1,
                 "take_profit_2": signal.take_profit_2,
                 "created_at": signal.timestamp,
-                "timeframe": period,
-                "exchange": "MEXC",
+                "timeframe": timeframe,
+                "exchange": exchange_name,
                 "strength": signal.strength,
             }
             self.state.add_signal(signal_id, trade_data)
-            
+
             if self.stats:
                 self.stats.record_open(
                     signal_id=signal_id,
@@ -683,12 +675,12 @@ class MTFBot:
                     entry=signal.entry,
                     created_at=signal.timestamp,
                     extra={
-                        "timeframe": period,
-                        "exchange": "MEXC",
+                        "timeframe": timeframe,
+                        "exchange": exchange_name,
                         "strategy": "Multi-Timeframe",
                     },
                 )
-            
+
             time.sleep(0.5)
     
     def _analyze_symbol(self, symbol: str, timeframe: str) -> Optional[MTFSignal]:
@@ -728,7 +720,9 @@ class MTFBot:
             return None
         
         # Calculate ATR
-        atr = float(self.analyzer.calculate_atr(base_ohlcv))
+        # Use shared ATR calculation from tp_sl_calculator
+        atr_value = calculate_atr(base_ohlcv)
+        atr = float(atr_value) if atr_value is not None else 0.0
         
         # Get current price
         ticker = self.client.fetch_ticker(symbol)
@@ -805,7 +799,7 @@ class MTFBot:
             tp1=signal.take_profit_1,
             tp2=signal.take_profit_2,
             strength=strength_val,
-            exchange="MEXC",
+            exchange=BOT_CONFIG["exchange"],
             timeframe=signal.base_timeframe,
             current_price=signal.current_price,
             performance_stats=perf_stats,
@@ -873,19 +867,19 @@ class MTFBot:
                     self.stats.discard(signal_id)
                 continue
             
-            # Check for TP/SL hits with price tolerance
-            PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
-            
+            # Check for TP/SL hits with price tolerance (from config)
+            price_tol = BOT_CONFIG["price_tolerance"]
+
             if direction == "BULLISH":
                 # With tolerance for slippage (allow slightly lower prices)
-                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
-                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
-                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
+                hit_tp2 = price >= (tp2 * (1 - price_tol))
+                hit_tp1 = price >= (tp1 * (1 - price_tol)) and price < (tp2 * (1 - price_tol))
+                hit_sl = price <= (sl * (1 + price_tol))
             else:
                 # For BEARISH, allow slightly higher prices
-                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
-                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
-                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
+                hit_tp2 = price <= (tp2 * (1 + price_tol))
+                hit_tp1 = price <= (tp1 * (1 + price_tol)) and price > (tp2 * (1 + price_tol))
+                hit_sl = price >= (sl * (1 - price_tol))
             
             result = None
             if hit_tp2:

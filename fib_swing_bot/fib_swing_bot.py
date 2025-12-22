@@ -555,9 +555,9 @@ class SignalTracker:
                         "swing_confirmed": signal.swing_confirmed,
                     },
                 )
-            except Exception:
-                pass
-    
+            except Exception as exc:
+                logger.warning("Failed to record stats for signal %s: %s", signal.signal_id, exc)
+
     def check_open_signals(self, notifier: Optional[TelegramNotifier]) -> None:
         """Check all open signals for TP/SL hits"""
         signals = self.state.get("open_signals", {})
@@ -600,7 +600,8 @@ class SignalTracker:
                 tp2 = float(tp2_raw)      # type: ignore[arg-type]
                 tp3 = float(tp3_raw)      # type: ignore[arg-type]
                 sl = float(sl_raw)        # type: ignore[arg-type]
-            except Exception:
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid signal data for %s, removing: %s", signal_id, exc)
                 signals.pop(signal_id, None)
                 updated = True
                 continue
@@ -713,7 +714,8 @@ class FibSwingBot:
             cooldown_raw = row.get("cooldown_minutes", 30)
             try:
                 cooldown = int(cooldown_raw)
-            except Exception:
+            except (ValueError, TypeError):
+                logger.debug("Invalid cooldown value '%s' for %s, using default 30", cooldown_raw, symbol_val)
                 cooldown = 30
             result.append({"symbol": symbol_val.upper(), "timeframe": timeframe, "cooldown_minutes": cooldown})
         return result
@@ -816,9 +818,10 @@ class FibSwingBot:
                         cooldown_raw = item.get("cooldown_minutes", 30) if isinstance(item, dict) else 30
                         try:
                             cooldown = int(cooldown_raw)
-                        except Exception:
+                        except (ValueError, TypeError):
+                            logger.debug("Invalid cooldown value '%s' for %s, using default 30", cooldown_raw, symbol)
                             cooldown = 30
-                        
+
                         # Check cooldown
                         if not self.tracker.can_alert(symbol, timeframe, cooldown):
                             logger.debug("Cooldown active for %s %s", symbol, timeframe)

@@ -86,7 +86,7 @@ def is_transient_error(exception: Exception) -> bool:
         ...         # Fail fast, don't retry
         ...         raise
     """
-    import ccxt  # type: ignore[import-not-found]
+    import ccxt  # type: ignore[import-untyped]
 
     # CCXT transient errors
     transient_types = (

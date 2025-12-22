@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -144,7 +145,7 @@ class STRATAnalyzer:
         else:
             return '1'
     
-    def classify_candles(self, highs: np.ndarray, lows: np.ndarray) -> List[str]:
+    def classify_candles(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]]) -> List[str]:
         """Classify all candles as 1, 2u, 2d, or 3."""
         bar_types = ['1']  # First bar is neutral
         
@@ -156,10 +157,10 @@ class STRATAnalyzer:
     
     def detect_actionable_patterns(
         self,
-        opens: np.ndarray,
-        highs: np.ndarray,
-        lows: np.ndarray,
-        closes: np.ndarray,
+        opens: npt.NDArray[np.floating[Any]],
+        highs: npt.NDArray[np.floating[Any]],
+        lows: npt.NDArray[np.floating[Any]],
+        closes: npt.NDArray[np.floating[Any]],
     ) -> Optional[Tuple[str, str]]:
         """Detect actionable Hammer/Shooter patterns using last closed bar."""
         if len(closes) < 3:
@@ -235,7 +236,7 @@ class STRATAnalyzer:
         return combos
     
     @staticmethod
-    def calculate_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    def calculate_atr(highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], period: int = 14) -> float:
         """Calculate ATR."""
         tr = np.zeros(len(closes))
         tr[0] = highs[0] - lows[0]
@@ -248,7 +249,7 @@ class STRATAnalyzer:
 
 
 class MexcClient:
-    """MEXC exchange client wrapper."""
+    """Binance USDM exchange client wrapper."""
 
     def __init__(self) -> None:
         self.exchange: Any = ccxt.binanceusdm({
@@ -260,7 +261,9 @@ class MexcClient:
     
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
-        return f"{symbol.upper()}/USDT:USDT"
+        # Handle both FHE and FHE/USDT formats
+        sym = symbol.upper().replace("/USDT", "")
+        return f"{sym}/USDT:USDT"
     
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
@@ -648,9 +651,9 @@ class STRATBot:
             except Exception:
                 cooldown = self.default_cooldown
             
-            # Check if backoff is active for MEXC
-            if self._backoff_active("mexc"):
-                logger.debug("Backoff active for mexc; skipping %s", symbol)
+            # Check if backoff is active for exchange
+            if self._backoff_active("binanceusdm"):
+                logger.debug("Backoff active for binanceusdm; skipping %s", symbol)
                 continue
             
             try:
@@ -659,7 +662,7 @@ class STRATBot:
                 logger.error("Failed to analyze %s: %s", symbol, exc)
                 # Handle rate limit errors (consolidated check)
                 if self._is_rate_limit_error(exc):
-                    self._register_backoff("mexc")
+                    self._register_backoff("binanceusdm")
                 if self.health_monitor:
                     self.health_monitor.record_error(f"Analysis error for {symbol}: {exc}")
                 continue
@@ -699,20 +702,22 @@ class STRATBot:
                 "take_profit_2": signal.take_profit_2,
                 "created_at": signal.timestamp,
                 "timeframe": period,
-                "exchange": "MEXC",
+                "exchange": "binanceusdm",
             }
             self.state.add_signal(signal_id, trade_data)
-            
+
             if self.stats:
+                # Clean symbol format - avoid double /USDT
+                clean_symbol = symbol.replace("/USDT", "") + "/USDT"
                 self.stats.record_open(
                     signal_id=signal_id,
-                    symbol=f"{symbol}/USDT",
+                    symbol=clean_symbol,
                     direction=signal.direction,
                     entry=signal.entry,
                     created_at=signal.timestamp,
                     extra={
                         "timeframe": period,
-                        "exchange": "MEXC",
+                        "exchange": "binanceusdm",
                         "strategy": "STRAT",
                         "pattern": signal.pattern_name,
                     },
@@ -849,7 +854,10 @@ class STRATBot:
         
         # Calculate targets using centralized TPSLCalculator
         # STRAT uses structure-based SL (setup bar high/low), so we pass custom_sl
-        calculator = TPSLCalculator(min_risk_reward=self.MIN_RR_RATIO)
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("strat_bot", symbol)
+
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward)
         dir_normalized = "LONG" if direction == "BULLISH" else "SHORT"
         levels = calculator.calculate(
             entry=entry,
@@ -894,8 +902,10 @@ class STRATBot:
         """Format Telegram message for signal using centralized template."""
         # Get performance stats
         perf_stats = None
+        # Clean symbol format - avoid double /USDT
+        clean_symbol = signal.symbol.replace("/USDT", "") + "/USDT"
         if self.stats is not None:
-            symbol_key = f"{signal.symbol}/USDT"
+            symbol_key = clean_symbol
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
@@ -916,14 +926,14 @@ class STRATBot:
 
         return format_signal_message(
             bot_name="STRAT",
-            symbol=f"{signal.symbol}/USDT",
+            symbol=clean_symbol,
             direction=signal.direction,
             entry=signal.entry,
             stop_loss=signal.stop_loss,
             tp1=signal.take_profit_1,
             tp2=signal.take_profit_2,
             pattern_name=signal.pattern_name,
-            exchange="MEXC",
+            exchange="binanceusdm",
             timeframe="15m",
             current_price=signal.current_price,
             performance_stats=perf_stats,
@@ -956,7 +966,7 @@ class STRATBot:
                 logger.warning("Failed to fetch ticker for %s: %s", signal_id, exc)
                 # Handle rate limit errors in monitoring
                 if self._is_rate_limit_error(exc):
-                    self._register_backoff("mexc")
+                    self._register_backoff("binanceusdm")
                     logger.warning("Rate limit hit during monitoring; backing off")
                 continue
             
@@ -1049,8 +1059,10 @@ class STRATBot:
                     self._dispatch(summary_message)
                 else:
                     pattern = payload_obj.get("pattern", "STRAT")
+                    # Clean symbol format - avoid double /USDT
+                    clean_sym = symbol.replace("/USDT", "") + "/USDT"
                     message = (
-                        f"🎯 {symbol}/USDT {pattern} {direction} {result} hit!\n"
+                        f"🎯 {clean_sym} {pattern} {direction} {result} hit!\n"
                         f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
                         f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
                     )

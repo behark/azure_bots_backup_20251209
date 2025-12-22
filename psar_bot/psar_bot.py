@@ -21,6 +21,7 @@ from types import FrameType
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -117,10 +118,10 @@ class PSARAnalyzer:
     
     def calculate_psar(
         self,
-        highs: np.ndarray,
-        lows: np.ndarray,
-        closes: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        highs: npt.NDArray[np.floating[Any]],
+        lows: npt.NDArray[np.floating[Any]],
+        closes: npt.NDArray[np.floating[Any]],
+    ) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
         """
         Calculate Parabolic SAR.
         Returns: (psar_values, trend) where trend is 1 for uptrend, -1 for downtrend
@@ -186,10 +187,10 @@ class PSARAnalyzer:
     
     def detect_signal(
         self,
-        opens: np.ndarray,
-        highs: np.ndarray,
-        lows: np.ndarray,
-        closes: np.ndarray,
+        opens: npt.NDArray[np.floating[Any]],
+        highs: npt.NDArray[np.floating[Any]],
+        lows: npt.NDArray[np.floating[Any]],
+        closes: npt.NDArray[np.floating[Any]],
         adx_threshold: float = 30,
     ) -> Optional[Tuple[str, float, float, float, float]]:
         """
@@ -288,7 +289,7 @@ class PSARAnalyzer:
         tp2_mult = risk_config.tp2_atr_multiplier
         min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,
@@ -327,7 +328,7 @@ class PSARAnalyzer:
         return targets
     
     @staticmethod
-    def calculate_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14, min_periods: int = 10) -> float:
+    def calculate_atr(highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], period: int = 14, min_periods: int = 10) -> float:
         """Calculate ATR using True Range with minimum period requirement."""
         if len(closes) <= 1:
             return 0.0
@@ -351,7 +352,7 @@ class PSARAnalyzer:
         return float(np.mean(trs))
 
     @staticmethod
-    def calculate_adx(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
+    def calculate_adx(highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], period: int = 14) -> npt.NDArray[np.floating[Any]]:
         """Calculate ADX values."""
         length = len(closes)
         adx = np.zeros(length)
@@ -422,7 +423,9 @@ class MexcClient:
     
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
-        return f"{symbol.upper()}/USDT:USDT"
+        # Handle both FHE and FHE/USDT formats
+        sym = symbol.upper().replace("/USDT", "")
+        return f"{sym}/USDT:USDT"
     
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""

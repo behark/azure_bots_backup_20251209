@@ -540,7 +540,7 @@ class VolumeAnalyzer:
 
             # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(current_price - custom_sl, current_price * 0.01)
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
+            calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
             levels = calculator.calculate(
                 entry=current_price,
                 direction="LONG",
@@ -582,7 +582,7 @@ class VolumeAnalyzer:
 
             # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(custom_sl - current_price, current_price * 0.01)
-            calculator = TPSLCalculator(min_risk_reward=min_rr)
+            calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
             levels = calculator.calculate(
                 entry=current_price,
                 direction="SHORT",

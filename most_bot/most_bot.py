@@ -21,6 +21,7 @@ from types import FrameType
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -116,7 +117,7 @@ class MOSTAnalyzer:
         self.atr_multiplier = atr_multiplier
     
     @staticmethod
-    def calculate_ema(prices: np.ndarray, period: int) -> np.ndarray:
+    def calculate_ema(prices: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         """Calculate EMA."""
         ema = np.zeros(len(prices))
         if len(prices) < period:
@@ -127,7 +128,7 @@ class MOSTAnalyzer:
             ema[i] = (prices[i] - ema[i-1]) * multiplier + ema[i-1]
         return ema
     
-    def calculate_most(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def calculate_most(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]]) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
         """
         Calculate MOST indicator.
         Returns: (most_line, trend) where trend is 1 (bullish) or -1 (bearish)
@@ -174,7 +175,7 @@ class MOSTAnalyzer:
         
         return most, trend, ema
     
-    def detect_signal(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Optional[Tuple[str, float, str]]:
+    def detect_signal(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]]) -> Optional[Tuple[str, float, str]]:
         """
         Detect MOST crossover signals.
         Returns (direction, most_value) or None.
@@ -212,7 +213,7 @@ class MOSTAnalyzer:
         return None
     
     @staticmethod
-    def calculate_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    def calculate_atr(highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], period: int = 14) -> float:
         """Calculate ATR."""
         tr = np.zeros(len(closes))
         tr[0] = highs[0] - lows[0]
@@ -237,7 +238,9 @@ class MexcClient:
     
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
-        return f"{symbol.upper()}/USDT:USDT"
+        # Handle both FHE and FHE/USDT formats
+        sym = symbol.upper().replace("/USDT", "")
+        return f"{sym}/USDT:USDT"
     
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
@@ -682,7 +685,7 @@ class MOSTBot:
         tp2_mult = risk_config.tp2_atr_multiplier
         min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,

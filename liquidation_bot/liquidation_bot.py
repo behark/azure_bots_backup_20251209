@@ -132,7 +132,7 @@ class MexcOrderflowClient:
 
     @staticmethod
     def _symbol(symbol: str) -> str:
-        return f"{symbol}/USDT:USDT"
+        return f"{symbol.replace("/USDT", "")}/USDT:USDT"
 
     def ticker(self, symbol: str) -> Dict[str, Any]:
         if self.rate_limiter:
@@ -665,7 +665,7 @@ class LiquidationBot:
         tp2_mult = risk_config.tp2_atr_multiplier
         min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=price,
             direction=direction,

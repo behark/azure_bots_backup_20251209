@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -126,7 +127,7 @@ class MultiTimeframeAnalyzer:
         """Get higher timeframes for analysis."""
         return self.TIMEFRAME_MAP.get(base_tf, ["1h", "4h"])
     
-    def calculate_ema(self, closes: np.ndarray, period: int) -> np.ndarray:
+    def calculate_ema(self, closes: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         """Calculate EMA."""
         ema = np.zeros_like(closes)
         multiplier = 2 / (period + 1)
@@ -136,7 +137,7 @@ class MultiTimeframeAnalyzer:
         return ema
 
     @staticmethod
-    def calculate_sma(closes: np.ndarray, period: int) -> np.ndarray:
+    def calculate_sma(closes: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         sma = np.zeros_like(closes)
         for i in range(len(closes)):
             start = max(0, i - period + 1)
@@ -144,7 +145,7 @@ class MultiTimeframeAnalyzer:
         return sma
 
     @staticmethod
-    def calculate_rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
+    def calculate_rsi(closes: npt.NDArray[np.floating[Any]], period: int = 14) -> npt.NDArray[np.floating[Any]]:
         deltas = np.diff(closes)
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
@@ -159,7 +160,7 @@ class MultiTimeframeAnalyzer:
         rsi = 100 - (100 / (1 + rs))
         rsi[:period] = 50
         rsi[-1] = 50 if np.isnan(rsi[-1]) else rsi[-1]
-        return cast(np.ndarray, rsi)
+        return rsi
     
     def detect_trend(self, ohlcv: List[Any]) -> Tuple[str, float]:
         """
@@ -257,7 +258,7 @@ class MultiTimeframeAnalyzer:
         tp2_mult = risk_config.tp2_atr_multiplier
         min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,
@@ -320,7 +321,9 @@ class MexcClient:
     
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
-        return f"{symbol.upper()}/USDT:USDT"
+        # Handle both FHE and FHE/USDT formats
+        sym = symbol.upper().replace("/USDT", "")
+        return f"{sym}/USDT:USDT"
     
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""

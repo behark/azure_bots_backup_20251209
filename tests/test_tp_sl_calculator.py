@@ -76,10 +76,10 @@ class TestTPSLCalculator:
         """Test calculator initialization with default parameters."""
         calc = TPSLCalculator()
 
-        assert calc.min_risk_reward == 1.0  # Relaxed default for flexibility
+        assert calc.min_risk_reward == 0.8  # Relaxed default (TP2 R:R compensates)
         assert calc.max_sl_percent == 10.0  # Relaxed to allow wider stops
         assert calc.min_sl_percent == 0.05
-        assert calc.sl_buffer_percent == 0.75
+        assert calc.sl_buffer_percent == 0.4  # Reduced from 0.75% to restore R:R geometry
 
     def test_calculator_custom_parameters(self) -> None:
         """Test calculator initialization with custom parameters."""

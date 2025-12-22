@@ -25,6 +25,7 @@ from uuid import uuid4
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -125,7 +126,7 @@ class PivotVolumeProfile:
     def __init__(self, config: IndicatorConfig):
         self.config = config
 
-    def compute(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> Optional[Dict[str, float]]:
+    def compute(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], volumes: npt.NDArray[np.floating[Any]]) -> Optional[Dict[str, float]]:
         events = self._detect_pivots(highs, lows)
         if len(events) < 2:
             return None
@@ -197,7 +198,7 @@ class PivotVolumeProfile:
             "high_volume": high_volume,
         }
 
-    def _detect_pivots(self, highs: np.ndarray, lows: np.ndarray) -> List[Tuple[str, int, float]]:
+    def _detect_pivots(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]]) -> List[Tuple[str, int, float]]:
         length = self.config.pivot_length
         events: List[Tuple[str, int, float]] = []
         for idx in range(length, len(highs) - length):
@@ -320,7 +321,7 @@ class VolumeProfileBot:
         save_state(self.state)
 
     def fetch_ohlcv(self, symbol: str, timeframe: str) -> Sequence[Sequence[float]]:
-        market = f"{symbol}_USDT"
+        market = f"{symbol.replace("/USDT", "")}/USDT:USDT"
         candles = self.client.fetch_ohlcv(market, timeframe=timeframe, limit=500)
         return cast(Sequence[Sequence[float]], candles)
 
@@ -431,7 +432,7 @@ class VolumeProfileBot:
             return False
 
         # Use TPSLCalculator with STRUCTURE method (VAL/VAH as swing levels)
-        calculator = TPSLCalculator(min_risk_reward=1.5)
+        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
         calc_levels = calculator.calculate(
             entry=curr_close,
             direction=direction,

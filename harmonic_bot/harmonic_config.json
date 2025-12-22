@@ -1,6 +1,6 @@
 {
   "exchange_settings": {
-    "active_exchange": "binance",
+    "active_exchange": "binanceusdm",
     "check_exchange_for_duplicates": true,
     "check_timeframe_for_duplicates": true
   },

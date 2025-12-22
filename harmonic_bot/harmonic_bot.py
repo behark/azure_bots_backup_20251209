@@ -47,7 +47,6 @@ if str(BASE_DIR.parent) not in sys.path:
 from message_templates import format_signal_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
-from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
 
 # Optional imports (safe fallback)
@@ -249,7 +248,7 @@ class HarmonicPatternDetector:
                 pivots.append((int(local_idx), price, pivot_type))
         return pivots
 
-    def detect(self, ohlcv: List[List[Any]], symbol: str, timeframe: str, current_price: float, exchange: str = "mexc") -> Optional[HarmonicSignal]:
+    def detect(self, ohlcv: List[List[Any]], symbol: str, timeframe: str, current_price: float, exchange: str = "binanceusdm") -> Optional[HarmonicSignal]:
         # Validate OHLCV data
         if not ohlcv or not isinstance(ohlcv, list):
             logger.debug(f"Invalid OHLCV data for {symbol}: empty or not a list")
@@ -452,13 +451,19 @@ class HarmonicPatternDetector:
         return float(round(min(1.0, max(0.0, confidence)), 3))
 
     def _calculate_targets(self, c: float, d: float, direction: str, atr: float, symbol: str) -> Dict[str, float]:
-        # Get config values
+        # Get risk config from centralized trade_config
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("harmonic_bot", symbol)
+
+        # Harmonic-specific config (from local config)
         entry_buffer_mult = self.config.get("analysis", {}).get("entry_buffer_atr_multiplier", 0.05)
         sl_fib_mult = self.config.get("analysis", {}).get("sl_fib_range_multiplier", 0.5)
-        tp1_mult = self.config.get("analysis", {}).get("tp1_risk_multiplier", 2.0)
-        tp2_mult = self.config.get("analysis", {}).get("tp2_risk_multiplier", 3.0)
-        tp3_mult = self.config.get("analysis", {}).get("tp3_risk_multiplier", 4.5)
         prz_atr_mult = self.config.get("analysis", {}).get("prz_atr_multiplier", 0.5)
+
+        # Standard risk config from centralized config
+        tp1_mult = risk_config.tp1_atr_multiplier
+        tp2_mult = risk_config.tp2_atr_multiplier
+        tp3_mult = getattr(risk_config, 'tp3_atr_multiplier', 4.5)
 
         fib_range = abs(d - c)
         entry_buffer = atr * entry_buffer_mult
@@ -571,7 +576,7 @@ class SignalTracker:
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
 
-    def is_duplicate(self, symbol: str, pattern: str, d_ts: str, exchange: str = "mexc", timeframe: str = "1h") -> bool:
+    def is_duplicate(self, symbol: str, pattern: str, d_ts: str, exchange: str = "binanceusdm", timeframe: str = "1h") -> bool:
         """Check duplicate using D-Timestamp with exchange+timeframe scope (Fix 1.6)."""
         history = self.state.setdefault("signal_history", {})
         # Include exchange and timeframe in key to allow same pattern on different TFs/exchanges
@@ -651,7 +656,7 @@ class SignalTracker:
             # Fetch price with specific exception handling
             price = None
             try:
-                client = client_map.get(exchange) or client_map.get("mexc")
+                client = client_map.get(exchange) or client_map.get("binanceusdm")
                 if not client:
                     logger.warning(f"No client for exchange {exchange}, skipping {symbol}")
                     continue

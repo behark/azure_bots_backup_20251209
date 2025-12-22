@@ -107,6 +107,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -236,7 +237,7 @@ def get_default_config() -> Dict[str, Any]:
     """Return complete default configuration with all required fields."""
     return {
         "exchange_settings": {
-            "active_exchange": "mexc",
+            "active_exchange": "binanceusdm",
             "check_exchange_for_duplicates": True,
             "check_timeframe_for_duplicates": True,
         },
@@ -451,7 +452,7 @@ def load_watchlist() -> List[WatchItem]:
 
         # Get timeframe (support old 'period' field)
         timeframe_val = item.get("timeframe") or item.get("period", "5m")
-        exchange_val = item.get("exchange", "mexc")
+        exchange_val = item.get("exchange", "binanceusdm")
         market_type_val = item.get("market_type", "swap")
 
         normalized.append({
@@ -478,7 +479,7 @@ class MultiIndicatorAnalyzer:
 
     # Core calculation methods
     @staticmethod
-    def calculate_ema(prices: np.ndarray, period: int) -> np.ndarray:
+    def calculate_ema(prices: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         """Calculate EMA with proper initialization to avoid false crossover signals."""
         n = len(prices)
         ema = np.full(n, np.nan)  # Use NaN for invalid/uninitialized values
@@ -495,7 +496,7 @@ class MultiIndicatorAnalyzer:
         return ema
 
     @staticmethod
-    def _calculate_rolling_std(values: np.ndarray, period: int) -> np.ndarray:
+    def _calculate_rolling_std(values: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         """
         Calculate rolling standard deviation efficiently using cumulative sums.
 
@@ -537,7 +538,7 @@ class MultiIndicatorAnalyzer:
 
         return result
 
-    def calculate_rsi(self, closes: np.ndarray, period: Optional[int] = None) -> np.ndarray:
+    def calculate_rsi(self, closes: npt.NDArray[np.floating[Any]], period: Optional[int] = None) -> npt.NDArray[np.floating[Any]]:
         """Calculate RSI with proper bounds checking."""
         if period is None:
             period = self.config.get("rsi_period", 14)
@@ -567,7 +568,7 @@ class MultiIndicatorAnalyzer:
             rsi = 100 - (100 / (1 + rs))
         return rsi
 
-    def calculate_stoch_rsi(self, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def calculate_stoch_rsi(self, closes: npt.NDArray[np.floating[Any]]) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
         """Calculate Stochastic RSI (K, D)."""
         period = self.config.get("stoch_rsi_period", 14)
         smooth = self.config.get("stoch_rsi_smooth", 3)
@@ -581,7 +582,7 @@ class MultiIndicatorAnalyzer:
             denom = max(max_rsi - min_rsi, 1e-9)
             stoch[i] = (rsi[i] - min_rsi) / denom * 100
 
-        def smooth_values(values: np.ndarray, length: int = 3) -> np.ndarray:
+        def smooth_values(values: npt.NDArray[np.floating[Any]], length: int = 3) -> npt.NDArray[np.floating[Any]]:
             if len(values) < length:
                 return values
             kernel = np.ones(length) / length
@@ -592,7 +593,7 @@ class MultiIndicatorAnalyzer:
         d_line = smooth_values(k_line, smooth)
         return k_line, d_line
 
-    def calculate_macd(self, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def calculate_macd(self, closes: npt.NDArray[np.floating[Any]]) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
         """Calculate MACD."""
         fast_period = self.config.get("macd_fast", 12)
         slow_period = self.config.get("macd_slow", 26)
@@ -604,7 +605,7 @@ class MultiIndicatorAnalyzer:
         signal = self.calculate_ema(macd, signal_period)
         return macd, signal
 
-    def calculate_adx(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def calculate_adx(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]]) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
         """Calculate ADX and DI."""
         period = self.config.get("adx_period", 14)
 
@@ -636,10 +637,10 @@ class MultiIndicatorAnalyzer:
 
     def analyze_indicators(
         self,
-        highs: np.ndarray,
-        lows: np.ndarray,
-        closes: np.ndarray,
-        volumes: np.ndarray,
+        highs: npt.NDArray[np.floating[Any]],
+        lows: npt.NDArray[np.floating[Any]],
+        closes: npt.NDArray[np.floating[Any]],
+        volumes: npt.NDArray[np.floating[Any]],
     ) -> Dict[str, Dict[str, object]]:
         """Analyze all indicators and return signals."""
         results = {}
@@ -817,7 +818,7 @@ class MultiIndicatorAnalyzer:
 
         return results
 
-    def detect_market_regime(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Dict[str, Any]:
+    def detect_market_regime(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]]) -> Dict[str, Any]:
         """
         ISSUE #2 FIX: Detect market regime (trending vs ranging/choppy).
         
@@ -1021,7 +1022,7 @@ class MultiIndicatorAnalyzer:
         return direction, confidence, long_score, short_score
 
     @staticmethod
-    def calculate_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    def calculate_atr(highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], period: int = 14) -> float:
         """Calculate ATR."""
         tr = np.zeros(len(closes))
         tr[0] = highs[0] - lows[0]
@@ -1509,7 +1510,7 @@ class DIYBot:
 
         for item in raw_watchlist:
             symbol = item.get("symbol")
-            exchange = item.get("exchange", "mexc")
+            exchange = item.get("exchange", "binanceusdm")
             timeframe = item.get("timeframe", "5m")
 
             if not symbol:
@@ -1519,7 +1520,7 @@ class DIYBot:
 
             if exchange not in valid_exchanges:
                 logger.warning(f"Invalid exchange '{exchange}' for {symbol}, using mexc")
-                item["exchange"] = "mexc"
+                item["exchange"] = "binanceusdm"
 
             if timeframe not in valid_timeframes:
                 logger.warning(f"Invalid timeframe '{timeframe}' for {symbol}, using 5m")
@@ -1769,7 +1770,7 @@ class DIYBot:
 
             symbol = symbol_val
             timeframe = item.get("timeframe", "5m") if isinstance(item, dict) else "5m"
-            exchange = item.get("exchange", "mexc") if isinstance(item, dict) else "mexc"
+            exchange = item.get("exchange", "binanceusdm") if isinstance(item, dict) else "mexc"
             cooldown = self.config.get("signal", {}).get("cooldown_minutes", 5)
 
             # Check exchange backoff (from Volume Bot)
@@ -1962,14 +1963,18 @@ class DIYBot:
         entry = float(current_price)
 
         # Calculate TP/SL using centralized TPSLCalculator
+        # Get standard risk config from centralized trade_config
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("diy_bot", symbol)
+
+        # Bot-specific overrides (from local config)
         tp_sl_config = self.config.get("tp_sl", {})
-        sl_mult = tp_sl_config.get("atr_sl_multiplier", 1.5)
-        tp1_mult = tp_sl_config.get("atr_tp1_multiplier", 2.4)
-        tp2_mult = tp_sl_config.get("atr_tp2_multiplier", 3.6)
-        min_rr = tp_sl_config.get("min_risk_reward_tp1", 1.5)
+        sl_mult = tp_sl_config.get("atr_sl_multiplier", risk_config.sl_atr_multiplier)
+        tp1_mult = tp_sl_config.get("atr_tp1_multiplier", risk_config.tp1_atr_multiplier)
+        tp2_mult = tp_sl_config.get("atr_tp2_multiplier", risk_config.tp2_atr_multiplier)
         min_sl_pct = tp_sl_config.get("min_sl_percent", 0.05)
 
-        calculator = TPSLCalculator(min_risk_reward=min_rr, min_sl_percent=min_sl_pct)
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward, min_sl_percent=min_sl_pct)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,

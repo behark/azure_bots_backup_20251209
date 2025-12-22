@@ -39,7 +39,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -47,7 +47,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -55,7 +55,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -63,7 +63,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -71,7 +71,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -79,7 +79,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
@@ -87,7 +87,7 @@
     "period": "15m",
     "cooldown_minutes": 30,
     "timeframe": "15m",
-    "exchange": "binance",
+    "exchange": "binanceusdm",
     "market_type": "swap"
   }
 ]

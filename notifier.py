@@ -1,5 +1,5 @@
 import logging
-import requests  # type: ignore[import-untyped]
+import requests
 import json
 import secrets
 import string

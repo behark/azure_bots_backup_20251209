@@ -30,6 +30,7 @@ from types import FrameType
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+import numpy.typing as npt
 
 # Logging setup (must be before any logger use)
 logging.basicConfig(
@@ -107,7 +108,7 @@ class FibSignal:
     high_volume: bool
     
     created_at: str
-    exchange: str = "mexc"
+    exchange: str = "binanceusdm"
     
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -141,7 +142,7 @@ class FibSwingDetector:
         self.lookback = lookback
     
     @staticmethod
-    def calculate_ema(prices: np.ndarray, period: int) -> np.ndarray:
+    def calculate_ema(prices: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
         """Calculate Exponential Moving Average"""
         ema = np.zeros(len(prices))
         multiplier = 2 / (period + 1)
@@ -150,14 +151,14 @@ class FibSwingDetector:
             ema[i] = (prices[i] * multiplier) + (ema[i-1] * (1 - multiplier))
         return ema
     
-    def find_swing_high(self, highs: np.ndarray, index: int) -> bool:
+    def find_swing_high(self, highs: npt.NDArray[np.floating[Any]], index: int) -> bool:
         """Check if index is a swing high"""
         if index < self.lookback or index >= len(highs) - self.lookback:
             return False
         window = highs[index - self.lookback : index + self.lookback + 1]
         return bool(highs[index] == max(window))
     
-    def find_swing_low(self, lows: np.ndarray, index: int) -> bool:
+    def find_swing_low(self, lows: npt.NDArray[np.floating[Any]], index: int) -> bool:
         """Check if index is a swing low"""
         if index < self.lookback or index >= len(lows) - self.lookback:
             return False
@@ -165,7 +166,7 @@ class FibSwingDetector:
         return bool(lows[index] == min(window))
     
     def detect_swing_points(
-        self, highs: np.ndarray, lows: np.ndarray
+        self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]]
     ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
         """Detect all swing highs and lows"""
         swing_highs = []
@@ -181,7 +182,7 @@ class FibSwingDetector:
     
     @staticmethod
     def check_swing_confirmation(
-        lows: np.ndarray, 
+        lows: npt.NDArray[np.floating[Any]], 
         swing_low_idx: int, 
         swing_low_price: float, 
         confirmation_candles: int = 5
@@ -344,7 +345,7 @@ class FibSignalEvaluator:
         risk_config = config_mgr.get_effective_risk("fib_swing_bot", symbol)
         min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=min_rr)
+        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
         levels = calculator.calculate(
             entry=current_price,
             direction=direction,
@@ -360,9 +361,15 @@ class FibSignalEvaluator:
         stop_loss = levels.stop_loss
         tp1 = levels.take_profit_1
         tp2 = levels.take_profit_2
-        tp3 = levels.take_profit_3 or (
-            current_price + (levels.take_profit_2 - current_price) * (1 if direction == "LONG" else -1)
-        )
+        # TP3 fallback: extend TP2 distance further from entry
+        if levels.take_profit_3:
+            tp3 = levels.take_profit_3
+        else:
+            tp2_distance = abs(tp2 - current_price)
+            if direction == "LONG":
+                tp3 = tp2 + tp2_distance * 0.5  # Extend 50% beyond TP2
+            else:
+                tp3 = tp2 - tp2_distance * 0.5  # Extend 50% below TP2 for SHORT
         
         # Create signal
         signal_id = f"{symbol}-{timeframe}-{datetime.utcnow().isoformat()}"
@@ -560,7 +567,7 @@ class SignalTracker:
                 updated = True
                 continue
             try:
-                ticker = exchange.fetch_ticker(f"{symbol}/USDT:USDT")
+                ticker = exchange.fetch_ticker(f"{symbol.replace("/USDT", "")}/USDT:USDT")
                 current_price = ticker.get("last") if isinstance(ticker, dict) else None
             except Exception as exc:
                 logger.warning("Ticker fetch failed for %s: %s", symbol, exc)
@@ -589,12 +596,21 @@ class SignalTracker:
             
             # Check TP/SL hits with price tolerance for slippage
             PRICE_TOLERANCE = 0.005  # 0.5% tolerance
-            
-            # LONG positions: Allow slightly lower prices for TP, slightly higher for SL
-            hit_tp3 = current_price >= (tp3 * (1 - PRICE_TOLERANCE))
-            hit_tp2 = current_price >= (tp2 * (1 - PRICE_TOLERANCE)) and current_price < (tp3 * (1 - PRICE_TOLERANCE))
-            hit_tp1 = current_price >= (tp1 * (1 - PRICE_TOLERANCE)) and current_price < (tp2 * (1 - PRICE_TOLERANCE))
-            hit_sl = current_price <= (sl * (1 + PRICE_TOLERANCE))
+            direction = signal_data.get("direction", "LONG")
+
+            # Direction-aware TP/SL detection
+            if direction == "LONG":
+                # LONG: TP when price goes UP, SL when price goes DOWN
+                hit_tp3 = current_price >= (tp3 * (1 - PRICE_TOLERANCE))
+                hit_tp2 = current_price >= (tp2 * (1 - PRICE_TOLERANCE)) and not hit_tp3
+                hit_tp1 = current_price >= (tp1 * (1 - PRICE_TOLERANCE)) and not hit_tp2 and not hit_tp3
+                hit_sl = current_price <= (sl * (1 + PRICE_TOLERANCE))
+            else:
+                # SHORT: TP when price goes DOWN, SL when price goes UP
+                hit_tp3 = current_price <= (tp3 * (1 + PRICE_TOLERANCE))
+                hit_tp2 = current_price <= (tp2 * (1 + PRICE_TOLERANCE)) and not hit_tp3
+                hit_tp1 = current_price <= (tp1 * (1 + PRICE_TOLERANCE)) and not hit_tp2 and not hit_tp3
+                hit_sl = current_price >= (sl * (1 - PRICE_TOLERANCE))
             
             result = None
             if hit_tp3:
@@ -752,7 +768,7 @@ class FibSwingBot:
             tp2=signal.tp2,
             tp3=signal.tp3,
             pattern_name=f"{signal.quality} Fibonacci Entry",
-            exchange="MEXC",
+            exchange="binanceusdm",
             timeframe=signal.timeframe,
             current_price=signal.entry,
             performance_stats=perf_stats,
@@ -806,13 +822,13 @@ class FibSwingBot:
                             if self.rate_limiter_handler:
                                 ohlcv = self.rate_limiter_handler.execute(
                                     self.exchange.fetch_ohlcv,
-                                    f"{symbol}/USDT:USDT",
+                                    f"{symbol.replace("/USDT", "")}/USDT:USDT",
                                     timeframe=timeframe,
                                     limit=200
                                 )
                             else:
                                 ohlcv = self.exchange.fetch_ohlcv(
-                                    f"{symbol}/USDT:USDT", 
+                                    f"{symbol.replace("/USDT", "")}/USDT:USDT", 
                                     timeframe, 
                                     limit=200
                                 )

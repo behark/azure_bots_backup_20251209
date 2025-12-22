@@ -169,7 +169,7 @@ class ORBAnalyzer:
         self.tpsl_calc: Optional[Any] = None
         if TPSLCalculator is not None and self.use_tpsl_calculator:
             min_rr = config.get("risk", {}).get("min_risk_reward_ratio", 1.5)
-            self.tpsl_calc = TPSLCalculator(min_risk_reward=min_rr)
+            self.tpsl_calc = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
 
     def calculate_orb(self, ohlcv: List[List[float]], session_start_ts: int) -> Optional[ORBLevel]:
         """Calculate High/Low/Mid for the defined opening window."""
@@ -475,7 +475,9 @@ class ORBBot:
                     if not symbol: continue
 
                     client = self.clients.get(exchange)
-                    if not client: continue
+                    if not client:
+                        logger.debug(f"No client for {exchange}, skipping {symbol}")
+                        continue
 
                     try:
                         # Fetch OHLCV since session start (plus buffer)
@@ -529,9 +531,10 @@ class ORBBot:
                                 self._send_alert(signal)
                 
                 self.tracker.check_open_signals(self.clients, self.notifier)
-                
+
                 if self.health_monitor: self.health_monitor.record_cycle()
-                
+
+                logger.info("Cycle complete; sleeping 60s")
                 if run_once: break
                 time.sleep(60)
                 

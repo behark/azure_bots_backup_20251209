@@ -196,17 +196,21 @@ class FundingAnalyzer:
             "score": score
         }
 
-    def calculate_targets(self, entry: float, direction: str, atr: float) -> Optional[Dict[str, float]]:
-        """Calculate TP/SL using centralized TPSLCalculator."""
-        calculator = TPSLCalculator(min_risk_reward=1.8)
+    def calculate_targets(self, entry: float, direction: str, atr: float, symbol: str = "") -> Optional[Dict[str, float]]:
+        """Calculate TP/SL using centralized TPSLCalculator with config from trade_config."""
+        # Get risk settings from central config
+        config_mgr = get_config_manager()
+        risk_config = config_mgr.get_effective_risk("funding_bot", symbol)
+
         dir_normalized = "LONG" if direction == "BULLISH" else "SHORT"
+        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward)
         levels = calculator.calculate(
             entry=entry,
             direction=dir_normalized,
             atr=atr,
-            sl_multiplier=1.5,
-            tp1_multiplier=2.0,
-            tp2_multiplier=3.0,
+            sl_multiplier=risk_config.sl_atr_multiplier,
+            tp1_multiplier=risk_config.tp1_atr_multiplier,
+            tp2_multiplier=risk_config.tp2_atr_multiplier,
         )
         if not levels.is_valid:
             return None
@@ -464,7 +468,7 @@ class FundingBot:
 
                         # 3. Targets
                         atr = price * 0.02 # Simple proxy if calc fails
-                        targets = self.analyzer.calculate_targets(price, result['direction'], atr)
+                        targets = self.analyzer.calculate_targets(price, result['direction'], atr, symbol)
                         if targets is None:
                             continue
 

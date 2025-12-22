@@ -25,8 +25,9 @@ class RiskConfig:
     tp1_atr_multiplier: float = 2.0
     tp2_atr_multiplier: float = 3.0
     tp3_atr_multiplier: float = 4.5
-    # Minimum risk-reward ratio (if below this, skip signal)
-    min_risk_reward: float = 1.3
+    # Dual R:R validation for asymmetric trades
+    min_risk_reward: float = 0.8      # Minimum R:R for TP1 (relaxed)
+    min_risk_reward_tp2: float = 1.5  # Minimum R:R for TP2 (asymmetric filter)
     # Maximum risk per trade (% of account)
     max_risk_percent: float = 2.0
     # Use trailing stop
@@ -34,7 +35,7 @@ class RiskConfig:
     trailing_stop_activation: float = 1.0  # ATR units of profit before trailing activates
     trailing_stop_distance: float = 0.5    # ATR units for trailing distance
     # Buffer for stop loss (% added to SL to avoid wicks)
-    sl_buffer_percent: float = 0.75
+    sl_buffer_percent: float = 0.4  # Reduced from 0.75% to restore R:R geometry
 
 
 @dataclass
@@ -49,6 +50,7 @@ class SymbolConfig:
     tp1_atr_multiplier: Optional[float] = None
     tp2_atr_multiplier: Optional[float] = None
     min_risk_reward: Optional[float] = None
+    min_risk_reward_tp2: Optional[float] = None
     # Symbol-specific settings
     min_volume_24h: float = 0  # Minimum 24h volume in USDT
     max_spread_percent: float = 1.0  # Maximum spread to trade
@@ -169,7 +171,9 @@ class TradeConfigManager:
             effective.tp2_atr_multiplier = sym_config.tp2_atr_multiplier
         if sym_config.min_risk_reward is not None:
             effective.min_risk_reward = sym_config.min_risk_reward
-        
+        if sym_config.min_risk_reward_tp2 is not None:
+            effective.min_risk_reward_tp2 = sym_config.min_risk_reward_tp2
+
         return effective
 
 
@@ -198,12 +202,13 @@ def create_default_config() -> None:
             "tp1_atr_multiplier": 2.0,
             "tp2_atr_multiplier": 3.5,
             "tp3_atr_multiplier": 5.0,
-            "min_risk_reward": 1.5,
+            "min_risk_reward": 0.8,       # TP1 R:R threshold (relaxed)
+            "min_risk_reward_tp2": 1.5,   # TP2 R:R threshold (asymmetric filter)
             "max_risk_percent": 2.0,
             "use_trailing_stop": False,
             "trailing_stop_activation": 1.0,
             "trailing_stop_distance": 0.5,
-            "sl_buffer_percent": 0.5
+            "sl_buffer_percent": 0.4      # Reduced from 0.75%
         },
         "bots": {
             "funding_bot": {

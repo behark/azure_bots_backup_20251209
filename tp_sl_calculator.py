@@ -86,21 +86,29 @@ class TPSLCalculator:
     
     def __init__(
         self,
-        min_risk_reward: float = 1.0,  # Relaxed for testing - accept any positive R:R
+        min_risk_reward: float = 0.8,  # Minimum R:R for TP1 (relaxed - TP2 validation compensates)
+        min_risk_reward_tp2: float = 1.5,  # Minimum R:R for TP2 (asymmetric trade filter)
         max_sl_percent: float = 10.0,  # Relaxed for testing - allow wider stops
         min_sl_percent: float = 0.05,
-        sl_buffer_percent: float = 0.75,
+        sl_buffer_percent: float = 0.4,  # Reduced from 0.75% to restore R:R geometry
     ):
         """
         Initialize calculator with validation parameters.
-        
+
         Args:
-            min_risk_reward: Minimum R:R ratio to accept signal
+            min_risk_reward: Minimum R:R ratio for TP1 to accept signal
+            min_risk_reward_tp2: Minimum R:R ratio for TP2 (asymmetric trade filter)
             max_sl_percent: Maximum stop loss as % of entry (filter extreme SL)
             min_sl_percent: Minimum stop loss as % of entry (avoid too tight SL)
             sl_buffer_percent: Extra buffer added to SL to avoid wicks
+
+        Validation Logic:
+            Signal is accepted if: TP1 R:R >= 0.8 AND TP2 R:R >= 1.5
+            This allows asymmetric trades where early targets are modest
+            but extension targets justify the risk.
         """
         self.min_risk_reward = min_risk_reward
+        self.min_risk_reward_tp2 = min_risk_reward_tp2
         self.max_sl_percent = max_sl_percent
         self.min_sl_percent = min_sl_percent
         self.sl_buffer_percent = sl_buffer_percent
@@ -499,10 +507,12 @@ class TPSLCalculator:
                - Too tight: SL% < min_sl_percent (default 0.2%)
                  → Normal volatility would trigger stop
 
-            2. **Risk:Reward Ratio**:
-               - RR1 < min_risk_reward (default 1.8)
-                 → Insufficient reward to justify risk
-               - Expects at least 1.8R on first target
+            2. **Risk:Reward Ratio** (Dual validation for asymmetric trades):
+               - TP1 R:R < min_risk_reward (default 0.8)
+                 → First target too close to justify entry
+               - TP2 R:R < min_risk_reward_tp2 (default 1.5)
+                 → Extension target insufficient for asymmetric payoff
+               - Both conditions must pass for valid signal
 
             3. **Direction Consistency**:
                - LONG: SL must be < Entry, TP1 must be > Entry
@@ -571,7 +581,12 @@ class TPSLCalculator:
             rejection_reason = f"SL too tight ({sl_percent:.2f}% < {self.min_sl_percent}%)"
             is_valid = False
         elif rr1 < self.min_risk_reward:
-            rejection_reason = f"R:R too low ({rr1:.2f} < {self.min_risk_reward})"
+            # TP1 R:R check (relaxed threshold)
+            rejection_reason = f"TP1 R:R too low ({rr1:.2f} < {self.min_risk_reward})"
+            is_valid = False
+        elif rr2 < self.min_risk_reward_tp2:
+            # TP2 R:R check (asymmetric trade filter - ensures extension potential)
+            rejection_reason = f"TP2 R:R too low ({rr2:.2f} < {self.min_risk_reward_tp2})"
             is_valid = False
         
         # Validate direction consistency

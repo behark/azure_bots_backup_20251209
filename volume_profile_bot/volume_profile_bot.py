@@ -89,6 +89,9 @@ PRICE_TOLERANCE = 0.005
 # Minimum divisor to prevent division by zero
 MIN_DIVISOR = 1e-10
 
+# Result notifications disabled - history included in next signal instead
+ENABLE_RESULT_NOTIFICATIONS = False
+
 # =========================================================
 # UTILS
 # =========================================================
@@ -634,20 +637,29 @@ class VolumeProfileBot:
 
             if res:
                 entry = payload.get("entry", 0)
-                # Map LONG/SHORT to BULLISH/BEARISH for message template
-                msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
-                msg = format_result_message(
-                    symbol=symbol,
-                    direction=msg_direction,
-                    result=res,
-                    entry=entry,
-                    exit_price=price,
-                    stop_loss=sl,
-                    tp1=tp1,
-                    tp2=tp2,
-                    signal_id=sig_id,
-                )
-                self.notifier.send_message(msg)
+
+                # Record stats before closing
+                if self.stats:
+                    self.stats.record_close(sig_id, price, res)
+
+                # Only send result notification if enabled
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+                    msg = format_result_message(
+                        symbol=symbol,
+                        direction=msg_direction,
+                        result=res,
+                        entry=entry,
+                        exit_price=price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=sig_id,
+                    )
+                    self.notifier.send_message(msg)
+                else:
+                    logger.info("Result notification skipped (disabled): %s %s", sig_id, res)
+
                 self.state.close_signal(sig_id, price, res)
 
     def send_signal(self, symbol: str, tf: str, signal: Dict[str, Any]) -> None:
@@ -656,6 +668,18 @@ class VolumeProfileBot:
 
         # Create signal ID
         sig_id = f"{symbol}-{tf}-{utcnow().isoformat()}"
+
+        # Get performance stats for this symbol
+        perf_line = ""
+        if self.stats:
+            counts = self.stats.symbol_tp_sl_counts(symbol)
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+            if total > 0:
+                win_rate = (tp1_count + tp2_count) / total * 100
+                perf_line = f"\n📈 <b>History:</b> {win_rate:.0f}% Win ({tp1_count + tp2_count}/{total}) | TP:{tp1_count + tp2_count} SL:{sl_count}"
 
         msg = (
             f"{emoji} <b>SMART CONFLUENCE: {signal['type']}</b>\n"
@@ -667,7 +691,8 @@ class VolumeProfileBot:
             f"TP2 (2R): {signal['tp2']:.4f}\n"
             f"SL: {signal['sl']:.4f}\n\n"
             f"📊 <b>Profile:</b>\n"
-            f"VAH: {signal['vp']['vah']:.4f} | VAL: {signal['vp']['val']:.4f}\n"
+            f"VAH: {signal['vp']['vah']:.4f} | VAL: {signal['vp']['val']:.4f}"
+            f"{perf_line}\n\n"
             f"⏱️ {utcnow().strftime('%H:%M UTC')}"
         )
         self.notifier.send_message(msg)
@@ -688,6 +713,15 @@ class VolumeProfileBot:
             "poc": signal['vp']['poc'],
         }
         self.state.add_signal(sig_id, signal_data, symbol, tf)
+
+        # Record to stats
+        if self.stats:
+            direction_upper = "BULLISH" if signal['type'] == "LONG" else "BEARISH"
+            self.stats.record_open(
+                sig_id, symbol, direction_upper, signal['entry'],
+                utcnow().isoformat(),
+                extra={"timeframe": tf, "score": signal['score']}
+            )
 
 # =========================================================
 # MAIN

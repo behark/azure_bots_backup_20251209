@@ -717,6 +717,23 @@ class ORBBot:
         # Build extra info with ORB-specific data
         extra_info = f"ORB Range: {signal.range_pct:.2f}% (${signal.orb_low:.4f} - ${signal.orb_high:.4f})"
 
+        # Get performance stats for this symbol
+        perf_stats = None
+        if self.tracker and self.tracker.stats:
+            counts = self.tracker.stats.symbol_tp_sl_counts(signal.symbol)
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+            if total > 0:
+                perf_stats = {
+                    "total": total,
+                    "wins": tp1_count + tp2_count,
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                }
+
         msg = format_signal_message(
             bot_name="ORB",
             symbol=signal.symbol,
@@ -728,6 +745,7 @@ class ORBBot:
             exchange=signal.exchange.upper(),
             timeframe=signal.timeframe,
             extra_info=extra_info,
+            performance_stats=perf_stats,
         )
         if self.notifier:
             self.notifier.send_message(msg)

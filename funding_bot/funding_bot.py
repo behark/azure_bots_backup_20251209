@@ -568,11 +568,14 @@ class FundingBot:
                 # Wrap with rate limiting if available
                 if RateLimitedExchange and self.rate_handler:
                     self.clients[name] = RateLimitedExchange(raw_client, self.rate_handler)
-                    logger.debug(f"Exchange {name} wrapped with RateLimitedExchange")
+                    logger.info("Exchange %s initialized with rate limiting", name)
                 else:
                     self.clients[name] = raw_client
+                    logger.info("Exchange %s initialized", name)
             except Exception as e:
                 logger.error(f"Failed to init {name}: {e}")
+
+        logger.info("Initialized %d exchange clients: %s", len(self.clients), list(self.clients.keys()))
 
     def _load_watchlist(self) -> List[Dict[str, Any]]:
         if not WATCHLIST_FILE.exists(): return []
@@ -736,6 +739,23 @@ class FundingBot:
                 self.health_monitor.send_shutdown_message()
 
     def _send_alert(self, signal: FundingSignal) -> None:
+        # Get performance stats for this symbol
+        perf_stats = None
+        if self.tracker and self.tracker.stats:
+            counts = self.tracker.stats.symbol_tp_sl_counts(signal.symbol)
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+            if total > 0:
+                perf_stats = {
+                    "total": total,
+                    "wins": tp1_count + tp2_count,
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                }
+
         msg = format_signal_message(
             bot_name="FUNDING",
             symbol=signal.symbol,
@@ -746,6 +766,7 @@ class FundingBot:
             funding_rate=signal.funding_rate,
             reasons=signal.reasons,
             timeframe=signal.timeframe,
+            performance_stats=perf_stats,
         )
         if self.notifier: self.notifier.send_message(msg)
 

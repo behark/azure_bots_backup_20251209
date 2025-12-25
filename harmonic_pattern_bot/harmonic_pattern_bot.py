@@ -45,6 +45,9 @@ shutdown_requested = False
 # This accounts for spread, slippage, and minor price variations
 PRICE_TOLERANCE = 0.005
 
+# Result notifications disabled - history included in next signal instead
+ENABLE_RESULT_NOTIFICATIONS = False
+
 
 def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
     """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
@@ -60,6 +63,7 @@ ROOT_DIR = BASE_DIR.parent
 LOG_DIR = ROOT_DIR / "logs"
 WATCHLIST_FILE = BASE_DIR / "harmonic_watchlist.json"
 STATE_FILE = BASE_DIR / "harmonic_state.json"
+STATS_FILE = LOG_DIR / "harmonic_pattern_stats.json"
 CONFIG_FILE = BASE_DIR / "harmonic_config.json"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -79,6 +83,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from message_templates import format_result_message
 from notifier import TelegramNotifier
+from signal_stats import SignalStats
 
 # =========================================================
 # CONFIGURATION
@@ -618,6 +623,7 @@ class HarmonicPatternBot:
             str(LOG_DIR / "harmonic_signals.json"),
         )
         self.state = StateManager()
+        self.stats = SignalStats("Harmonic Pattern Bot", STATS_FILE)
 
     def _load_watchlist(self) -> List[Dict]:
         if WATCHLIST_FILE.exists():
@@ -786,20 +792,28 @@ class HarmonicPatternBot:
 
             if result:
                 entry = payload.get("entry", 0)
-                # Map bullish/bearish to BULLISH/BEARISH for message template
-                msg_direction = "BULLISH" if direction == "bullish" else "BEARISH"
-                msg = format_result_message(
-                    symbol=symbol,
-                    direction=msg_direction,
-                    result=result,
-                    entry=entry,
-                    exit_price=price,
-                    stop_loss=sl,
-                    tp1=tp1,
-                    tp2=tp2,
-                    signal_id=sig_id,
-                )
-                self.notifier.send_message(msg)
+                # Record stats before closing
+                if self.stats:
+                    self.stats.record_close(sig_id, price, result)
+
+                # Only send result notification if enabled
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    msg_direction = "BULLISH" if direction == "bullish" else "BEARISH"
+                    msg = format_result_message(
+                        symbol=symbol,
+                        direction=msg_direction,
+                        result=result,
+                        entry=entry,
+                        exit_price=price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=sig_id,
+                    )
+                    self.notifier.send_message(msg)
+                else:
+                    logger.info("Result notification skipped (disabled): %s %s", sig_id, result)
+
                 self.state.close_signal(sig_id, price, result)
 
     def send_signal(self, symbol: str, timeframe: str, signal: Dict[str, Any]) -> None:
@@ -817,6 +831,18 @@ class HarmonicPatternBot:
 
         sig_id = f"{symbol}-{timeframe}-{datetime.now(timezone.utc).isoformat()}"
 
+        # Get performance stats for this symbol
+        perf_line = ""
+        if self.stats:
+            counts = self.stats.symbol_tp_sl_counts(symbol)
+            tp1_count = counts.get("TP1", 0)
+            tp2_count = counts.get("TP2", 0)
+            sl_count = counts.get("SL", 0)
+            total = tp1_count + tp2_count + sl_count
+            if total > 0:
+                win_rate = (tp1_count + tp2_count) / total * 100
+                perf_line = f"\n📊 <b>History:</b> {win_rate:.0f}% Win ({tp1_count + tp2_count}/{total}) | TP:{tp1_count + tp2_count} SL:{sl_count}"
+
         msg = (
             f"{direction_emoji} <b>HARMONIC: {pattern_name}</b>\n"
             f"{symbol} [{timeframe}]\n\n"
@@ -832,7 +858,8 @@ class HarmonicPatternBot:
             f"XAB: {signal['ratios'].get('xab', 0):.3f}\n"
             f"ABC: {signal['ratios'].get('abc', 0):.3f}\n"
             f"BCD: {signal['ratios'].get('bcd', 0):.3f}\n"
-            f"XAD: {signal['ratios'].get('xad', 0):.3f}\n\n"
+            f"XAD: {signal['ratios'].get('xad', 0):.3f}"
+            f"{perf_line}\n\n"
             f"⏱️ {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
         )
 
@@ -852,6 +879,15 @@ class HarmonicPatternBot:
             "ratios": signal["ratios"],
         }
         self.state.add_signal(sig_id, signal_data, symbol)
+
+        # Record to stats
+        if self.stats:
+            direction_upper = "BULLISH" if signal["direction"] == "bullish" else "BEARISH"
+            self.stats.record_open(
+                sig_id, symbol, direction_upper, entry,
+                datetime.now(timezone.utc).isoformat(),
+                extra={"pattern": signal["pattern"], "timeframe": timeframe}
+            )
 
     def run_cycle(self):
         """Run one analysis cycle."""

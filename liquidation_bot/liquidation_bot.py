@@ -413,7 +413,20 @@ class LiquidationState:
             if signal_id in signals:
                 signals.pop(signal_id)
 
-        if removed_count > 0:
+        # Prune closed_signals to prevent unbounded growth (keep max 100)
+        max_closed_signals = 100
+        if len(closed) > max_closed_signals:
+            # Sort by closed_at and keep the most recent
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True,
+            )
+            # Keep only the most recent entries
+            self.data["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            logger.info("Pruned closed_signals from %d to %d entries", len(closed), max_closed_signals)
+
+        if removed_count > 0 or len(closed) > max_closed_signals:
             self.save()
 
         return removed_count
@@ -480,6 +493,8 @@ class LiquidationBot:
                     logger.info("Cycle complete; sleeping %ds", self.interval)
                     # Sleep in 1-second chunks to respond quickly to shutdown signals
                     for _ in range(self.interval):
+                        if shutdown_requested:
+                            break
                         time.sleep(1)
                 except Exception as exc:
                     logger.error(f"Error in cycle: {exc}")
@@ -497,6 +512,8 @@ class LiquidationBot:
 
     def _run_cycle(self) -> None:
         for item in self.watchlist:
+            if shutdown_requested:
+                break
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
             if not isinstance(symbol_val, str):
                 continue

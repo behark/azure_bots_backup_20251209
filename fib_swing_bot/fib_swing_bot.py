@@ -56,10 +56,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_parent_path = str(Path(__file__).parent.parent)
+if _parent_path not in sys.path:
+    sys.path.insert(0, _parent_path)
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, CalculationMethod
@@ -622,7 +624,20 @@ class SignalTracker:
             if signal_id in signals:
                 signals.pop(signal_id)
 
-        if removed_count > 0:
+        # Prune closed_signals to prevent unbounded growth (keep max 100)
+        max_closed_signals = 100
+        if len(closed) > max_closed_signals:
+            # Sort by closed_at and keep the most recent
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True,
+            )
+            # Keep only the most recent entries
+            self.state["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            logger.info("Pruned closed_signals from %d to %d entries", len(closed), max_closed_signals)
+
+        if removed_count > 0 or len(closed) > max_closed_signals:
             self._save_state()
 
         return removed_count
@@ -759,19 +774,18 @@ class SignalTracker:
                 if summary_message:
                     message = summary_message
                 else:
-                    timeframe_val = signal_data.get("timeframe", "")
-                    # BUG FIX: Use direction-aware PnL calculation
-                    if entry:
-                        if direction == "LONG":
-                            pnl = ((current_price - entry) / entry) * 100
-                        else:
-                            pnl = ((entry - current_price) / entry) * 100
-                    else:
-                        pnl = 0.0
-                    message = (
-                        f"🎯 {normalize_symbol(symbol)} {timeframe_val} {result} hit!\n"
-                        f"Entry {entry:.6f} | Exit {current_price:.6f}\n"
-                        f"P&L: {pnl:+.2f}%"
+                    # Convert LONG/SHORT to BULLISH/BEARISH for message template
+                    msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+                    message = format_result_message(
+                        symbol=symbol,
+                        direction=msg_direction,
+                        result=result,
+                        entry=entry,
+                        exit_price=current_price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=signal_id,
                     )
 
                 if notifier and ENABLE_RESULT_NOTIFICATIONS:

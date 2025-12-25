@@ -77,6 +77,7 @@ logger = logging.getLogger("harmonic_pattern_bot")
 load_dotenv(ROOT_DIR / ".env")
 sys.path.insert(0, str(ROOT_DIR))
 
+from message_templates import format_result_message
 from notifier import TelegramNotifier
 
 # =========================================================
@@ -785,13 +786,19 @@ class HarmonicPatternBot:
 
             if result:
                 entry = payload.get("entry", 0)
-                if direction == "bullish":
-                    pnl = (price - entry) / entry * 100
-                else:
-                    pnl = (entry - price) / entry * 100
-
-                emoji = "🎯" if "TP" in result else "🛑"
-                msg = f"{emoji} {symbol} Harmonic {result}!\n💰 PnL: {pnl:.2f}%"
+                # Map bullish/bearish to BULLISH/BEARISH for message template
+                msg_direction = "BULLISH" if direction == "bullish" else "BEARISH"
+                msg = format_result_message(
+                    symbol=symbol,
+                    direction=msg_direction,
+                    result=result,
+                    entry=entry,
+                    exit_price=price,
+                    stop_loss=sl,
+                    tp1=tp1,
+                    tp2=tp2,
+                    signal_id=sig_id,
+                )
                 self.notifier.send_message(msg)
                 self.state.close_signal(sig_id, price, result)
 

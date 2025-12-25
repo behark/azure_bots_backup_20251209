@@ -42,6 +42,9 @@ EXCHANGE_NAME = "Binance Futures"
 # Result notification toggle - set to False to disable separate TP/SL hit alerts
 ENABLE_RESULT_NOTIFICATIONS = False
 
+# Price tolerance for TP/SL hit detection (0.5% tolerance for slippage)
+PRICE_TOLERANCE = 0.005
+
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -62,10 +65,11 @@ try:
 except ImportError:
     pass
 
-sys.path.append(str(BASE_DIR.parent))
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
@@ -313,6 +317,7 @@ class MOSTSignal:
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
+    timeframe: str = "5m"
     current_price: Optional[float] = None
 
 
@@ -449,7 +454,20 @@ class BotState:
             if signal_id in signals:
                 signals.pop(signal_id)
 
-        if removed_count > 0:
+        # Prune closed_signals to prevent unbounded growth (keep max 100)
+        max_closed_signals = 100
+        if len(closed) > max_closed_signals:
+            # Sort by closed_at and keep the most recent
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True,
+            )
+            # Keep only the most recent entries
+            self.data["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            logger.info("Pruned closed_signals from %d to %d entries", len(closed), max_closed_signals)
+
+        if removed_count > 0 or len(closed) > max_closed_signals:
             self.save()
 
         return removed_count
@@ -561,6 +579,8 @@ class MOSTBot:
                     logger.info("Cycle complete; sleeping %ds", self.interval)
                     # Sleep in 1-second chunks to respond quickly to shutdown signals
                     for _ in range(self.interval):
+                        if shutdown_requested:
+                            break
                         time.sleep(1)
                 except Exception as exc:
                     logger.error("Error in cycle: %s", exc)
@@ -577,6 +597,8 @@ class MOSTBot:
 
     def _run_cycle(self) -> None:
         for item in self.watchlist:
+            if shutdown_requested:
+                break
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
             if not isinstance(symbol_val, str):
                 continue
@@ -674,6 +696,19 @@ class MOSTBot:
         if len(ohlcv) < 50:
             return None
 
+        # Validate OHLCV data for NaN/inf values
+        ohlcv_arr = np.array(ohlcv)
+        if np.any(np.isnan(ohlcv_arr[:, 1:5])) or np.any(np.isinf(ohlcv_arr[:, 1:5])):
+            logger.warning("Invalid OHLCV data (NaN/inf) for %s, skipping", symbol)
+            return None
+        # Filter out candles with zero/negative prices or invalid high < low
+        valid_mask = (ohlcv_arr[:, 2] >= ohlcv_arr[:, 3]) & (ohlcv_arr[:, 3] > 0)
+        if not np.all(valid_mask):
+            logger.debug("Filtering %d invalid candles for %s", np.sum(~valid_mask), symbol)
+            ohlcv = [c for c, v in zip(ohlcv, valid_mask) if v]
+            if len(ohlcv) < 50:
+                return None
+
         highs = np.array([x[2] for x in ohlcv])
         lows = np.array([x[3] for x in ohlcv])
         closes = np.array([x[4] for x in ohlcv])
@@ -753,6 +788,7 @@ class MOSTBot:
             stop_loss=sl,
             take_profit_1=tp1,
             take_profit_2=tp2,
+            timeframe=timeframe,
             current_price=current_price,
         )
 
@@ -792,7 +828,7 @@ class MOSTBot:
             indicator_value=signal.most_value,
             indicator_name="MOST",
             exchange=EXCHANGE_NAME,
-            timeframe="15m",
+            timeframe=signal.timeframe,
             current_price=signal.current_price,
             performance_stats=perf_stats,
             extra_info="MOST acts as trailing stop - adjust as it moves",
@@ -821,9 +857,6 @@ class MOSTBot:
         signals = self.state.iter_signals()
         if not signals:
             return
-
-        # Price tolerance for partial fills/slippage (0.5%)
-        PRICE_TOLERANCE = 0.005
 
         for signal_id, payload in list(signals.items()):
             if not isinstance(payload, dict):
@@ -891,9 +924,9 @@ class MOSTBot:
                 # For BEARISH/SHORT: TP is below entry, SL is above entry
                 # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
                 # Allow slightly LOWER prices for SL (price doesn't rise quite as far)
-                hit_tp2 = price <= (tp2 * (1 - PRICE_TOLERANCE))
-                hit_tp1 = price <= (tp1 * (1 - PRICE_TOLERANCE)) and price > (tp2 * (1 - PRICE_TOLERANCE))
-                hit_sl = price >= (sl * (1 + PRICE_TOLERANCE))
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
 
             # Priority: TP2 > TP1 > SL
             if hit_tp2:
@@ -922,10 +955,16 @@ class MOSTBot:
                     if summary_message:
                         self._dispatch(summary_message)
                     else:
-                        message = (
-                            f"🎯 {normalize_symbol(symbol)} MOST {direction} {result} hit!\n"
-                            f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
-                            f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
+                        message = format_result_message(
+                            symbol=symbol,
+                            direction=direction,
+                            result=result,
+                            entry=entry,
+                            exit_price=price,
+                            stop_loss=sl,
+                            tp1=tp1,
+                            tp2=tp2,
+                            signal_id=signal_id,
                         )
                         self._dispatch(message)
                 else:

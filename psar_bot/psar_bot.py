@@ -46,6 +46,9 @@ ENABLE_RESULT_NOTIFICATIONS = False  # Disable TP/SL hit messages
 # This accounts for spread, slippage, and minor price variations
 PRICE_TOLERANCE = 0.005
 
+# Minimum divisor to prevent division by zero
+MIN_DIVISOR = 1e-10
+
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -69,7 +72,7 @@ except ImportError:
 sys.path.append(str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
@@ -345,7 +348,7 @@ class PSARAnalyzer:
         risk = abs(targets["entry"] - targets["stop_loss"])
         reward1 = abs(targets["take_profit_1"] - targets["entry"])
 
-        if risk > 0:
+        if risk >= MIN_DIVISOR:
             rr_ratio = reward1 / risk
             if rr_ratio < min_rr:
                 logger.debug("Risk/reward too low: 1:%.2f (minimum 1:%.1f)", rr_ratio, min_rr)
@@ -405,8 +408,7 @@ class PSARAnalyzer:
         plus_di = np.zeros(length)
         minus_di = np.zeros(length)
         dx_values = np.zeros(length)
-        # Use tolerance for division by zero checks
-        MIN_DIVISOR = 1e-10
+        # Use tolerance for division by zero checks (MIN_DIVISOR is module-level constant)
         atr[period] = np.mean(tr[1:period+1])
         plus_dm[period] = np.mean(plus_dm_raw[1:period+1])
         minus_dm[period] = np.mean(minus_dm_raw[1:period+1])
@@ -1240,10 +1242,16 @@ class PSARBot:
                     if summary_message:
                         self._dispatch(summary_message)
                     else:
-                        message = (
-                            f"🎯 {normalize_symbol(symbol)} PSAR {direction} {result} hit!\n"
-                            f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
-                            f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
+                        message = format_result_message(
+                            symbol=symbol,
+                            direction=direction,
+                            result=result,
+                            entry=entry,
+                            exit_price=price,
+                            stop_loss=sl,
+                            tp1=tp1,
+                            tp2=tp2,
+                            signal_id=signal_id,
                         )
                         self._dispatch(message)
                 else:

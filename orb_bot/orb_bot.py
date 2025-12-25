@@ -443,7 +443,8 @@ class SignalTracker:
         for sig_id, payload in signals.items():
             if payload.get("symbol") == symbol:
                 old_dir = payload.get("direction")
-                if old_dir != new_direction:
+                # Only check reversal if old_dir exists and differs from new direction
+                if old_dir and old_dir != new_direction:
                     msg = f"⚠️ ORB FAKEOUT REVERSAL: {symbol}\nOpen: {old_dir} | New: {new_direction}\nLikely a Fakeout!"
                     if notifier: notifier.send_message(msg)
 

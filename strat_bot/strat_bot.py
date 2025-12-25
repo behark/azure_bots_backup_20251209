@@ -50,10 +50,11 @@ try:
 except ImportError:
     pass
 
-sys.path.append(str(BASE_DIR.parent))
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
@@ -64,6 +65,15 @@ from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+# Result notification toggle - set to False to disable separate TP/SL hit alerts
+ENABLE_RESULT_NOTIFICATIONS = False
+
+# Price tolerance for TP/SL detection (0.1% = 0.001)
+# This accounts for spread, slippage, and minor price variations
+PRICE_TOLERANCE = 0.001
+
+
 class WatchItem(TypedDict, total=False):
     symbol: str
     period: str
@@ -261,9 +271,17 @@ class MexcClient:
 
     @staticmethod
     def _swap_symbol(symbol: str) -> str:
+        """Convert symbol to Binance Futures swap format (SYMBOL/USDT:USDT)."""
         # Handle both FHE and FHE/USDT formats
-        sym = symbol.upper().replace("/USDT", "")
+        sym = symbol.upper().replace("/USDT:USDT", "").replace("/USDT", "").replace(":USDT", "")
         return f"{sym}/USDT:USDT"
+
+    @staticmethod
+    def _clean_symbol(symbol: str) -> str:
+        """Clean symbol to base/USDT format for display and stats."""
+        # Handle: FHE, FHE/USDT, FHE/USDT:USDT -> FHE/USDT
+        base = symbol.upper().replace("/USDT:USDT", "").replace("/USDT", "").replace(":USDT", "")
+        return f"{base}/USDT"
 
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> List[Any]:
         """Fetch OHLCV data."""
@@ -301,6 +319,7 @@ class STRATSignal:
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
+    timeframe: str = "15m"
     current_price: Optional[float] = None
 
 
@@ -352,7 +371,19 @@ class BotState:
             return self._empty_state()
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2))
+        """Save state with atomic write to prevent corruption."""
+        temp_file = self.path.with_suffix('.tmp')
+        try:
+            temp_file.write_text(json.dumps(self.data, indent=2))
+            temp_file.replace(self.path)
+        except Exception as e:
+            logger.error("Failed to save state: %s", e)
+            # Clean up temp file on error
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception:
+                pass  # Ignore cleanup errors
 
     def can_alert(self, symbol: str, cooldown_minutes: int) -> bool:
         """Check if enough time has passed since last alert for this symbol."""
@@ -422,7 +453,20 @@ class BotState:
             if signal_id in signals:
                 signals.pop(signal_id)
 
-        if removed_count > 0:
+        # Prune closed_signals to prevent unbounded growth (keep max 100)
+        max_closed_signals = 100
+        if len(closed) > max_closed_signals:
+            # Sort by closed_at and keep the most recent
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True,
+            )
+            # Keep only the most recent entries
+            self.data["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            logger.info("Pruned closed_signals from %d to %d entries", len(closed), max_closed_signals)
+
+        if removed_count > 0 or len(closed) > max_closed_signals:
             self.save()
 
         return removed_count
@@ -457,6 +501,13 @@ class STRATBot:
     ATR_TP1_MULTIPLIER = 2.5  # ATR multiplier for TP1
     ATR_TP2_MULTIPLIER = 4.0  # ATR multiplier for TP2
     MIN_RR_RATIO = 1.8  # Minimum risk/reward ratio
+
+    @staticmethod
+    def _clean_symbol(symbol: str) -> str:
+        """Clean symbol to base/USDT format for display and stats."""
+        # Handle: FHE, FHE/USDT, FHE/USDT:USDT -> FHE/USDT
+        base = symbol.upper().replace("/USDT:USDT", "").replace("/USDT", "").replace(":USDT", "")
+        return f"{base}/USDT"
 
     def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
@@ -639,6 +690,8 @@ class STRATBot:
 
     def _run_cycle(self) -> None:
         for item in self.watchlist:
+            if self.shutdown_requested:
+                break
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
             if not isinstance(symbol_val, str):
                 continue
@@ -707,11 +760,9 @@ class STRATBot:
             self.state.add_signal(signal_id, trade_data)
 
             if self.stats:
-                # Clean symbol format - avoid double /USDT
-                clean_symbol = symbol.replace("/USDT", "") + "/USDT"
                 self.stats.record_open(
                     signal_id=signal_id,
-                    symbol=clean_symbol,
+                    symbol=self._clean_symbol(symbol),
                     direction=signal.direction,
                     entry=signal.entry,
                     created_at=signal.timestamp,
@@ -738,11 +789,31 @@ class STRATBot:
             logger.debug("Insufficient OHLCV data for %s: %d bars (need 20+)", symbol, len(ohlcv))
             return None
 
-        opens = np.array([x[1] for x in ohlcv])
-        highs = np.array([x[2] for x in ohlcv])
-        lows = np.array([x[3] for x in ohlcv])
-        closes = np.array([x[4] for x in ohlcv])
+        opens = np.array([x[1] for x in ohlcv], dtype=np.float64)
+        highs = np.array([x[2] for x in ohlcv], dtype=np.float64)
+        lows = np.array([x[3] for x in ohlcv], dtype=np.float64)
+        closes = np.array([x[4] for x in ohlcv], dtype=np.float64)
         if len(highs) < 3:
+            return None
+
+        # Validate OHLCV values are not NaN/inf and are positive
+        if np.any(np.isnan(opens)) or np.any(np.isnan(highs)) or \
+           np.any(np.isnan(lows)) or np.any(np.isnan(closes)):
+            logger.warning("%s: OHLCV contains NaN values, skipping", symbol)
+            return None
+
+        if np.any(np.isinf(opens)) or np.any(np.isinf(highs)) or \
+           np.any(np.isinf(lows)) or np.any(np.isinf(closes)):
+            logger.warning("%s: OHLCV contains infinite values, skipping", symbol)
+            return None
+
+        if np.any(closes <= 0) or np.any(highs <= 0) or np.any(lows <= 0):
+            logger.warning("%s: OHLCV contains zero or negative prices, skipping", symbol)
+            return None
+
+        # Validate OHLCV logic: high >= low
+        if np.any(highs < lows):
+            logger.warning("%s: OHLCV has high < low, skipping", symbol)
             return None
         # Get current price first for early filtering
         try:
@@ -895,6 +966,7 @@ class STRATBot:
             stop_loss=stop_loss,
             take_profit_1=tp1,
             take_profit_2=tp2,
+            timeframe=timeframe,
             current_price=current_price,
         )
 
@@ -902,8 +974,7 @@ class STRATBot:
         """Format Telegram message for signal using centralized template."""
         # Get performance stats
         perf_stats = None
-        # Clean symbol format - avoid double /USDT
-        clean_symbol = signal.symbol.replace("/USDT", "") + "/USDT"
+        clean_symbol = self._clean_symbol(signal.symbol)
         if self.stats is not None:
             symbol_key = clean_symbol
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
@@ -934,7 +1005,7 @@ class STRATBot:
             tp2=signal.take_profit_2,
             pattern_name=signal.pattern_name,
             exchange="binanceusdm",
-            timeframe="15m",
+            timeframe=signal.timeframe,
             current_price=signal.current_price,
             performance_stats=perf_stats,
             extra_info=extra_info,
@@ -1022,16 +1093,23 @@ class STRATBot:
                     self.stats.discard(signal_id)
                 continue
 
-            # Check TP/SL hits based on direction
+            # Check TP/SL hits based on direction with price tolerance
+            # Tolerance makes it slightly easier to hit TPs (accounts for spread/slippage)
             # Priority order: TP2 > TP1 > SL (maximize profit if multiple levels hit)
             if direction == "BULLISH":
-                hit_tp2 = price >= tp2
-                hit_tp1 = price >= tp1 and not hit_tp2  # Only TP1 if TP2 not hit
-                hit_sl = price <= sl
+                # BULLISH: TPs are ABOVE entry, SL is BELOW entry
+                # For TPs: price >= tp * (1 - tolerance) makes it slightly easier to hit
+                # For SL: price <= sl * (1 + tolerance) makes it slightly easier to hit
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and not hit_tp2
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:  # BEARISH
-                hit_tp2 = price <= tp2
-                hit_tp1 = price <= tp1 and not hit_tp2  # Only TP1 if TP2 not hit
-                hit_sl = price >= sl
+                # BEARISH: TPs are BELOW entry, SL is ABOVE entry
+                # For TPs: price <= tp * (1 + tolerance) makes it slightly easier to hit
+                # For SL: price >= sl * (1 - tolerance) makes it slightly easier to hit
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and not hit_tp2
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
 
             result = None
             # Check in priority order: TP2 (best) > TP1 > SL (worst)
@@ -1055,18 +1133,24 @@ class STRATBot:
                     else:
                         self.stats.discard(signal_id)
 
-                if summary_message:
-                    self._dispatch(summary_message)
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    if summary_message:
+                        self._dispatch(summary_message)
+                    else:
+                        message = format_result_message(
+                            symbol=symbol,
+                            direction=direction,
+                            result=result,
+                            entry=entry,
+                            exit_price=price,
+                            stop_loss=sl,
+                            tp1=tp1,
+                            tp2=tp2,
+                            signal_id=signal_id,
+                        )
+                        self._dispatch(message)
                 else:
-                    pattern = payload_obj.get("pattern", "STRAT")
-                    # Clean symbol format - avoid double /USDT
-                    clean_sym = symbol.replace("/USDT", "") + "/USDT"
-                    message = (
-                        f"🎯 {clean_sym} {pattern} {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
-                        f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
-                    )
-                    self._dispatch(message)
+                    logger.info("Result notification skipped (disabled): %s %s", signal_id, result)
 
                 self.state.remove_signal(signal_id)
 

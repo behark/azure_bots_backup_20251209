@@ -63,7 +63,7 @@ import volume_profile as vp  # noqa: E402  pylint: disable=wrong-import-position
 
 # Safe imports with independent error handling
 from safe_import import safe_import
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 
 
 # Required imports (fail fast if missing)
@@ -1179,9 +1179,19 @@ class SignalTracker:
 
                 # Send notification if not duplicate
                 if should_notify and notifier:
-                    message = self._build_result_message(symbol_val, direction, result, entry, current_price,
-                                                        sl, tp1, tp2, payload.get('timeframe', ''),
-                                                        exchange_val, signal_id)
+                    # Map LONG/SHORT to BULLISH/BEARISH for message template
+                    msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+                    message = format_result_message(
+                        symbol=symbol_val,
+                        direction=msg_direction,
+                        result=result,
+                        entry=entry,
+                        exit_price=current_price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=signal_id,
+                    )
                     notifier.send_message(message)
                     self._mark_result_notified(symbol_val, signal_id)
                     logger.info("📤 Result notification sent for %s", signal_id)

@@ -62,7 +62,7 @@ if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
@@ -423,7 +423,17 @@ class SignalTracker:
                 # Check if result notifications are enabled (cooldown only affects notification)
                 enable_result_notifs = self.config.get("telegram", {}).get("enable_result_notifications", True)
                 if enable_result_notifs and notifier and not in_cooldown:
-                    msg = f"🎯 {display_symbol} FUNDING {res} HIT!\n💰 PnL: {pnl:.2f}%"
+                    msg = format_result_message(
+                        symbol=display_symbol,
+                        direction=direction,
+                        result=res,
+                        entry=entry,
+                        exit_price=price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=sig_id,
+                    )
                     notifier.send_message(msg)
                     last_notifs[display_symbol] = datetime.now(timezone.utc).isoformat()
                 elif in_cooldown:
@@ -590,6 +600,7 @@ class FundingBot:
         try:
             while not shutdown_requested:
                 try:
+                    logger.info("Starting cycle - processing %d watchlist items", len(self.watchlist))
                     for item in self.watchlist:
                         # Check shutdown during watchlist scan
                         if shutdown_requested:
@@ -704,6 +715,7 @@ class FundingBot:
                     if run_once or shutdown_requested:
                         break
 
+                    logger.info("Cycle complete; sleeping 60s")
                     # Responsive sleep that checks for shutdown
                     for _ in range(60):
                         if shutdown_requested:

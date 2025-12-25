@@ -19,10 +19,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
+import signal
+from types import FrameType
+
 import ccxt
 import numpy as np
 import numpy.typing as npt
 from dotenv import load_dotenv
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    global shutdown_requested
+    shutdown_requested = True
+    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
 
 # =========================================================
 # PATHS / LOGGING
@@ -49,11 +62,13 @@ logger = logging.getLogger("volume_profile_bot")
 
 load_dotenv(ROOT_DIR / ".env")
 load_dotenv(BASE_DIR / ".env")
-sys.path.insert(0, str(ROOT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # =========================================================
 # REQUIRED MODULES
 # =========================================================
+from message_templates import format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 
@@ -67,6 +82,12 @@ BLACKLISTED_SYMBOLS = {"WET/USDT", "ID/USDT", "BAS/USDT", "AVNT/USDT", "FHE/USDT
 MIN_SCORE = 4  # Require 4 confluence factors (was 3)
 MAX_STOP_LOSS_PCT = 3.0  # Cap stop loss at 3% to prevent large losses
 MIN_RISK_REWARD = 1.2  # Minimum risk:reward ratio
+
+# Price tolerance for TP/SL hit detection (0.5% tolerance for slippage)
+PRICE_TOLERANCE = 0.005
+
+# Minimum divisor to prevent division by zero
+MIN_DIVISOR = 1e-10
 
 # =========================================================
 # UTILS
@@ -96,7 +117,7 @@ def calculate_rsi(closes: np.ndarray, period: int = 14) -> float:
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
-    if avg_loss == 0:
+    if avg_loss < MIN_DIVISOR:
         return 100.0
     rs = avg_gain / avg_loss
     return float(100 - (100 / (1 + rs)))
@@ -128,11 +149,11 @@ def detect_candlestick_pattern(opens: List[float], highs: List[float], lows: Lis
 
 def calculate_volume_profile(highs: List[float], lows: List[float], volumes: List[float], num_rows: int = 24) -> Dict[str, Any]:
     if not highs: return {}
-    
+
     highest = max(highs)
     lowest = min(lows)
     price_range = highest - lowest
-    if price_range == 0: return {}
+    if price_range < MIN_DIVISOR: return {}
     
     row_height = price_range / num_rows
     volume_profile = [0.0] * num_rows
@@ -218,6 +239,12 @@ class StateManager:
                 temp_file.replace(STATE_FILE)
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
+                # Clean up temp file on error
+                if temp_file.exists():
+                    try:
+                        temp_file.unlink()
+                    except OSError:
+                        pass
 
     def should_alert(self, symbol: str, timeframe: str, cooldown_mins: int = 30) -> bool:
         """Check cooldown to prevent duplicate alerts."""
@@ -275,6 +302,65 @@ class StateManager:
     def get_open_signals(self) -> Dict[str, Any]:
         return self.state.get("open_signals", {})
 
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and prune closed_signals."""
+        signals = self.state.setdefault("open_signals", {})
+        closed = self.state.setdefault("closed_signals", {})
+
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove = []
+
+        for signal_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                signal_ids_to_remove.append(signal_id)
+                continue
+
+            created_at_str = payload.get("created_at")
+            if not isinstance(created_at_str, str):
+                signal_ids_to_remove.append(signal_id)
+                continue
+
+            try:
+                created_time = datetime.fromisoformat(created_at_str)
+                if created_time.tzinfo is None:
+                    created_time = created_time.replace(tzinfo=timezone.utc)
+                else:
+                    created_time = created_time.astimezone(timezone.utc)
+
+                age = current_time - created_time
+
+                if age >= timedelta(hours=max_age_hours):
+                    # Move to closed signals with timeout status
+                    closed[signal_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(signal_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", signal_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(signal_id)
+
+        for signal_id in signal_ids_to_remove:
+            if signal_id in signals:
+                signals.pop(signal_id)
+
+        # Prune closed_signals to prevent unbounded growth (keep max 100)
+        max_closed_signals = 100
+        if len(closed) > max_closed_signals:
+            # Sort by closed_at and keep the most recent
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True,
+            )
+            # Keep only the most recent entries
+            self.state["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            logger.info("Pruned closed_signals from %d to %d entries", len(closed), max_closed_signals)
+
+        if removed_count > 0 or len(closed) > max_closed_signals:
+            self._save_state()
+
+        return removed_count
+
 
 # =========================================================
 # BOT CLASS
@@ -300,6 +386,19 @@ class VolumeProfileBot:
         except Exception as e:
             logger.error(f"Error fetching {symbol}: {e}")
             return None
+
+        # Validate OHLCV data for NaN/inf values
+        ohlcv_arr = np.array(ohlcv)
+        if np.any(np.isnan(ohlcv_arr[:, 1:5])) or np.any(np.isinf(ohlcv_arr[:, 1:5])):
+            logger.warning(f"Invalid OHLCV data (NaN/inf) for {symbol}, skipping")
+            return None
+        # Filter out candles with zero/negative prices or invalid high < low
+        valid_mask = (ohlcv_arr[:, 2] >= ohlcv_arr[:, 3]) & (ohlcv_arr[:, 3] > 0)
+        if not np.all(valid_mask):
+            logger.debug(f"Filtering {np.sum(~valid_mask)} invalid candles for {symbol}")
+            ohlcv = [c for c, v in zip(ohlcv, valid_mask) if v]
+            if len(ohlcv) < 50:
+                return None
 
         # Parse data
         opens = [x[1] for x in ohlcv]
@@ -439,7 +538,7 @@ class VolumeProfileBot:
 
         if signal:
             # IMPROVEMENT: R:R filter - skip trades with poor risk:reward
-            if risk > 0 and reward < risk * MIN_RISK_REWARD:
+            if risk >= MIN_DIVISOR and reward < risk * MIN_RISK_REWARD:
                 logger.debug(f"{symbol} | Skipped: R:R {reward/risk:.2f} < {MIN_RISK_REWARD}")
                 return None
 
@@ -459,8 +558,15 @@ class VolumeProfileBot:
         # First check open signals for TP/SL
         self.check_open_signals()
 
+        # Cleanup stale signals every cycle
+        stale_count = self.state.cleanup_stale_signals(max_age_hours=24)
+        if stale_count > 0:
+            logger.info("Cleaned up %d stale signals", stale_count)
+
         # Then scan for new signals
         for w in self.watchlist:
+            if shutdown_requested:
+                break
             symbol = w["symbol"]
             tf = w.get("period", "1m")  # Default to 1m
 
@@ -500,30 +606,47 @@ class VolumeProfileBot:
             tp1, tp2 = payload.get("tp1"), payload.get("tp2")
             sl = payload.get("sl")
 
+            # Check TP/SL with tolerance for slippage
             res = None
             if direction == "LONG":
-                if price >= tp2:
+                # With tolerance for slippage (allow slightly lower prices for TPs)
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
+                if hit_tp2:
                     res = "TP2"
-                elif price >= tp1:
+                elif hit_tp1:
                     res = "TP1"
-                elif price <= sl:
+                elif hit_sl:
                     res = "SL"
             else:  # SHORT
-                if price <= tp2:
+                # For SHORT: TPs are below entry, SL is above entry
+                # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
+                if hit_tp2:
                     res = "TP2"
-                elif price <= tp1:
+                elif hit_tp1:
                     res = "TP1"
-                elif price >= sl:
+                elif hit_sl:
                     res = "SL"
 
             if res:
                 entry = payload.get("entry", 0)
-                if direction == "LONG":
-                    pnl = (price - entry) / entry * 100
-                else:
-                    pnl = (entry - price) / entry * 100
-
-                msg = f"🎯 {normalize_symbol(symbol)} VP {res} HIT!\n💰 PnL: {pnl:.2f}%"
+                # Map LONG/SHORT to BULLISH/BEARISH for message template
+                msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+                msg = format_result_message(
+                    symbol=symbol,
+                    direction=msg_direction,
+                    result=res,
+                    entry=entry,
+                    exit_price=price,
+                    stop_loss=sl,
+                    tp1=tp1,
+                    tp2=tp2,
+                    signal_id=sig_id,
+                )
                 self.notifier.send_message(msg)
                 self.state.close_signal(sig_id, price, res)
 
@@ -570,17 +693,33 @@ class VolumeProfileBot:
 # MAIN
 # =========================================================
 if __name__ == "__main__":
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     bot = VolumeProfileBot()
     logger.info("Smart Confluence Bot Started")
-    
-    while True:
+
+    while not shutdown_requested:
         try:
             bot.run_cycle()
+
+            if shutdown_requested:
+                break
+
             logger.info("Cycle complete; sleeping 180s (3m)")
-            time.sleep(180)
+            # Sleep in 1-second chunks to respond quickly to shutdown signals
+            for _ in range(180):
+                if shutdown_requested:
+                    break
+                time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Bot stopped by user")
             break
         except Exception as e:
             logger.error(f"Error in main loop: {e}", exc_info=True)
+            if shutdown_requested:
+                break
             time.sleep(10)
+
+    logger.info("Volume Profile Bot shutdown complete")

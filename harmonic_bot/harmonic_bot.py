@@ -65,7 +65,7 @@ if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from trade_config import get_config_manager
@@ -839,35 +839,24 @@ class SignalTracker:
             if res:
                 # Check if result notifications are enabled
                 enable_result_notifs = self.config.get("telegram", {}).get("enable_result_notifications", True)
+                result_cooldown = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
                 if not enable_result_notifs:
                     should_notify = False
                 else:
                     # Check result notification cooldown (from Volume Bot)
-                    result_cooldown = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
                     should_notify = self._should_notify_result(symbol, result_cooldown)
 
-                # Notify with HTML escaping
-                pnl = (price - entry)/entry * 100 if direction == "BULLISH" else (entry - price)/entry * 100
-                safe_symbol = html.escape(symbol)
-                safe_pattern = html.escape(payload.get('pattern_name', ''))
-                emoji = "🎯" if res in ["TP1", "TP2", "TP3"] else "🛑"
-
-                # Show partial TP status
-                tp_status = ""
-                if not close_signal and res.startswith("TP"):
-                    remaining_tps = []
-                    if not tp_hits.get("tp2"): remaining_tps.append("TP2")
-                    if tp3 and not tp_hits.get("tp3"): remaining_tps.append("TP3")
-                    if remaining_tps:
-                        tp_status = f"\n📊 <b>Remaining:</b> {', '.join(remaining_tps)}"
-
                 if should_notify:
-                    msg = (
-                        f"{emoji} <b>{safe_symbol} {safe_pattern}</b>\n\n"
-                        f"<b>Result:</b> {res} HIT!{' (PARTIAL)' if not close_signal else ''}\n"
-                        f"💰 <b>Entry:</b> <code>{entry:.6f}</code>\n"
-                        f"💵 <b>{'Exit' if close_signal else 'Current'}:</b> <code>{price:.6f}</code>\n"
-                        f"📈 <b>PnL:</b> {pnl:+.2f}%{tp_status}"
+                    msg = format_result_message(
+                        symbol=symbol,
+                        direction=direction,
+                        result=res,
+                        entry=entry,
+                        exit_price=price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=sig_id,
                     )
                     if notifier:
                         notifier.send_message(msg, parse_mode="HTML")

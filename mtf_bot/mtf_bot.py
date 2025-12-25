@@ -49,10 +49,11 @@ try:
 except ImportError:
     pass
 
-sys.path.append(str(BASE_DIR.parent))
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
-from message_templates import format_signal_message
+from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, calculate_atr
@@ -63,6 +64,9 @@ from safe_import import safe_import
 from file_lock import safe_read_json, safe_write_json
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+# Result notification toggle - set to False to disable separate TP/SL hit alerts
+ENABLE_RESULT_NOTIFICATIONS = False
 
 # Bot configuration (previously hardcoded values)
 class BotConfigDict(TypedDict):
@@ -175,6 +179,8 @@ class MultiTimeframeAnalyzer:
 
     @staticmethod
     def calculate_rsi(closes: npt.NDArray[np.floating[Any]], period: int = 14) -> npt.NDArray[np.floating[Any]]:
+        # Use tolerance for division by zero checks
+        MIN_DIVISOR = 1e-10
         deltas = np.diff(closes)
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
@@ -185,10 +191,12 @@ class MultiTimeframeAnalyzer:
         for i in range(period + 1, len(closes)):
             avg_gain[i] = ((avg_gain[i-1] * (period - 1)) + gains[i-1]) / period
             avg_loss[i] = ((avg_loss[i-1] * (period - 1)) + losses[i-1]) / period
-        rs = np.divide(avg_gain, avg_loss, out=np.zeros_like(avg_gain), where=avg_loss != 0)
+        # Use tolerance instead of exact equality for division check
+        rs = np.divide(avg_gain, avg_loss, out=np.zeros_like(avg_gain), where=avg_loss > MIN_DIVISOR)
         rsi = 100 - (100 / (1 + rs))
         rsi[:period] = 50
-        rsi[-1] = 50 if np.isnan(rsi[-1]) else rsi[-1]
+        # Handle NaN values
+        rsi = np.where(np.isnan(rsi), 50, rsi)
         return rsi
 
     def detect_trend(self, ohlcv: List[Any]) -> Tuple[str, float]:
@@ -199,12 +207,17 @@ class MultiTimeframeAnalyzer:
         if len(ohlcv) < 50:
             return ("NEUTRAL", 0.0)
 
-        closes = np.array([x[4] for x in ohlcv])
+        closes = np.array([x[4] for x in ohlcv], dtype=np.float64)
         rsi = self.calculate_rsi(closes, period=14)
         sma50 = self.calculate_sma(closes, 50)
         current_close = closes[-1]
         current_rsi = rsi[-1]
         current_sma = sma50[-1]
+
+        # Protect against division by zero or near-zero SMA
+        MIN_DIVISOR = 1e-10
+        if abs(current_sma) < MIN_DIVISOR:
+            return ("NEUTRAL", 0.0)
 
         if current_close > current_sma and current_rsi > 50:
             direction = "BULLISH"
@@ -230,7 +243,8 @@ class MultiTimeframeAnalyzer:
         # Detect trend on base timeframe
         base_trend, base_conf = self.detect_trend(base_ohlcv)
 
-        if base_trend == "NEUTRAL" or base_conf < 0.3:
+        if base_trend == "NEUTRAL" or base_conf < 0.05:  # loosened from 0.15
+            logger.info("MTF: Base trend=%s, conf=%.2f - SKIPPED (neutral or low conf)", base_trend, base_conf)
             return None
 
         higher_trends = {}
@@ -245,6 +259,7 @@ class MultiTimeframeAnalyzer:
                 score += weight
 
         if score < 2:
+            logger.info("MTF: Score=%d (need 2+), trends=%s - SKIPPED (low confluence)", score, higher_trends)
             return None
         total_possible = 2 + max(0, len(higher_trends) - 1)
         confluence_pct = (score / total_possible) * 100
@@ -286,7 +301,7 @@ class MultiTimeframeAnalyzer:
         tp1_mult = risk_config.tp1_atr_multiplier
         tp2_mult = risk_config.tp2_atr_multiplier
 
-        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward, min_risk_reward_tp2=1.5)
+        calculator = TPSLCalculator(min_risk_reward=max(1.2, risk_config.min_risk_reward * 0.8), min_risk_reward_tp2=1.3)  # loosened
         levels = calculator.calculate(
             entry=entry,
             direction=direction,
@@ -297,7 +312,7 @@ class MultiTimeframeAnalyzer:
         )
 
         if not levels.is_valid:
-            logger.debug("%s: TPSLCalculator rejected - %s", symbol, levels.rejection_reason)
+            logger.info("%s: TPSLCalculator REJECTED - %s", symbol, levels.rejection_reason)
             return None
 
         logger.debug("%s %s MTF signal | Entry: %.6f | SL: %.6f | TP1: %.6f | TP2: %.6f",
@@ -492,7 +507,22 @@ class BotState:
             if signal_id in signals:
                 signals.pop(signal_id)
 
-        if removed_count > 0:
+        # Also cleanup old closed signals to prevent unbounded growth
+        closed_pruned = 0
+        max_closed_signals = 100  # Keep only the most recent 100 closed signals
+        if isinstance(closed, dict) and len(closed) > max_closed_signals:
+            # Sort by closed_at and keep only the most recent
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True
+            )
+            # Keep only the most recent max_closed_signals
+            self.data["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            closed_pruned = len(closed) - max_closed_signals
+            logger.info("Pruned %d old closed signals (keeping %d)", closed_pruned, max_closed_signals)
+
+        if removed_count > 0 or closed_pruned > 0:
             self.save()
 
         return removed_count
@@ -585,6 +615,9 @@ class MTFBot:
                     logger.info("Cycle complete; sleeping %ds", self.interval)
                     # Sleep in 1-second chunks to respond quickly to shutdown signals
                     for _ in range(self.interval):
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during sleep")
+                            break
                         time.sleep(1)
                 except Exception as exc:
                     logger.error("Error in cycle: %s", exc)
@@ -601,6 +634,11 @@ class MTFBot:
 
     def _run_cycle(self) -> None:
         for item in self.watchlist:
+            # Check for shutdown during watchlist scan
+            if shutdown_requested:
+                logger.info("Shutdown requested during watchlist scan")
+                break
+
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
             if not isinstance(symbol_val, str):
                 continue
@@ -630,8 +668,8 @@ class MTFBot:
                 logger.debug("%s: No confluence detected", symbol)
                 continue
 
-            # Only alert on STRONG signals
-            if signal.strength != "STRONG":
+            # Alert on STRONG or MODERATE signals (relaxed from STRONG-only)
+            if signal.strength not in ("STRONG", "MODERATE"):
                 logger.debug("%s: Confluence not strong enough (%s)", symbol, signal.strength)
                 continue
 
@@ -696,6 +734,19 @@ class MTFBot:
         if len(base_ohlcv) < 50:
             return None
 
+        # Validate OHLCV data for NaN/inf values
+        try:
+            closes_check = np.array([x[4] for x in base_ohlcv], dtype=np.float64)
+            if np.any(np.isnan(closes_check)) or np.any(np.isinf(closes_check)):
+                logger.warning("%s: OHLCV contains NaN/inf values, skipping", symbol)
+                return None
+            if np.any(closes_check <= 0):
+                logger.warning("%s: OHLCV contains zero or negative prices, skipping", symbol)
+                return None
+        except (IndexError, TypeError, ValueError) as e:
+            logger.warning("%s: Failed to validate OHLCV: %s", symbol, e)
+            return None
+
         # Fetch higher timeframes
         higher_tfs = self.analyzer.get_higher_timeframes(timeframe)
         higher_ohlcvs: Dict[str, List[Any]] = {}
@@ -710,9 +761,11 @@ class MTFBot:
             return None
 
         # Analyze confluence
+        logger.info("MTF: Analyzing %s on %s timeframe...", symbol, timeframe)
         result = self.analyzer.analyze_confluence(base_ohlcv, higher_ohlcvs)
 
         if result is None or not isinstance(result, dict):
+            logger.info("MTF: %s - No confluence result", symbol)
             return None
         direction_val = result.get("direction")
         strength_val = result.get("strength")
@@ -751,8 +804,10 @@ class MTFBot:
         )
 
         if targets is None:
+            logger.info("MTF: %s - Targets calculation failed", symbol)
             return None
 
+        logger.info("MTF: %s SIGNAL GENERATED - %s %.1f%% confluence", symbol, direction_val, confluence_pct)
         return MTFSignal(
             symbol=symbol,
             direction=direction_val,
@@ -884,9 +939,9 @@ class MTFBot:
                 # For BEARISH/SHORT: TP is below entry, SL is above entry
                 # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
                 # Allow slightly LOWER prices for SL (price doesn't rise quite as far)
-                hit_tp2 = price <= (tp2 * (1 - price_tol))
-                hit_tp1 = price <= (tp1 * (1 - price_tol)) and price > (tp2 * (1 - price_tol))
-                hit_sl = price >= (sl * (1 + price_tol))
+                hit_tp2 = price <= (tp2 * (1 + price_tol))
+                hit_tp1 = price <= (tp1 * (1 + price_tol)) and price > (tp2 * (1 + price_tol))
+                hit_sl = price >= (sl * (1 - price_tol))
 
             result = None
             if hit_tp2:
@@ -911,15 +966,24 @@ class MTFBot:
                     else:
                         self.stats.discard(signal_id)
 
-                if summary_message:
-                    self._dispatch(summary_message)
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    if summary_message:
+                        self._dispatch(summary_message)
+                    else:
+                        message = format_result_message(
+                            symbol=symbol,
+                            direction=direction,
+                            result=result,
+                            entry=entry,
+                            exit_price=price,
+                            stop_loss=sl,
+                            tp1=tp1,
+                            tp2=tp2,
+                            signal_id=signal_id,
+                        )
+                        self._dispatch(message)
                 else:
-                    message = (
-                        f"🎯 {normalize_symbol(symbol)} MTF {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Last <code>{price:.6f}</code>\n"
-                        f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
-                    )
-                    self._dispatch(message)
+                    logger.info("Result notification skipped (disabled): %s %s", signal_id, result)
 
                 self.state.remove_signal(signal_id)
 

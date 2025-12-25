@@ -13,19 +13,37 @@ Features:
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import FrameType
 from typing import Any, Dict, List, Optional, cast
 
 import ccxt  # type: ignore[import-untyped]
+import numpy as np
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    global shutdown_requested
+    shutdown_requested = True
+    logger.info("Received %s, shutting down gracefully...", signal.Signals(signum).name)
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -88,6 +106,12 @@ def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> log
     return logging.getLogger("orb_bot")
 
 logger = logging.getLogger("orb_bot")
+
+# Result notification toggle - set to False to disable separate TP/SL hit alerts
+ENABLE_RESULT_NOTIFICATIONS = False
+
+# Price tolerance for TP/SL hit detection (0.5% tolerance for slippage)
+PRICE_TOLERANCE = 0.005
 
 EXCHANGE_CONFIG = {
     "binanceusdm": {
@@ -175,6 +199,13 @@ class ORBAnalyzer:
 
         relevant_candles = [c for c in ohlcv if session_start_ts <= c[0] < window_end_ts]
 
+        # Debug logging
+        if ohlcv:
+            first_ts = ohlcv[0][0] if ohlcv else 0
+            last_ts = ohlcv[-1][0] if ohlcv else 0
+            logger.info("ORB DEBUG: window=%d-%d, data=%d-%d, found=%d candles",
+                       session_start_ts, window_end_ts, first_ts, last_ts, len(relevant_candles))
+
         if not relevant_candles:
             return None
 
@@ -254,7 +285,7 @@ class SignalTracker:
         self.state = self._load_state()
 
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alerts": {}, "open_signals": {}, "last_result_notifications": {}}
+        return {"last_alerts": {}, "open_signals": {}, "closed_signals": {}, "last_result_notifications": {}}
 
     def _load_state(self) -> Dict[str, Any]:
         if STATE_FILE.exists():
@@ -270,12 +301,20 @@ class SignalTracker:
             temp_file = STATE_FILE.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.state, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(STATE_FILE)
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
+                # Clean up temp file on error
+                if temp_file.exists():
+                    try:
+                        temp_file.unlink()
+                    except OSError:
+                        pass
 
     def is_duplicate(self, symbol: str, exchange: str, timestamp: int) -> bool:
         # ORB is daily/session based. We assume one signal per session per symbol per direction is enough?
@@ -315,14 +354,15 @@ class SignalTracker:
             exchange = payload.get("exchange", "mexc")
             direction = payload.get("direction")
 
-            # Cooldown check
+            # Cooldown check - only affects notification, not TP/SL detection
+            in_cooldown = False
             last_ts = last_notifs.get(display_symbol)
             if last_ts:
                 try:
                     last_dt = datetime.fromisoformat(last_ts)
                     if last_dt.tzinfo is None: last_dt = last_dt.replace(tzinfo=timezone.utc)
                     if (datetime.now(timezone.utc) - last_dt) < timedelta(minutes=cooldown_mins):
-                        continue
+                        in_cooldown = True
                 except ValueError as exc:
                     logger.debug("Invalid timestamp format for %s cooldown check: %s", symbol, exc)
 
@@ -344,15 +384,24 @@ class SignalTracker:
             sl = payload.get("stop_loss")
             entry = payload.get("entry")
 
+            # Check TP/SL hits with price tolerance for slippage
             res = None
             if direction == "BULLISH":
-                if price >= tp2: res = "TP2"
-                elif price >= tp1: res = "TP1"
-                elif price <= sl: res = "SL"
-            else: # BEARISH
-                if price <= tp2: res = "TP2"
-                elif price <= tp1: res = "TP1"
-                elif price >= sl: res = "SL"
+                # With tolerance for slippage (allow slightly lower prices)
+                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
+            else:
+                # For BEARISH/SHORT: TP is below entry, SL is above entry
+                # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
+                # Allow slightly LOWER prices for SL (price doesn't rise quite as far)
+                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
+
+            if hit_tp2: res = "TP2"
+            elif hit_tp1: res = "TP1"
+            elif hit_sl: res = "SL"
 
             if res:
                 msg = format_result_message(
@@ -367,12 +416,23 @@ class SignalTracker:
                     signal_id=sig_id,
                 )
 
-                if notifier:
+                if notifier and ENABLE_RESULT_NOTIFICATIONS and not in_cooldown:
                     notifier.send_message(msg)
                     last_notifs[display_symbol] = datetime.now(timezone.utc).isoformat()
+                elif not ENABLE_RESULT_NOTIFICATIONS:
+                    logger.info("Result notification skipped (disabled): %s %s", sig_id, res)
+                elif in_cooldown:
+                    logger.info("Result notification skipped (cooldown): %s %s", sig_id, res)
 
                 if self.stats: self.stats.record_close(sig_id, price, res)
 
+                # Archive to closed_signals instead of deleting
+                closed = self.state.setdefault("closed_signals", {})
+                closed_signal = payload.copy()
+                closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+                closed_signal["exit_price"] = price
+                closed_signal["result"] = res
+                closed[sig_id] = closed_signal
                 del signals[sig_id]
                 updated = True
 
@@ -386,6 +446,60 @@ class SignalTracker:
                 if old_dir != new_direction:
                     msg = f"⚠️ ORB FAKEOUT REVERSAL: {symbol}\nOpen: {old_dir} | New: {new_direction}\nLikely a Fakeout!"
                     if notifier: notifier.send_message(msg)
+
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and cleanup closed_signals."""
+        signals = self.state.get("open_signals", {})
+        closed = self.state.setdefault("closed_signals", {})
+        current_time = datetime.now(timezone.utc)
+        removed_count = 0
+        signal_ids_to_remove = []
+
+        for sig_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                signal_ids_to_remove.append(sig_id)
+                continue
+
+            timestamp_str = payload.get("timestamp")
+            if not isinstance(timestamp_str, str):
+                signal_ids_to_remove.append(sig_id)
+                continue
+
+            try:
+                created_time = datetime.fromisoformat(timestamp_str)
+                if created_time.tzinfo is None:
+                    created_time = created_time.replace(tzinfo=timezone.utc)
+                age = current_time - created_time
+
+                if age >= timedelta(hours=max_age_hours):
+                    closed[sig_id] = {**payload, "closed_reason": "TIMEOUT", "closed_at": current_time.isoformat()}
+                    signal_ids_to_remove.append(sig_id)
+                    removed_count += 1
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", sig_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                signal_ids_to_remove.append(sig_id)
+
+        for sig_id in signal_ids_to_remove:
+            if sig_id in signals:
+                del signals[sig_id]
+
+        # Also cleanup old closed signals to prevent unbounded growth
+        closed_pruned = 0
+        max_closed_signals = self.config.get("signal", {}).get("max_closed_signals", 100)
+        if isinstance(closed, dict) and len(closed) > max_closed_signals:
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True
+            )
+            self.state["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            closed_pruned = len(closed) - max_closed_signals
+            logger.info("Pruned %d old closed signals (keeping %d)", closed_pruned, max_closed_signals)
+
+        if removed_count > 0 or closed_pruned > 0:
+            self._save_state()
+
+        return removed_count
 
 class ORBBot:
     """Refactored ORB Bot."""
@@ -457,93 +571,146 @@ class ORBBot:
         return int(start.timestamp() * 1000)
 
     def run(self, run_once: bool = False) -> None:
+        global shutdown_requested
         logger.info("Starting Refactored ORB Bot...")
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
         if self.health_monitor: self.health_monitor.send_startup_message()
 
-        while True:
-            try:
-                session_start = self.get_session_start_ts()
+        try:
+            while not shutdown_requested:
+                try:
+                    session_start = self.get_session_start_ts()
 
-                for item in self.watchlist:
-                    symbol: Optional[str] = item.get("symbol")
-                    exchange: str = item.get("exchange", "mexc")
-                    timeframe = "5m" # Default for monitoring
+                    for item in self.watchlist:
+                        # Check for shutdown during watchlist scan
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during watchlist scan")
+                            break
 
-                    if not symbol: continue
+                        symbol: Optional[str] = item.get("symbol")
+                        exchange: str = item.get("exchange", "mexc")
+                        timeframe = "5m"  # Default for monitoring
 
-                    client = self.clients.get(exchange)
-                    if not client:
-                        logger.debug(f"No client for {exchange}, skipping {symbol}")
-                        continue
+                        if not symbol:
+                            continue
 
-                    try:
-                        # Fetch OHLCV since session start (plus buffer)
-                        # We need enough candles to form the ORB window (e.g. 60 mins)
-                        limit = 200  # Should cover 12h+ of 5m candles
-                        ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=limit)
-                        ticker = client.fetch_ticker(resolve_symbol(symbol))
-                        price = ticker.get('last')
-                    except (ccxt.NetworkError, ccxt.ExchangeError) as e:
-                        logger.warning(f"Exchange error for {symbol}: {e}")
-                        continue
-                    except Exception as e:
-                        logger.error(f"Unexpected error fetching {symbol}: {e}")
-                        continue
+                        client = self.clients.get(exchange)
+                        if not client:
+                            logger.debug(f"No client for {exchange}, skipping {symbol}")
+                            continue
 
-                    if not price: continue
+                        try:
+                            # Fetch OHLCV since session start (plus buffer)
+                            # We need enough candles to form the ORB window (e.g. 60 mins)
+                            limit = 200  # Should cover 12h+ of 5m candles
+                            ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=limit)
+                            ticker = client.fetch_ticker(resolve_symbol(symbol))
+                            price = ticker.get('last')
+                        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+                            logger.warning(f"Exchange error for {symbol}: {e}")
+                            continue
+                        except Exception as e:
+                            logger.error(f"Unexpected error fetching {symbol}: {e}")
+                            continue
 
-                    # 1. Calculate ORB Level
-                    orb = self.analyzer.calculate_orb(ohlcv, session_start)
+                        if not price:
+                            continue
 
-                    # Only proceed if we have a valid ORB range established
-                    if orb:
-                        # 2. Detect Breakout
-                        direction = self.analyzer.detect_breakout(price, orb)
+                        # Validate OHLCV data for NaN/inf values
+                        if ohlcv:
+                            ohlcv_arr = np.array(ohlcv)
+                            if np.any(np.isnan(ohlcv_arr[:, 1:5])) or np.any(np.isinf(ohlcv_arr[:, 1:5])):
+                                logger.warning(f"Invalid OHLCV data (NaN/inf) for {symbol}, skipping")
+                                continue
+                            # Filter out candles with zero/negative prices or invalid high < low
+                            valid_mask = (ohlcv_arr[:, 2] >= ohlcv_arr[:, 3]) & (ohlcv_arr[:, 3] > 0)
+                            if not np.all(valid_mask):
+                                logger.debug(f"Filtering {np.sum(~valid_mask)} invalid candles for {symbol}")
+                                ohlcv = [c for c, v in zip(ohlcv, valid_mask) if v]
 
-                        if direction:
-                            # 3. Deduplicate (Check if we already alerted this session)
-                            if not self.tracker.is_duplicate(symbol, exchange, session_start):
+                        # 1. Calculate ORB Level
+                        orb = self.analyzer.calculate_orb(ohlcv, session_start)
+                        logger.info("ORB: %s - ORB range: %s, price: %.6f", symbol,
+                                   f"H:{orb.high:.6f} L:{orb.low:.6f} ({orb.range_pct:.2f}%)" if orb else "None", price)
 
-                                # Update risk config for specific symbol if using centralized config
-                                if self.config_manager:
-                                    try:
-                                        symbol_risk = self.config_manager.get_effective_risk("orb_bot", symbol)
-                                        self.analyzer.risk_config = symbol_risk
-                                    except Exception:
-                                        pass  # Use existing risk_config
+                        # Only proceed if we have a valid ORB range established
+                        if orb:
+                            # 2. Detect Breakout
+                            direction = self.analyzer.detect_breakout(price, orb)
+                            logger.info("ORB: %s - Breakout check: %s (price=%.6f, high=%.6f, low=%.6f)",
+                                       symbol, direction or "NO BREAKOUT", price, orb.high, orb.low)
 
-                                # 4. Targets (pass ohlcv for ATR-based TPSLCalculator)
-                                targets = self.analyzer.calculate_targets(price, direction, orb, ohlcv=ohlcv)
+                            if direction:
+                                # 3. Deduplicate (Check if we already alerted this session)
+                                is_dup = self.tracker.is_duplicate(symbol, exchange, session_start)
+                                logger.info("ORB: %s - Duplicate check: %s", symbol, "DUPLICATE" if is_dup else "NEW")
+                                if not is_dup:
 
-                                signal = ORBSignal(
-                                    symbol=symbol, direction=direction,
-                                    entry=price, stop_loss=targets['sl'],
-                                    take_profit_1=targets['tp1'], take_profit_2=targets['tp2'],
-                                    timestamp=datetime.now(timezone.utc).isoformat(),
-                                    timeframe=timeframe, exchange=exchange,
-                                    breakout_type="ORB Session Breakout",
-                                    orb_high=orb.high, orb_low=orb.low, range_pct=orb.range_pct
-                                )
+                                    # Update risk config for specific symbol if using centralized config
+                                    if self.config_manager:
+                                        try:
+                                            symbol_risk = self.config_manager.get_effective_risk("orb_bot", symbol)
+                                            self.analyzer.risk_config = symbol_risk
+                                        except Exception:
+                                            pass  # Use existing risk_config
 
-                                self.tracker.check_reversal(symbol, direction, self.notifier)
-                                self.tracker.add_signal(signal)
-                                self._send_alert(signal)
+                                    # 4. Targets (pass ohlcv for ATR-based TPSLCalculator)
+                                    targets = self.analyzer.calculate_targets(price, direction, orb, ohlcv=ohlcv)
 
-                self.tracker.check_open_signals(self.clients, self.notifier)
+                                    orb_signal = ORBSignal(
+                                        symbol=symbol, direction=direction,
+                                        entry=price, stop_loss=targets['sl'],
+                                        take_profit_1=targets['tp1'], take_profit_2=targets['tp2'],
+                                        timestamp=datetime.now(timezone.utc).isoformat(),
+                                        timeframe=timeframe, exchange=exchange,
+                                        breakout_type="ORB Session Breakout",
+                                        orb_high=orb.high, orb_low=orb.low, range_pct=orb.range_pct
+                                    )
 
-                if self.health_monitor: self.health_monitor.record_cycle()
+                                    self.tracker.check_reversal(symbol, direction, self.notifier)
+                                    self.tracker.add_signal(orb_signal)
+                                    self._send_alert(orb_signal)
 
-                logger.info("Cycle complete; sleeping 60s")
-                if run_once: break
-                time.sleep(60)
+                    self.tracker.check_open_signals(self.clients, self.notifier)
 
-            except Exception as e:
-                logger.error(f"Cycle error: {e}")
-                if self.health_monitor: self.health_monitor.record_error(str(e))
-                if run_once: raise
-                time.sleep(10)
+                    # Cleanup stale signals every cycle
+                    max_age = self.config.get("signal", {}).get("max_signal_age_hours", 24)
+                    stale_count = self.tracker.cleanup_stale_signals(max_age_hours=max_age)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
 
-        if self.health_monitor: self.health_monitor.send_shutdown_message()
+                    if self.health_monitor:
+                        self.health_monitor.record_cycle()
+
+                    if shutdown_requested:
+                        break
+
+                    logger.info("Cycle complete; sleeping 60s")
+                    if run_once:
+                        break
+                    # Sleep in 1-second chunks to respond quickly to shutdown signals
+                    for _ in range(60):
+                        if shutdown_requested:
+                            break
+                        time.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"Cycle error: {e}")
+                    if self.health_monitor:
+                        self.health_monitor.record_error(str(e))
+                    if run_once:
+                        raise
+                    if shutdown_requested:
+                        break
+                    time.sleep(10)
+
+        finally:
+            if self.health_monitor:
+                self.health_monitor.send_shutdown_message()
 
     def _send_alert(self, signal: ORBSignal) -> None:
         # Build extra info with ORB-specific data

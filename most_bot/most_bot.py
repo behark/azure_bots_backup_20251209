@@ -8,7 +8,12 @@ Signals: BUY when EMA crosses above MOST, SELL when EMA crosses below MOST
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import json
 import logging
 import os
@@ -33,6 +38,9 @@ STATS_FILE = LOG_DIR / "most_stats.json"
 
 # Exchange configuration - actual exchange used for data
 EXCHANGE_NAME = "Binance Futures"
+
+# Result notification toggle - set to False to disable separate TP/SL hit alerts
+ENABLE_RESULT_NOTIFICATIONS = False
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -362,9 +370,11 @@ class BotState:
             temp_file = self.path.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.data, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(self.path)
             except Exception as e:
                 logger.error("Failed to save state: %s", e)
@@ -878,10 +888,12 @@ class MOSTBot:
                 hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
                 hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                # For BEARISH, allow slightly higher prices
-                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
-                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
-                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
+                # For BEARISH/SHORT: TP is below entry, SL is above entry
+                # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
+                # Allow slightly LOWER prices for SL (price doesn't rise quite as far)
+                hit_tp2 = price <= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 - PRICE_TOLERANCE)) and price > (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = price >= (sl * (1 + PRICE_TOLERANCE))
 
             # Priority: TP2 > TP1 > SL
             if hit_tp2:
@@ -906,15 +918,18 @@ class MOSTBot:
                     else:
                         self.stats.discard(signal_id)
 
-                if summary_message:
-                    self._dispatch(summary_message)
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    if summary_message:
+                        self._dispatch(summary_message)
+                    else:
+                        message = (
+                            f"🎯 {normalize_symbol(symbol)} MOST {direction} {result} hit!\n"
+                            f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
+                            f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
+                        )
+                        self._dispatch(message)
                 else:
-                    message = (
-                        f"🎯 {normalize_symbol(symbol)} MOST {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
-                        f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
-                    )
-                    self._dispatch(message)
+                    logger.info("Result notification skipped (disabled): %s %s", signal_id, result)
 
                 self.state.remove_signal(signal_id)
 

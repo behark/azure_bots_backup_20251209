@@ -12,11 +12,17 @@ REFACTORED VERSION:
 """
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import html
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -27,6 +33,17 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum: int, frame: Any) -> None:
+    """Handle shutdown signals gracefully."""
+    global shutdown_requested
+    sig_name = signal.Signals(signum).name
+    logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+    shutdown_requested = True
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -56,7 +73,6 @@ from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
 
 # Optional imports (safe fallback)
-from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
@@ -71,6 +87,10 @@ STATE_FILE = BASE_DIR / "volume_vn_state.json"
 SIGNALS_FILE = BASE_DIR / "volume_vn_signals.json"
 WATCHLIST_FILE = BASE_DIR / "volume_watchlist.json"
 STATS_FILE = LOG_DIR / "volume_stats.json"
+
+# Price tolerance for TP/SL detection (0.1% = 0.001)
+# This accounts for spread, slippage, and minor price variations
+PRICE_TOLERANCE = 0.001
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -328,6 +348,46 @@ class VolumeAnalyzer:
             logger.debug(f"Insufficient candle data for {market_symbol}: {len(closes)} candles")
             return {}
 
+        # Validate OHLCV values are not NaN/inf and are positive
+        opens_arr = np.array(opens, dtype=np.float64)
+        highs_arr = np.array(highs, dtype=np.float64)
+        lows_arr = np.array(lows, dtype=np.float64)
+        closes_arr = np.array(closes, dtype=np.float64)
+        volumes_arr = np.array(volumes, dtype=np.float64)
+
+        if np.any(np.isnan(opens_arr)) or np.any(np.isnan(highs_arr)) or \
+           np.any(np.isnan(lows_arr)) or np.any(np.isnan(closes_arr)):
+            logger.warning(f"{market_symbol}: OHLCV contains NaN values, skipping")
+            return {}
+
+        if np.any(np.isinf(opens_arr)) or np.any(np.isinf(highs_arr)) or \
+           np.any(np.isinf(lows_arr)) or np.any(np.isinf(closes_arr)):
+            logger.warning(f"{market_symbol}: OHLCV contains infinite values, skipping")
+            return {}
+
+        if np.any(closes_arr <= 0) or np.any(highs_arr <= 0) or np.any(lows_arr <= 0):
+            logger.warning(f"{market_symbol}: OHLCV contains zero or negative prices, skipping")
+            return {}
+
+        # Validate OHLCV logic: high >= low
+        if np.any(highs_arr < lows_arr):
+            logger.warning(f"{market_symbol}: OHLCV has high < low, skipping")
+            return {}
+
+        # Validate timestamps are positive integers (milliseconds since epoch)
+        try:
+            timestamps = [x[0] for x in ohlcv]
+            timestamps_arr = np.array(timestamps, dtype=np.int64)
+            # Timestamps should be positive and reasonable (after year 2000, before year 2100)
+            min_ts = 946684800000  # 2000-01-01 in ms
+            max_ts = 4102444800000  # 2100-01-01 in ms
+            if np.any(timestamps_arr < min_ts) or np.any(timestamps_arr > max_ts):
+                logger.warning(f"{market_symbol}: OHLCV has invalid timestamps, skipping")
+                return {}
+        except (IndexError, TypeError, ValueError) as e:
+            logger.warning(f"{market_symbol}: Failed to validate timestamps: {e}")
+            return {}
+
         current_price = closes[-1]
         ema20 = sum(closes[-20:]) / 20
         vp_result_raw = vp.calculate_volume_profile(highs[-100:], lows[-100:], closes[-100:], volumes[-100:])
@@ -511,21 +571,30 @@ class VolumeAnalyzer:
         red_avg = sum(reds[:sample_size]) / sample_size
         return green_avg > red_avg * threshold
 
-    @staticmethod
     def _build_signal(
+        self,
         current_price: float,
         vp_result: Dict[str, Any],
         long_factors: List[str],
         short_factors: List[str],
         symbol: str = "",
     ) -> Tuple[str, Optional[Dict[str, float]]]:
-        if len(long_factors) >= 3 and len(long_factors) > len(short_factors):
+        # Use config values for min factors (default 4 for higher quality signals)
+        min_long = 4
+        min_short = 4
+        if self.config:
+            filtering = getattr(self.config, 'filtering', None)
+            if filtering:
+                min_long = getattr(filtering, 'min_factors_long', 4)
+                min_short = getattr(filtering, 'min_factors_short', 4)
+
+        if len(long_factors) >= min_long and len(long_factors) > len(short_factors):
             val = float(vp_result.get("val", current_price)) if isinstance(vp_result.get("val"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
             raw_sl = val - row_height
-            # Use configurable stop loss percentage (FIX: Externalized configuration)
-            # Default is now 1.5% to avoid premature stops
-            custom_sl = min(raw_sl, current_price * (1 - 0.015))  # 1.5% stop loss
+            # Use configurable stop loss percentage
+            stop_loss_pct = getattr(getattr(self.config, 'risk', None), 'default_stop_loss_pct', 1.5) if self.config else 1.5
+            custom_sl = min(raw_sl, current_price * (1 - stop_loss_pct / 100))
 
             try:
                 config_mgr = get_config_manager()
@@ -538,7 +607,7 @@ class VolumeAnalyzer:
 
             # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(current_price - custom_sl, current_price * 0.01)
-            calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+            calculator = TPSLCalculator(min_risk_reward=min_rr, min_risk_reward_tp2=1.5)
             levels = calculator.calculate(
                 entry=current_price,
                 direction="LONG",
@@ -560,13 +629,13 @@ class VolumeAnalyzer:
             # If levels not valid, return None
             return "NEUTRAL", None
 
-        if len(short_factors) >= 3 and len(short_factors) > len(long_factors):
+        if len(short_factors) >= min_short and len(short_factors) > len(long_factors):
             vah = float(vp_result.get("vah", current_price)) if isinstance(vp_result.get("vah"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
             raw_sl = vah + row_height
-            # Use configurable stop loss percentage (FIX: Externalized configuration)
-            # Default is now 1.5% to avoid premature stops
-            custom_sl = max(raw_sl, current_price * (1 + 0.015))  # 1.5% stop loss
+            # Use configurable stop loss percentage
+            stop_loss_pct = getattr(getattr(self.config, 'risk', None), 'default_stop_loss_pct', 1.5) if self.config else 1.5
+            custom_sl = max(raw_sl, current_price * (1 + stop_loss_pct / 100))
 
             try:
                 config_mgr = get_config_manager()
@@ -615,7 +684,7 @@ class SignalTracker:
         self._sync_signals_to_stats()
 
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alerts": {}, "open_signals": {}, "last_result_notifications": {}}
+        return {"last_alerts": {}, "open_signals": {}, "closed_signals": {}, "last_result_notifications": {}}
 
     def _load_state(self) -> Dict[str, Any]:
         """Load state with proper error handling (FIX: Issue #3)."""
@@ -653,9 +722,11 @@ class SignalTracker:
                 # Write to temp file first for atomic operation
                 with open(temp_file, 'w') as f:
                     # Acquire exclusive lock
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.state, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
                 # Atomic rename
                 temp_file.replace(STATE_FILE)
@@ -1052,14 +1123,22 @@ class SignalTracker:
                 updated = True
                 continue
 
+            # Check TP/SL hits with price tolerance
+            # Tolerance makes it slightly easier to hit TPs (accounts for spread/slippage)
             if direction == "LONG":
-                hit_tp1 = current_price >= tp1
-                hit_tp2 = current_price >= tp2
-                hit_sl = current_price <= sl
+                # LONG: TPs are ABOVE entry, SL is BELOW entry
+                # For TPs: price >= tp * (1 - tolerance) makes it slightly easier to hit
+                # For SL: price <= sl * (1 + tolerance) makes it slightly easier to hit
+                hit_tp1 = current_price >= (tp1 * (1 - PRICE_TOLERANCE))
+                hit_tp2 = current_price >= (tp2 * (1 - PRICE_TOLERANCE))
+                hit_sl = current_price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                hit_tp1 = current_price <= tp1
-                hit_tp2 = current_price <= tp2
-                hit_sl = current_price >= sl
+                # SHORT: TPs are BELOW entry, SL is ABOVE entry
+                # For TPs: price <= tp * (1 + tolerance) makes it slightly easier to hit
+                # For SL: price >= sl * (1 - tolerance) makes it slightly easier to hit
+                hit_tp1 = current_price <= (tp1 * (1 + PRICE_TOLERANCE))
+                hit_tp2 = current_price <= (tp2 * (1 + PRICE_TOLERANCE))
+                hit_sl = current_price >= (sl * (1 - PRICE_TOLERANCE))
 
             result = None
             if hit_tp2:
@@ -1070,9 +1149,21 @@ class SignalTracker:
                 result = "SL"
 
             if result:
-                # Check if we should notify (prevent duplicates within cooldown period)
-                cooldown_minutes = self.config.signal.result_notification_cooldown_minutes if self.config and hasattr(self.config.signal, 'result_notification_cooldown_minutes') else 15
-                should_notify = self._should_notify_result(symbol_val, signal_id, cooldown_minutes)
+                # Check if result notifications are enabled
+                enable_result_notifs = True
+                if self.config and hasattr(self.config, 'signal') and hasattr(self.config.signal, 'enable_result_notifications'):
+                    enable_result_notifs = self.config.signal.enable_result_notifications
+
+                # Define cooldown_minutes before conditional to avoid NameError
+                cooldown_minutes = 15
+                if self.config and hasattr(self.config, 'signal') and hasattr(self.config.signal, 'result_notification_cooldown_minutes'):
+                    cooldown_minutes = self.config.signal.result_notification_cooldown_minutes
+
+                if not enable_result_notifs:
+                    should_notify = False
+                else:
+                    # Check if we should notify (prevent duplicates within cooldown period)
+                    should_notify = self._should_notify_result(symbol_val, signal_id, cooldown_minutes)
 
                 logger.info("✅ Signal %s closed: %s hit! Entry: %.6f | Exit: %.6f | PnL: %.2f%%",
                            signal_id, result, entry, current_price,
@@ -1096,6 +1187,16 @@ class SignalTracker:
                     logger.info("📤 Result notification sent for %s", signal_id)
                 elif not should_notify:
                     logger.info("⏭️  Skipping duplicate result notification for %s (within %dm cooldown)", symbol_val, cooldown_minutes)
+
+                # Archive to closed_signals before removing
+                closed = self.state.setdefault("closed_signals", {})
+                closed_signal = payload.copy()
+                closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+                closed_signal["exit_price"] = current_price
+                closed_signal["result"] = result
+                pnl_pct = ((current_price - entry) / entry * 100) if direction == "LONG" else ((entry - current_price) / entry * 100)
+                closed_signal["pnl_percent"] = pnl_pct
+                closed[signal_id] = closed_signal
 
                 signals.pop(signal_id, None)
                 updated = True
@@ -1208,6 +1309,12 @@ class VolumeVNBOT:
 
     def run_cycle(self, run_once: bool = True, delay_seconds: Optional[int] = None) -> None:
         """Main bot cycle with improved error handling and configuration."""
+        global shutdown_requested
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
         if delay_seconds is None:
             delay_seconds = self.config.execution.symbol_delay_seconds if self.config else 5
 
@@ -1222,9 +1329,13 @@ class VolumeVNBOT:
             self.health_monitor.send_startup_message()
 
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     for item in self.watchlist:
+                        # Check shutdown during watchlist scan
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during watchlist scan")
+                            break
                         symbol_val = item.get("symbol") if isinstance(item, dict) else None
                         if not isinstance(symbol_val, str):
                             continue
@@ -1309,11 +1420,14 @@ class VolumeVNBOT:
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
 
-                    if run_once:
+                    if run_once or shutdown_requested:
                         break
                     logger.info(f"Cycle complete; sleeping {cycle_interval} seconds")
                     # Sleep in 1-second chunks to respond quickly to shutdown signals
                     for _ in range(int(cycle_interval)):
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during sleep")
+                            break
                         time.sleep(1.0)
                 except Exception as exc:
                     logger.error(f"Error in cycle: {exc}")

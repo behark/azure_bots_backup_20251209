@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import json
 import logging
 import os
@@ -20,6 +25,7 @@ from types import FrameType
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
+import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -29,6 +35,13 @@ STATS_FILE = LOG_DIR / "liquidation_stats.json"
 
 # Exchange configuration - actual exchange used for data
 EXCHANGE_NAME = "Binance Futures"
+
+# Result notification toggle - set to False to disable separate TP/SL hit alerts
+ENABLE_RESULT_NOTIFICATIONS = False
+
+# Price tolerance for TP/SL detection (0.1% = 0.001)
+# This accounts for spread, slippage, and minor price variations
+PRICE_TOLERANCE = 0.001
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -51,10 +64,8 @@ try:
 except ImportError:
     pass
 
-sys_path_added = False
 if str(BASE_DIR.parent) not in sys.path:
-    sys.path.append(str(BASE_DIR.parent))
-    sys_path_added = True
+    sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
 from message_templates import format_signal_message, format_result_message
@@ -302,9 +313,11 @@ class LiquidationState:
             temp_file = self.path.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.data, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(self.path)
             except Exception as e:
                 logger.error("Failed to save state: %s", e)
@@ -579,6 +592,21 @@ class LiquidationBot:
         try:
             ohlcv = self.client.ohlcv(symbol, timeframe=timeframe, limit=60)
             closes = [float(candle[4]) for candle in ohlcv if isinstance(candle, list) and len(candle) >= 5]
+
+            # Validate OHLCV data
+            if closes:
+                closes_arr = np.array(closes, dtype=np.float64)
+
+                # Check for NaN/inf values
+                if np.any(np.isnan(closes_arr)) or np.any(np.isinf(closes_arr)):
+                    logger.warning("%s: OHLCV contains NaN/inf values, skipping Bollinger Bands", symbol)
+                    closes = []
+
+                # Check for zero/negative prices
+                if closes and np.any(closes_arr <= 0):
+                    logger.warning("%s: OHLCV contains zero/negative prices, skipping Bollinger Bands", symbol)
+                    closes = []
+
             if len(closes) >= 20:
                 window = closes[-20:]
                 mid = mean(window)
@@ -898,17 +926,20 @@ class LiquidationBot:
                 continue
 
             # Check for TP/SL hits with price tolerance
-            PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
-
+            # Tolerance makes it slightly easier to hit TPs (accounts for spread/slippage)
             if direction == "BULLISH":
-                # With tolerance for slippage (allow slightly lower prices)
+                # BULLISH: TPs are ABOVE entry, SL is BELOW entry
+                # For TPs: price >= tp * (1 - tolerance) makes it slightly easier to hit
+                # For SL: price <= sl * (1 + tolerance) makes it slightly easier to hit
                 hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
-                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
+                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and not hit_tp2
                 hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                # For BEARISH, allow slightly higher prices
+                # BEARISH: TPs are BELOW entry, SL is ABOVE entry
+                # For TPs: price <= tp * (1 + tolerance) makes it slightly easier to hit
+                # For SL: price >= sl * (1 - tolerance) makes it slightly easier to hit
                 hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
-                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
+                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and not hit_tp2
                 hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
 
             result = None
@@ -950,19 +981,22 @@ class LiquidationBot:
                         self.stats.discard(signal_id)
 
                 # Use centralized result template
-                message = format_result_message(
-                    symbol=normalize_symbol(symbol),
-                    direction=direction,
-                    result=result,
-                    entry=entry,
-                    exit_price=price,
-                    stop_loss=sl,
-                    tp1=tp1,
-                    tp2=tp2,
-                    signal_id=signal_id,
-                    performance_stats=perf_stats,
-                )
-                self._dispatch(message)
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    message = format_result_message(
+                        symbol=normalize_symbol(symbol),
+                        direction=direction,
+                        result=result,
+                        entry=entry,
+                        exit_price=price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        signal_id=signal_id,
+                        performance_stats=perf_stats,
+                    )
+                    self._dispatch(message)
+                else:
+                    logger.info("Result notification skipped (disabled): %s %s", signal_id, result)
                 self.state.remove_signal(signal_id)
 
 

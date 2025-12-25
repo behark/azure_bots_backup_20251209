@@ -8,11 +8,17 @@ Detects: Bat, Butterfly, Gartley, Crab, Shark, ABCD patterns and more
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import html
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -24,11 +30,26 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
 
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum: int, frame: Any) -> None:
+    """Handle shutdown signals gracefully."""
+    global shutdown_requested
+    sig_name = signal.Signals(signum).name
+    logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+    shutdown_requested = True
+
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 STATE_FILE = BASE_DIR / "harmonic_state.json"
 WATCHLIST_FILE = BASE_DIR / "harmonic_watchlist.json"
 STATS_FILE = LOG_DIR / "harmonic_stats.json"
+
+# Price tolerance for TP/SL detection (0.1% = 0.001)
+# This accounts for spread, slippage, and minor price variations
+PRICE_TOLERANCE = 0.001
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +74,7 @@ from tp_sl_calculator import calculate_atr as shared_calculate_atr
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
-RateLimiter = None  # Legacy rate limiter disabled - using RateLimitHandler instead
+# RateLimiter removed - using RateLimitHandler for all rate limiting
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 RateLimitedExchange = safe_import('rate_limit_handler', 'RateLimitedExchange')
 
@@ -165,15 +186,16 @@ class HarmonicSignal:
 class HarmonicPatternDetector:
     """Core logic for Harmonic Pattern Detection (unchanged, just imported/encapsulated)."""
 
+    # Very relaxed pattern ranges to detect more patterns
     PATTERNS = {
-        "Cypher": {"xab": (0.382, 0.618), "abc": (1.13, 1.414), "bcd": (1.272, 2.0), "xad": (0.76, 0.80)},
-        "Deep Crab": {"xab": (0.88, 0.895), "abc": (0.382, 0.886), "bcd": (2.0, 3.618), "xad": (1.60, 1.63)},
-        "Bat": {"xab": (0.382, 0.5), "abc": (0.382, 0.886), "bcd": (1.618, 2.618), "xad": (0.0, 0.886)},
-        "Butterfly": {"xab": (0.0, 0.786), "abc": (0.382, 0.886), "bcd": (1.618, 2.618), "xad": (1.27, 1.618)},
-        "Gartley": {"xab": (0.61, 0.625), "abc": (0.382, 0.886), "bcd": (1.13, 2.618), "xad": (0.75, 0.875)},
-        "Crab": {"xab": (0.5, 0.875), "abc": (0.382, 0.886), "bcd": (2.0, 5.0), "xad": (1.382, 5.0)},
-        "Shark": {"xab": (0.5, 0.875), "abc": (1.13, 1.618), "bcd": (1.27, 2.24), "xad": (0.886, 1.13)},
-        "ABCD": {"xab": (0.0, 999.0), "abc": (0.382, 0.886), "bcd": (1.13, 2.618), "xad": (0.0, 999.0)},
+        "Cypher": {"xab": (0.20, 1.0), "abc": (0.8, 2.0), "bcd": (0.5, 3.0), "xad": (0.50, 1.50)},
+        "Deep Crab": {"xab": (0.70, 1.0), "abc": (0.20, 1.0), "bcd": (0.5, 4.5), "xad": (1.30, 2.0)},
+        "Bat": {"xab": (0.20, 0.70), "abc": (0.20, 1.0), "bcd": (0.5, 3.5), "xad": (0.0, 1.0)},
+        "Butterfly": {"xab": (0.0, 1.0), "abc": (0.20, 1.0), "bcd": (0.5, 3.5), "xad": (1.0, 2.0)},
+        "Gartley": {"xab": (0.40, 0.85), "abc": (0.20, 1.0), "bcd": (0.5, 3.5), "xad": (0.60, 1.10)},
+        "Crab": {"xab": (0.30, 1.0), "abc": (0.20, 1.0), "bcd": (0.5, 6.0), "xad": (1.10, 6.0)},
+        "Shark": {"xab": (0.30, 1.0), "abc": (0.8, 2.0), "bcd": (0.5, 3.0), "xad": (0.70, 1.50)},
+        "ABCD": {"xab": (0.0, 999.0), "abc": (0.20, 1.0), "bcd": (0.5, 3.5), "xad": (0.0, 999.0)},
     }
 
     PATTERN_IDEALS = {
@@ -189,9 +211,10 @@ class HarmonicPatternDetector:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
+        # Relaxed error thresholds to allow more pattern matches
         self.error_thresholds = self.config.get("analysis", {}).get("pattern_error_thresholds", {
-            "Cypher": 0.08, "Shark": 0.08, "Gartley": 0.10, "Bat": 0.10,
-            "Butterfly": 0.12, "Crab": 0.12, "Deep Crab": 0.12, "ABCD": 0.15
+            "Cypher": 0.15, "Shark": 0.15, "Gartley": 0.18, "Bat": 0.18,
+            "Butterfly": 0.20, "Crab": 0.20, "Deep Crab": 0.20, "ABCD": 0.25
         })
 
     def calculate_atr(self, highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
@@ -281,6 +304,49 @@ class HarmonicPatternDetector:
             logger.error(f"Malformed OHLCV data for {symbol}: {e}")
             return None
 
+        # Validate OHLCV values are not NaN/inf and are positive
+        opens_arr = np.array(opens, dtype=np.float64)
+        highs_arr = np.array(highs, dtype=np.float64)
+        lows_arr = np.array(lows, dtype=np.float64)
+        closes_arr = np.array(closes, dtype=np.float64)
+
+        if np.any(np.isnan(opens_arr)) or np.any(np.isnan(highs_arr)) or \
+           np.any(np.isnan(lows_arr)) or np.any(np.isnan(closes_arr)):
+            logger.warning(f"{symbol}: OHLCV contains NaN values, skipping")
+            return None
+
+        if np.any(np.isinf(opens_arr)) or np.any(np.isinf(highs_arr)) or \
+           np.any(np.isinf(lows_arr)) or np.any(np.isinf(closes_arr)):
+            logger.warning(f"{symbol}: OHLCV contains infinite values, skipping")
+            return None
+
+        if np.any(closes_arr <= 0) or np.any(highs_arr <= 0) or np.any(lows_arr <= 0):
+            logger.warning(f"{symbol}: OHLCV contains zero or negative prices, skipping")
+            return None
+
+        # Validate OHLCV logic: high >= low
+        if np.any(highs_arr < lows_arr):
+            logger.warning(f"{symbol}: OHLCV has high < low, skipping")
+            return None
+
+        # Validate timestamps are positive integers (milliseconds since epoch)
+        try:
+            timestamps = [x[0] for x in ohlcv]
+            timestamps_arr = np.array(timestamps, dtype=np.int64)
+            # Timestamps should be positive and reasonable (after year 2000, before year 2100)
+            min_ts = 946684800000  # 2000-01-01 in ms
+            max_ts = 4102444800000  # 2100-01-01 in ms
+            if np.any(timestamps_arr < min_ts) or np.any(timestamps_arr > max_ts):
+                logger.warning(f"{symbol}: OHLCV has invalid timestamps, skipping")
+                return None
+            # Check timestamps are in ascending order (not strictly required but good sanity check)
+            if not np.all(np.diff(timestamps_arr) >= 0):
+                logger.debug(f"{symbol}: OHLCV timestamps not in ascending order")
+                # Don't skip, just log - some exchanges may have quirks
+        except (IndexError, TypeError, ValueError) as e:
+            logger.warning(f"{symbol}: Failed to validate timestamps: {e}")
+            return None
+
         atr = self.calculate_atr(highs, lows, closes)
         if atr <= 0:
             # Fix 1.9: Use average high-low range instead of std deviation
@@ -358,10 +424,10 @@ class HarmonicPatternDetector:
                 logger.debug(f"{symbol}: BEARISH pattern rejected - RSI too low ({rsi:.1f} < {rsi_oversold})")
                 return None
 
-        # Stale Check
+        # Stale Check - relaxed from 3 to 5 candles
         d_age = (len(closes) - 1) - d_idx
-        if d_age > self.config.get("analysis", {}).get("max_pattern_age_candles", 3):
-            logger.debug(f"{symbol}: Pattern too old ({d_age} candles, max 3)")
+        if d_age > self.config.get("analysis", {}).get("max_pattern_age_candles", 5):
+            logger.debug(f"{symbol}: Pattern too old ({d_age} candles, max 5)")
             return None
 
         # Targets
@@ -407,12 +473,18 @@ class HarmonicPatternDetector:
         )
 
     def _get_ratios(self, x: float, a: float, b: float, c: float, d: float) -> Optional[Tuple[float, float, float, float]]:
-        # Check denominators: XAB uses (x-a), ABC uses (a-b), BCD uses (b-c), XAD uses (x-a)
-        if x == a or a == b or b == c: return None
-        xab = abs(b - a) / abs(x - a)
-        xad = abs(a - d) / abs(x - a)
-        abc = abs(b - c) / abs(a - b)
-        bcd = abs(c - d) / abs(b - c)
+        # Check denominators with tolerance to prevent division by near-zero values
+        # XAB and XAD use (x-a), ABC uses (a-b), BCD uses (b-c)
+        MIN_DIFF = 1e-10  # Tolerance for near-zero differences
+        xa_diff = abs(x - a)
+        ab_diff = abs(a - b)
+        bc_diff = abs(b - c)
+        if xa_diff < MIN_DIFF or ab_diff < MIN_DIFF or bc_diff < MIN_DIFF:
+            return None
+        xab = abs(b - a) / xa_diff
+        xad = abs(a - d) / xa_diff
+        abc = abs(b - c) / ab_diff
+        bcd = abs(c - d) / bc_diff
         return xab, xad, abc, bcd
 
     def _compute_confidence(self, pattern_name: str, error_score: float, rsi: float,
@@ -427,11 +499,11 @@ class HarmonicPatternDetector:
         - PRZ distance (closer is better): 20%
         """
         # Error score component (0-1, lower error = higher confidence)
-        # Typical error scores range 0.0 - 0.15
-        error_conf = max(0, 1 - (error_score / 0.15))
+        # Typical error scores range 0.0 - 0.25 (relaxed thresholds)
+        error_conf = max(0, 1 - (error_score / 0.25))
 
         # Pattern age component (0-1, fresher = higher)
-        max_age = self.config.get("analysis", {}).get("max_pattern_age_candles", 3)
+        max_age = self.config.get("analysis", {}).get("max_pattern_age_candles", 5)
         age_conf = max(0, 1 - (d_age / max_age))
 
         # RSI alignment component
@@ -464,7 +536,8 @@ class HarmonicPatternDetector:
         # Harmonic-specific config (from local config)
         entry_buffer_mult = self.config.get("analysis", {}).get("entry_buffer_atr_multiplier", 0.05)
         sl_fib_mult = self.config.get("analysis", {}).get("sl_fib_range_multiplier", 0.5)
-        prz_atr_mult = self.config.get("analysis", {}).get("prz_atr_multiplier", 0.5)
+        # Relaxed PRZ zone from 0.5 to 1.0 ATR for wider acceptance
+        prz_atr_mult = self.config.get("analysis", {}).get("prz_atr_multiplier", 1.0)
 
         # Standard risk config from centralized config
         tp1_mult = risk_config.tp1_atr_multiplier
@@ -575,12 +648,20 @@ class SignalTracker:
             temp_file = STATE_FILE.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.state, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(STATE_FILE)
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
+                # Clean up temp file on error
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception:
+                    pass  # Ignore cleanup errors
 
     def is_duplicate(self, symbol: str, pattern: str, d_ts: str, exchange: str = "binanceusdm", timeframe: str = "1h") -> bool:
         """Check duplicate using D-Timestamp with exchange+timeframe scope (Fix 1.6)."""
@@ -625,8 +706,8 @@ class SignalTracker:
         if self.stats:
             self.stats.record_open(sig_id, signal.symbol, signal.direction, signal.entry, signal.timestamp)
 
-    def check_open_signals(self, client_map: Dict[str, Any], notifier: Optional[Any], rate_limiter: Optional[Any] = None) -> None:
-        """Check open signals with rate limiting support (Fix 2.1)."""
+    def check_open_signals(self, client_map: Dict[str, Any], notifier: Optional[Any], rate_handler: Optional[Any] = None) -> None:
+        """Check open signals for TP/SL hits. Rate limiting handled by RateLimitedExchange wrapper."""
         signals = self.state.get("open_signals", {})
         if not signals: return
 
@@ -655,11 +736,7 @@ class SignalTracker:
                 updated = True
                 continue
 
-            # Fix 2.1: Use rate limiter before API call
-            if rate_limiter:
-                rate_limiter.wait_if_needed()
-
-            # Fetch price with specific exception handling
+            # Fetch price - rate limiting handled by RateLimitedExchange wrapper
             price = None
             try:
                 client = client_map.get(exchange) or client_map.get("binanceusdm")
@@ -668,24 +745,15 @@ class SignalTracker:
                     continue
                 ticker = client.fetch_ticker(resolve_symbol(symbol))
                 price = ticker.get("last")
-
-                if rate_limiter:
-                    rate_limiter.record_success(f"check_{exchange}_{symbol}")
             except ccxt.NetworkError as e:
                 logger.warning(f"Network error fetching {symbol}: {e}")
-                if rate_limiter:
-                    rate_limiter.record_error(f"check_{exchange}_{symbol}")
                 continue
             except ccxt.RateLimitExceeded as e:
                 logger.warning(f"Rate limit exceeded for {symbol}: {e}")
-                if rate_limiter:
-                    rate_limiter.record_error(f"check_{exchange}_{symbol}")
                 time.sleep(5)  # Longer backoff on rate limit
                 continue
             except ccxt.ExchangeError as e:
                 logger.error(f"Exchange error for {symbol}: {e}")
-                if rate_limiter:
-                    rate_limiter.record_error(f"check_{exchange}_{symbol}")
                 continue
             except Exception as e:
                 logger.error(f"Unexpected error fetching {symbol}: {e}")
@@ -715,46 +783,51 @@ class SignalTracker:
                 updated = True
                 continue
 
-            # Check for TP hits with partial tracking (Fix 1.7)
+            # Check for TP hits with partial tracking and price tolerance
+            # Tolerance makes it slightly easier to hit TPs (accounts for spread/slippage)
             res = None
             close_signal = False
 
             if direction == "BULLISH":
-                # Check TP3 first (highest), then TP2, then TP1
-                if tp3 and isinstance(tp3, (int, float)) and price >= tp3:
+                # BULLISH: TPs are ABOVE entry, SL is BELOW entry
+                # For TPs: price >= tp * (1 - tolerance) makes it slightly easier to hit
+                # For SL: price <= sl * (1 + tolerance) makes it slightly easier to hit
+                if tp3 and isinstance(tp3, (int, float)) and price >= (tp3 * (1 - PRICE_TOLERANCE)):
                     if not tp_hits.get("tp3"):
                         res = "TP3"
                         tp_hits["tp3"] = True
                         close_signal = True  # TP3 closes the trade
-                elif price >= tp2:
+                elif price >= (tp2 * (1 - PRICE_TOLERANCE)):
                     if not tp_hits.get("tp2"):
                         res = "TP2"
                         tp_hits["tp2"] = True
                         tp_hits["tp1"] = True  # Implied
-                elif price >= tp1:
+                elif price >= (tp1 * (1 - PRICE_TOLERANCE)):
                     if not tp_hits.get("tp1"):
                         res = "TP1"
                         tp_hits["tp1"] = True
-                elif price <= sl:
+                elif price <= (sl * (1 + PRICE_TOLERANCE)):
                     res = "SL"
                     close_signal = True
             else:
-                # BEARISH - inverted logic
-                if tp3 and isinstance(tp3, (int, float)) and price <= tp3:
+                # BEARISH: TPs are BELOW entry, SL is ABOVE entry
+                # For TPs: price <= tp * (1 + tolerance) makes it slightly easier to hit
+                # For SL: price >= sl * (1 - tolerance) makes it slightly easier to hit
+                if tp3 and isinstance(tp3, (int, float)) and price <= (tp3 * (1 + PRICE_TOLERANCE)):
                     if not tp_hits.get("tp3"):
                         res = "TP3"
                         tp_hits["tp3"] = True
                         close_signal = True
-                elif price <= tp2:
+                elif price <= (tp2 * (1 + PRICE_TOLERANCE)):
                     if not tp_hits.get("tp2"):
                         res = "TP2"
                         tp_hits["tp2"] = True
                         tp_hits["tp1"] = True
-                elif price <= tp1:
+                elif price <= (tp1 * (1 + PRICE_TOLERANCE)):
                     if not tp_hits.get("tp1"):
                         res = "TP1"
                         tp_hits["tp1"] = True
-                elif price >= sl:
+                elif price >= (sl * (1 - PRICE_TOLERANCE)):
                     res = "SL"
                     close_signal = True
 
@@ -764,9 +837,14 @@ class SignalTracker:
                 updated = True
 
             if res:
-                # Check result notification cooldown (from Volume Bot)
-                result_cooldown = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
-                should_notify = self._should_notify_result(symbol, result_cooldown)
+                # Check if result notifications are enabled
+                enable_result_notifs = self.config.get("telegram", {}).get("enable_result_notifications", True)
+                if not enable_result_notifs:
+                    should_notify = False
+                else:
+                    # Check result notification cooldown (from Volume Bot)
+                    result_cooldown = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
+                    should_notify = self._should_notify_result(symbol, result_cooldown)
 
                 # Notify with HTML escaping
                 pnl = (price - entry)/entry * 100 if direction == "BULLISH" else (entry - price)/entry * 100
@@ -801,6 +879,16 @@ class SignalTracker:
                 # Stats - only record close on final TP or SL
                 if close_signal:
                     if self.stats: self.stats.record_close(sig_id, price, res)
+
+                    # Archive to closed_signals before deleting
+                    closed = self.state.setdefault("closed_signals", {})
+                    closed_signal = payload.copy()
+                    closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+                    closed_signal["exit_price"] = price
+                    closed_signal["result"] = res
+                    closed_signal["pnl_percent"] = pnl
+                    closed[sig_id] = closed_signal
+
                     del signals[sig_id]
                     updated = True
 
@@ -817,6 +905,9 @@ class SignalTracker:
 
         try:
             last_time = datetime.fromisoformat(last_time_str)
+            # Ensure timezone-aware comparison
+            if last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
             elapsed = datetime.now(timezone.utc) - last_time
             return elapsed.total_seconds() >= (cooldown_minutes * 60)
         except Exception:
@@ -874,9 +965,27 @@ class SignalTracker:
         for sig_id in removed:
             del signals[sig_id]
 
-        if removed:
+        # Also cleanup old closed signals to prevent unbounded growth
+        closed_pruned = 0
+        closed_signals = self.state.get("closed_signals", {})
+        if isinstance(closed_signals, dict):
+            max_closed_signals = self.config.get("signal", {}).get("max_closed_signals", 100)
+            if len(closed_signals) > max_closed_signals:
+                # Sort by closed_at and keep only the most recent
+                sorted_closed = sorted(
+                    closed_signals.items(),
+                    key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                    reverse=True
+                )
+                # Keep only the most recent max_closed_signals
+                self.state["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+                closed_pruned = len(closed_signals) - max_closed_signals
+                logger.info(f"Pruned {closed_pruned} old closed signals (keeping {max_closed_signals})")
+
+        if removed or closed_pruned > 0:
             self._save_state()
-            logger.info(f"Cleaned up {len(removed)} stale signals")
+            if removed:
+                logger.info(f"Cleaned up {len(removed)} stale signals")
 
         return len(removed)
 
@@ -915,18 +1024,22 @@ class SignalTracker:
         for sig_id, payload in signals.items():
             if payload.get("symbol") == symbol:
                 old_dir = payload.get("direction")
-                if old_dir != new_direction:
-                    safe_symbol = html.escape(symbol)
-                    safe_old = html.escape(old_dir)
-                    safe_new = html.escape(new_direction)
-                    msg = (
-                        f"⚠️ <b>SIGNAL REVERSAL</b> ⚠️\n\n"
-                        f"<b>Symbol:</b> {safe_symbol}\n"
-                        f"<b>Open:</b> {safe_old}\n"
-                        f"<b>New:</b> {safe_new}\n\n"
-                        f"💡 Check your position!"
-                    )
-                    if notifier: notifier.send_message(msg, parse_mode="HTML")
+                # Skip if old_dir is None or same as new direction
+                if old_dir is None or old_dir == new_direction:
+                    continue
+                # Safely escape values (ensure strings, not None)
+                safe_symbol = html.escape(str(symbol) if symbol else "")
+                safe_old = html.escape(str(old_dir) if old_dir else "")
+                safe_new = html.escape(str(new_direction) if new_direction else "")
+                msg = (
+                    f"⚠️ <b>SIGNAL REVERSAL</b> ⚠️\n\n"
+                    f"<b>Symbol:</b> {safe_symbol}\n"
+                    f"<b>Open:</b> {safe_old}\n"
+                    f"<b>New:</b> {safe_new}\n\n"
+                    f"💡 Check your position!"
+                )
+                if notifier:
+                    notifier.send_message(msg, parse_mode="HTML")
 
 class HarmonicBot:
     """Refactored Harmonic Bot with Volume Bot features."""
@@ -945,11 +1058,7 @@ class HarmonicBot:
         heartbeat_interval = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
         self.health_monitor = HealthMonitor("Harmonic Bot", self.notifier, heartbeat_interval=heartbeat_interval) if HealthMonitor and self.notifier else None
 
-        # Init Rate Limiter
-        calls_per_min = self.config.get("rate_limit", {}).get("calls_per_minute", 60)
-        self.rate_limiter = RateLimiter(calls_per_minute=calls_per_min, backoff_file=LOG_DIR / "rate_limiter.json") if RateLimiter else None
-        if self.rate_limiter:
-            logger.info(f"Rate limiter initialized: {calls_per_min} calls/min")
+        # Note: Legacy RateLimiter removed, using RateLimitHandler instead (see below)
 
         # Exchange backoff tracking (from Volume Bot)
         self.exchange_backoff: Dict[str, float] = {}
@@ -1139,7 +1248,12 @@ class HarmonicBot:
         return TelegramNotifier(bot_token=token, chat_id=chat_id, signals_log_file=str(LOG_DIR/"signals.json")) if token and chat_id else None
 
     def run(self, run_once: bool = False, track_only: bool = False) -> None:
+        global shutdown_requested
         logger.info("Starting Refactored Harmonic Bot...")
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
         # Get configuration values
         symbol_delay = self.config.get("execution", {}).get("symbol_delay_seconds", 1)
@@ -1159,7 +1273,7 @@ class HarmonicBot:
         # Track-only mode: just check open signals
         if track_only:
             logger.info("Running in track-only mode - checking open signals...")
-            self.tracker.check_open_signals(self.clients, self.notifier, self.rate_limiter)
+            self.tracker.check_open_signals(self.clients, self.notifier, self.rate_handler)
             logger.info("Track-only check complete")
             return
 
@@ -1169,10 +1283,14 @@ class HarmonicBot:
         last_heartbeat_time = datetime.now(timezone.utc)
 
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     signals_this_cycle = 0  # Track signals per cycle
                     for item in self.watchlist:
+                        # Check shutdown during watchlist scan
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during watchlist scan")
+                            break
                         symbol_raw = item.get("symbol")
                         if not isinstance(symbol_raw, str) or not symbol_raw:
                             continue
@@ -1192,10 +1310,7 @@ class HarmonicBot:
                         if not client: continue
 
                         try:
-                            # Use rate limiter if available
-                            if self.rate_limiter:
-                                self.rate_limiter.wait_if_needed()
-
+                            # Rate limiting is handled by RateLimitedExchange wrapper
                             ohlcv = cast(List[List[Any]], client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=200))
                             ticker = cast(Dict[str, Any], client.fetch_ticker(resolve_symbol(symbol)))
                             price_raw = ticker.get("last")
@@ -1203,29 +1318,19 @@ class HarmonicBot:
                                 logger.debug(f"Invalid price for {symbol}: {price_raw}")
                                 continue
                             price: float = float(price_raw)
-
-                            # Record success if rate limiter is available
-                            if self.rate_limiter:
-                                self.rate_limiter.record_success(f"{exchange}_{symbol}")
                         except ccxt.RateLimitExceeded:
                             logger.warning(f"Rate limit hit for {symbol}, backing off...")
                             self._register_backoff(exchange)
                             if self.health_monitor: self.health_monitor.record_error(f"Rate Limit {symbol}")
-                            if self.rate_limiter:
-                                self.rate_limiter.record_error(f"{exchange}_{symbol}")
                             continue
                         except ccxt.NetworkError as e:
                             logger.warning(f"Network error for {symbol}: {e}")
-                            if self.rate_limiter:
-                                self.rate_limiter.record_error(f"{exchange}_{symbol}")
                             continue
                         except Exception as e:
                             logger.error(f"Error fetching {symbol}: {e}")
                             if self._is_rate_limit_error(e):
                                 self._register_backoff(exchange)
                             if self.health_monitor: self.health_monitor.record_error(f"API Error {symbol}: {e}")
-                            if self.rate_limiter:
-                                self.rate_limiter.record_error(f"{exchange}_{symbol}")
                             continue
 
                         # 2. Analyze
@@ -1281,7 +1386,7 @@ class HarmonicBot:
                     self.tracker.cleanup_stale_signals(max_age_hours)
 
                     # 7. Monitor Open Signals (after cleanup) - with rate limiting (Fix 2.1)
-                    self.tracker.check_open_signals(self.clients, self.notifier, self.rate_limiter)
+                    self.tracker.check_open_signals(self.clients, self.notifier, self.rate_handler)
 
                     if self.health_monitor:
                         self.health_monitor.record_cycle()
@@ -1304,9 +1409,15 @@ class HarmonicBot:
                             last_heartbeat_time = datetime.now(timezone.utc)
                             logger.info(f"Heartbeat sent - no signals for {hours_since_signal:.1f} hours")
 
-                    if run_once:
+                    if run_once or shutdown_requested:
                         break
-                    time.sleep(cycle_interval)
+
+                    # Responsive sleep that checks for shutdown
+                    for _ in range(cycle_interval):
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during sleep")
+                            break
+                        time.sleep(1)
 
                 except Exception as e:
                     logger.error(f"Cycle error: {e}")
@@ -1320,17 +1431,18 @@ class HarmonicBot:
     def _get_symbol_performance(self, symbol: str) -> Dict[str, Any]:
         """Get performance statistics for a specific symbol."""
         if not self.tracker.stats or not isinstance(self.tracker.stats.data, dict):
-            return {"total": 0, "wins": 0, "tp1": 0, "tp2": 0, "sl": 0, "avg_pnl": 0.0}
+            return {"total": 0, "wins": 0, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "avg_pnl": 0.0}
 
         history = self.tracker.stats.data.get("history", [])
         if not isinstance(history, list):
-            return {"total": 0, "wins": 0, "tp1": 0, "tp2": 0, "sl": 0, "avg_pnl": 0.0}
+            return {"total": 0, "wins": 0, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "avg_pnl": 0.0}
 
         # Normalize symbol for comparison
         symbol_key = symbol.split(":")[0].upper()
 
         tp1_count = 0
         tp2_count = 0
+        tp3_count = 0
         sl_count = 0
         pnl_sum = 0.0
         count = 0
@@ -1350,6 +1462,8 @@ class HarmonicBot:
                 tp1_count += 1
             elif result == "TP2":
                 tp2_count += 1
+            elif result == "TP3":
+                tp3_count += 1
             elif result == "SL":
                 sl_count += 1
 
@@ -1357,8 +1471,8 @@ class HarmonicBot:
                 pnl_sum += float(pnl)
                 count += 1
 
-        total = tp1_count + tp2_count + sl_count
-        wins = tp1_count + tp2_count
+        total = tp1_count + tp2_count + tp3_count + sl_count
+        wins = tp1_count + tp2_count + tp3_count
         avg_pnl = (pnl_sum / count) if count > 0 else 0.0
 
         return {
@@ -1366,6 +1480,7 @@ class HarmonicBot:
             "wins": wins,
             "tp1": tp1_count,
             "tp2": tp2_count,
+            "tp3": tp3_count,
             "sl": sl_count,
             "avg_pnl": avg_pnl
         }

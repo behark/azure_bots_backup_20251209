@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """File locking utility for safe JSON state file operations."""
 
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import json
 import logging
 import os
@@ -35,7 +40,13 @@ def file_lock(file_path: Path, timeout: float = 5.0) -> Generator[None, None, No
         FileLockError: If lock cannot be acquired within timeout
 
     Sets secure file permissions (0o600) on lock files for security.
+    On Windows (no fcntl), locking is skipped but the context manager still works.
     """
+    # On Windows, skip locking entirely
+    if not HAS_FCNTL:
+        yield
+        return
+
     lock_path = file_path.with_suffix(file_path.suffix + ".lock")
     lock_file = None
     start_time = time.time()

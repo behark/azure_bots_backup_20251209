@@ -22,7 +22,12 @@ import signal
 import json
 import time
 import logging
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 from pathlib import Path
 from threading import Lock
 from datetime import datetime, timedelta, timezone
@@ -33,13 +38,18 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
 import numpy.typing as npt
+from numpy.lib.stride_tricks import sliding_window_view
+
+# Ensure logs directory exists before configuring logging
+_LOGS_DIR = Path(__file__).parent / "logs"
+_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Logging setup (must be before any logger use)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
-        logging.FileHandler(Path(__file__).parent / "logs" / "fib_swing_bot.log"),
+        logging.FileHandler(_LOGS_DIR / "fib_swing_bot.log"),
         logging.StreamHandler(),
     ],
 )
@@ -60,6 +70,9 @@ from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
+
+# Result notification toggle - set to False to disable separate TP/SL hit alerts
+ENABLE_RESULT_NOTIFICATIONS = False
 
 
 # Graceful shutdown handling
@@ -156,12 +169,28 @@ class FibSwingDetector:
 
     @staticmethod
     def calculate_ema(prices: npt.NDArray[np.floating[Any]], period: int) -> npt.NDArray[np.floating[Any]]:
-        """Calculate Exponential Moving Average"""
-        ema = np.zeros(len(prices))
-        multiplier = 2 / (period + 1)
-        ema[period-1] = np.mean(prices[:period])
-        for i in range(period, len(prices)):
-            ema[i] = (prices[i] * multiplier) + (ema[i-1] * (1 - multiplier))
+        """Calculate Exponential Moving Average (optimized with local variables)"""
+        n = len(prices)
+        ema = np.zeros(n)
+
+        if n < period:
+            return ema
+
+        multiplier = 2.0 / (period + 1)
+        decay = 1.0 - multiplier
+
+        # Initialize with SMA
+        ema[period - 1] = np.mean(prices[:period])
+
+        # Pre-multiply prices for fewer operations in loop
+        weighted_prices = prices[period:] * multiplier
+
+        # Optimized loop with local variable (avoids array indexing overhead)
+        prev_ema = ema[period - 1]
+        for i in range(period, n):
+            prev_ema = weighted_prices[i - period] + prev_ema * decay
+            ema[i] = prev_ema
+
         return ema
 
     def find_swing_high(self, highs: npt.NDArray[np.floating[Any]], index: int) -> bool:
@@ -181,15 +210,35 @@ class FibSwingDetector:
     def detect_swing_points(
         self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]]
     ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
-        """Detect all swing highs and lows"""
-        swing_highs = []
-        swing_lows = []
+        """Detect all swing highs and lows (optimized with vectorized rolling window)"""
+        n = len(highs)
+        window_size = 2 * self.lookback + 1
 
-        for i in range(self.lookback, len(highs) - self.lookback):
-            if self.find_swing_high(highs, i):
-                swing_highs.append((i, highs[i]))
-            if self.find_swing_low(lows, i):
-                swing_lows.append((i, lows[i]))
+        if n < window_size:
+            return [], []
+
+        # Create rolling windows for highs and lows (uses module-level import)
+        high_windows = sliding_window_view(highs, window_size)
+        low_windows = sliding_window_view(lows, window_size)
+
+        # Find max/min in each window (vectorized)
+        window_max = np.max(high_windows, axis=1)
+        window_min = np.min(low_windows, axis=1)
+
+        # Center values (potential swing points)
+        center_highs = highs[self.lookback : n - self.lookback]
+        center_lows = lows[self.lookback : n - self.lookback]
+
+        # Use np.isclose for robust floating-point comparison (fixes precision issues)
+        is_swing_high = np.isclose(center_highs, window_max, rtol=1e-9)
+        is_swing_low = np.isclose(center_lows, window_min, rtol=1e-9)
+
+        # Get indices and values
+        swing_high_indices = np.where(is_swing_high)[0] + self.lookback
+        swing_low_indices = np.where(is_swing_low)[0] + self.lookback
+
+        swing_highs = [(int(i), float(highs[i])) for i in swing_high_indices]
+        swing_lows = [(int(i), float(lows[i])) for i in swing_low_indices]
 
         return swing_highs, swing_lows
 
@@ -211,6 +260,28 @@ class FibSwingDetector:
         for i in range(1, min(confirmation_candles + 1, bars_since + 1)):
             if swing_low_idx + i < len(lows):
                 if lows[swing_low_idx + i] < swing_low_price:
+                    return False, bars_since
+
+        return bars_since >= confirmation_candles, bars_since
+
+    @staticmethod
+    def check_swing_high_confirmation(
+        highs: npt.NDArray[np.floating[Any]],
+        swing_high_idx: int,
+        swing_high_price: float,
+        confirmation_candles: int = 5
+    ) -> Tuple[bool, int]:
+        """Check if swing high has been confirmed (held for X candles)"""
+        if swing_high_idx + confirmation_candles >= len(highs):
+            bars_since = len(highs) - 1 - swing_high_idx
+            return False, bars_since
+
+        bars_since = len(highs) - 1 - swing_high_idx
+
+        # Check if all candles stayed below swing high
+        for i in range(1, min(confirmation_candles + 1, bars_since + 1)):
+            if swing_high_idx + i < len(highs):
+                if highs[swing_high_idx + i] > swing_high_price:
                     return False, bars_since
 
         return bars_since >= confirmation_candles, bars_since
@@ -257,11 +328,23 @@ class FibSignalEvaluator:
         if len(ohlcv) < 100:
             return None
 
-        # Extract OHLCV
-        closes = np.array([x[4] for x in ohlcv])
-        highs = np.array([x[2] for x in ohlcv])
-        lows = np.array([x[3] for x in ohlcv])
-        volumes = np.array([x[5] for x in ohlcv])
+        # Extract and validate OHLCV data
+        try:
+            closes = np.array([x[4] for x in ohlcv], dtype=np.float64)
+            highs = np.array([x[2] for x in ohlcv], dtype=np.float64)
+            lows = np.array([x[3] for x in ohlcv], dtype=np.float64)
+            volumes = np.array([x[5] for x in ohlcv], dtype=np.float64)
+
+            # Validate no NaN or invalid values
+            if np.any(np.isnan(closes)) or np.any(np.isnan(highs)) or np.any(np.isnan(lows)):
+                logger.warning("%s: OHLCV contains NaN values, skipping", symbol)
+                return None
+            if np.any(closes <= 0) or np.any(highs <= 0) or np.any(lows <= 0):
+                logger.warning("%s: OHLCV contains invalid (<=0) prices, skipping", symbol)
+                return None
+        except (IndexError, TypeError, ValueError) as e:
+            logger.warning("%s: Failed to parse OHLCV data: %s", symbol, e)
+            return None
 
         current_price = closes[-1]
 
@@ -305,6 +388,12 @@ class FibSignalEvaluator:
 
         fib_levels = self.detector.calculate_fibonacci_levels(swing_high, swing_low, bullish=uptrend)
         diff = abs(swing_high - swing_low)
+
+        # Guard against division by zero / zero tolerance when swing_high == swing_low
+        if diff < 1e-10:
+            logger.debug("%s: swing_high equals swing_low, skipping", symbol)
+            return None
+
         tolerance = diff * 0.02
 
         fib_names = {
@@ -334,7 +423,7 @@ class FibSignalEvaluator:
             in_zone = current_price >= swing_low and current_price <= swing_high
         else:
             confirmation_idx, confirmation_price = swing_high_idx, swing_high
-            is_confirmed, bars_since = self.detector.check_swing_confirmation(
+            is_confirmed, bars_since = self.detector.check_swing_high_confirmation(
                 highs, confirmation_idx, confirmation_price, self.confirmation_candles
             )
             in_zone = current_price <= swing_high and current_price >= swing_low
@@ -382,8 +471,9 @@ class FibSignalEvaluator:
             else:
                 tp3 = tp2 - tp2_distance * 0.5  # Extend 50% below TP2 for SHORT
 
-        # Create signal
-        signal_id = f"{symbol}-{timeframe}-{datetime.utcnow().isoformat()}"
+        # Create signal (use timezone-aware datetime, not deprecated utcnow())
+        now_utc = datetime.now(timezone.utc)
+        signal_id = f"{symbol}-{timeframe}-{now_utc.isoformat()}"
 
         signal = FibSignal(
             signal_id=signal_id,
@@ -404,7 +494,7 @@ class FibSignalEvaluator:
             bars_since_swing=bars_since,
             uptrend=uptrend,
             high_volume=high_volume,
-            created_at=datetime.utcnow().isoformat(),
+            created_at=now_utc.isoformat(),
         )
 
         return signal
@@ -418,31 +508,20 @@ class FibSignalEvaluator:
             return "WEAK"
         return "STANDARD"
 
-    def _fallback_levels(self, direction: str, entry: float, swing_high: float, swing_low: float) -> Tuple[float, float, float, float]:
-        diff = abs(swing_high - swing_low)
-        if direction == "LONG":
-            stop_loss = swing_low - diff * 0.02
-            risk = entry - stop_loss
-            tp1 = entry + risk
-            tp2 = entry + risk * 2
-            tp3 = entry + risk * 3
-        else:
-            stop_loss = swing_high + diff * 0.02
-            risk = stop_loss - entry
-            tp1 = entry - risk
-            tp2 = entry - risk * 2
-            tp3 = entry - risk * 3
-        return stop_loss, tp1, tp2, tp3
+    # NOTE: _fallback_levels was removed as dead code - it was never called.
+    # TP/SL calculation is now handled by TPSLCalculator.
 
 
 class SignalTracker:
     """Tracks open signals and monitors TP/SL hits"""
 
-    def __init__(self, stats: Optional[SignalStats] = None):
+    def __init__(self, stats: Optional[SignalStats] = None, exchange: Optional[Any] = None, rate_limiter: Optional[Any] = None):
         self.state_file = STATE_FILE
         self.state_lock = Lock()
         self.state: Dict[str, Any] = self._load_state()
         self.stats = stats
+        self.exchange = exchange
+        self.rate_limiter = rate_limiter
 
     def _load_state(self) -> Dict[str, Any]:
         """Load state from file"""
@@ -465,9 +544,11 @@ class SignalTracker:
             temp_file = self.state_file.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.state, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(self.state_file)
             except Exception as e:
                 logger.error("Failed to save state: %s", e)
@@ -577,7 +658,9 @@ class SignalTracker:
         if not signals:
             return
 
-        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        # Use stored exchange or create a fallback
+        if self.exchange is None:
+            self.exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         updated = False
 
         for signal_id, signal_data in list(signals.items()):
@@ -591,7 +674,11 @@ class SignalTracker:
                 updated = True
                 continue
             try:
-                ticker = exchange.fetch_ticker(f"{symbol.replace("/USDT", "")}/USDT:USDT")
+                market_symbol = f"{symbol.replace("/USDT", "")}/USDT:USDT"
+                if self.rate_limiter:
+                    ticker = self.rate_limiter.execute(self.exchange.fetch_ticker, market_symbol)
+                else:
+                    ticker = self.exchange.fetch_ticker(market_symbol)
                 current_price = ticker.get("last") if isinstance(ticker, dict) else None
             except Exception as exc:
                 logger.warning("Ticker fetch failed for %s: %s", symbol, exc)
@@ -626,12 +713,17 @@ class SignalTracker:
             # Direction-aware TP/SL detection
             if direction == "LONG":
                 # LONG: TP when price goes UP, SL when price goes DOWN
+                # Allow hitting TP slightly below target (1 - tolerance)
+                # Allow hitting SL slightly above target (1 + tolerance) for safety
                 hit_tp3 = current_price >= (tp3 * (1 - PRICE_TOLERANCE))
                 hit_tp2 = current_price >= (tp2 * (1 - PRICE_TOLERANCE)) and not hit_tp3
                 hit_tp1 = current_price >= (tp1 * (1 - PRICE_TOLERANCE)) and not hit_tp2 and not hit_tp3
                 hit_sl = current_price <= (sl * (1 + PRICE_TOLERANCE))
             else:
                 # SHORT: TP when price goes DOWN, SL when price goes UP
+                # BUG FIX: For SHORT, TPs are BELOW entry, so we want to trigger
+                # when price drops to or slightly ABOVE the TP target (1 + tolerance)
+                # SL is ABOVE entry, so trigger when price rises to or slightly BELOW SL (1 - tolerance)
                 hit_tp3 = current_price <= (tp3 * (1 + PRICE_TOLERANCE))
                 hit_tp2 = current_price <= (tp2 * (1 + PRICE_TOLERANCE)) and not hit_tp3
                 hit_tp1 = current_price <= (tp1 * (1 + PRICE_TOLERANCE)) and not hit_tp2 and not hit_tp3
@@ -668,17 +760,37 @@ class SignalTracker:
                     message = summary_message
                 else:
                     timeframe_val = signal_data.get("timeframe", "")
-                    pnl = ((current_price - entry) / entry) * 100 if entry else 0.0
+                    # BUG FIX: Use direction-aware PnL calculation
+                    if entry:
+                        if direction == "LONG":
+                            pnl = ((current_price - entry) / entry) * 100
+                        else:
+                            pnl = ((entry - current_price) / entry) * 100
+                    else:
+                        pnl = 0.0
                     message = (
                         f"🎯 {normalize_symbol(symbol)} {timeframe_val} {result} hit!\n"
                         f"Entry {entry:.6f} | Exit {current_price:.6f}\n"
                         f"P&L: {pnl:+.2f}%"
                     )
 
-                if notifier:
+                if notifier and ENABLE_RESULT_NOTIFICATIONS:
                     notifier.send_message(message)
+                elif not ENABLE_RESULT_NOTIFICATIONS:
+                    logger.info("Result notification skipped (disabled): %s %s", signal_id, result)
 
                 logger.info("Signal %s closed with %s", signal_id, result)
+
+                # Archive to closed_signals before removing
+                closed = self.state.setdefault("closed_signals", {})
+                closed_signal = signal_data.copy()
+                closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+                closed_signal["exit_price"] = current_price
+                closed_signal["result"] = result
+                pnl = ((current_price - entry) / entry) * 100 if direction == "LONG" else ((entry - current_price) / entry) * 100
+                closed_signal["pnl_percent"] = pnl
+                closed[signal_id] = closed_signal
+
                 signals.pop(signal_id)
                 updated = True
 
@@ -695,12 +807,13 @@ class FibSwingBot:
         self.watchlist: List[WatchItem] = self._load_watchlist()
         self.notifier = self._build_notifier()
         self.stats = SignalStats("Fib Swing Bot", STATS_FILE)
-        self.tracker = SignalTracker(self.stats)
         self.evaluator = FibSignalEvaluator(confirmation_candles=5)
         self.health_monitor = self._build_health_monitor()
         self.rate_limiter = RateLimiter(calls_per_minute=30) if RateLimiter else None
         self.exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         self.rate_limiter_handler = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
+        # Pass exchange and rate limiter to tracker for monitoring
+        self.tracker = SignalTracker(self.stats, self.exchange, self.rate_limiter_handler)
 
         logger.info("Fib Swing Bot initialized with %d symbols", len(self.watchlist))
 
@@ -759,24 +872,27 @@ class FibSwingBot:
 
     def _format_signal_message(self, signal: FibSignal) -> str:
         """Format Fibonacci signal for Telegram using centralized template."""
-        # Get performance stats
+        # Get performance stats (with error handling for corrupted stats)
         perf_stats = None
         if self.stats is not None:
-            symbol_key = normalize_symbol(signal.symbol)
-            counts = self.stats.symbol_tp_sl_counts(symbol_key)
-            tp1_count = counts.get("TP1", 0)
-            tp2_count = counts.get("TP2", 0)
-            sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
+            try:
+                symbol_key = normalize_symbol(signal.symbol)
+                counts = self.stats.symbol_tp_sl_counts(symbol_key)
+                tp1_count = counts.get("TP1", 0)
+                tp2_count = counts.get("TP2", 0)
+                sl_count = counts.get("SL", 0)
+                total = tp1_count + tp2_count + sl_count
 
-            if total > 0:
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                }
+                if total > 0:
+                    perf_stats = {
+                        "tp1": tp1_count,
+                        "tp2": tp2_count,
+                        "sl": sl_count,
+                        "wins": tp1_count + tp2_count,
+                        "total": total,
+                    }
+            except Exception as e:
+                logger.warning("Failed to get performance stats for %s: %s", signal.symbol, e)
 
         # Build extra info with Fibonacci-specific data
         fib_info = f"Fib: {signal.fib_level}" if signal.fib_level != "N/A" else ""
@@ -822,6 +938,11 @@ class FibSwingBot:
 
                     # Scan watchlist
                     for item in self.watchlist:
+                        # Check for shutdown between symbols for faster response
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during watchlist scan")
+                            break
+
                         symbol_val = item.get("symbol") if isinstance(item, dict) else None
                         if not isinstance(symbol_val, str):
                             continue
@@ -904,6 +1025,9 @@ class FibSwingBot:
                     logger.info("Cycle complete; sleeping %d seconds", self.interval)
                     # Sleep in 1-second chunks to respond quickly to shutdown signals
                     for _ in range(self.interval):
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during sleep")
+                            break
                         time.sleep(1)
 
                 except Exception as exc:

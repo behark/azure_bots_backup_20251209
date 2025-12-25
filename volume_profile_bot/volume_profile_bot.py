@@ -1,47 +1,38 @@
 #!/usr/bin/env python3
-"""Volume Profile Pivot-Anchored bot.
-
-This bot ports the TradingView "Volume Profile, Pivot Anchored" indicator logic into
-Python so we can alert whenever price interacts with Point of Control, Value Area
-High/Low, or when a high-volume bar appears. Alerts are sent via Telegram and
-respect per-symbol cooldowns from the watchlist file.
-"""
-
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import json
 import logging
 import os
-import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
-from types import FrameType
-from uuid import uuid4
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-import ccxt  # type: ignore[import-untyped]
+import ccxt
 import numpy as np
 import numpy.typing as npt
 from dotenv import load_dotenv
 
+# =========================================================
+# PATHS / LOGGING
+# =========================================================
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
 LOG_DIR = ROOT_DIR / "logs"
-STATE_FILE = BASE_DIR / "state.json"
 WATCHLIST_FILE = BASE_DIR / "watchlist.json"
+STATE_FILE = BASE_DIR / "vp_state.json"
 STATS_FILE = LOG_DIR / "volume_profile_stats.json"
-
-# Exchange configuration - actual exchange used for data
-EXCHANGE_NAME = "Binance Futures"
-
-# Module-level lock for state file access
-_state_lock = Lock()
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -50,633 +41,546 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "volume_profile.log"),
+        logging.FileHandler(LOG_DIR / "volume_profile_bot.log"),
     ],
 )
 
 logger = logging.getLogger("volume_profile_bot")
 
-
 load_dotenv(ROOT_DIR / ".env")
 load_dotenv(BASE_DIR / ".env")
-
 sys.path.insert(0, str(ROOT_DIR))
 
-# Required imports (fail fast if missing)
-from message_templates import format_signal_message
+# =========================================================
+# REQUIRED MODULES
+# =========================================================
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
-from tp_sl_calculator import TPSLCalculator, CalculationMethod
 
-# Optional imports (safe fallback)
-from safe_import import safe_import
-HealthMonitor = safe_import('health_monitor', 'HealthMonitor', logger_instance=logger)
-RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler', logger_instance=logger)
+# =========================================================
+# STRATEGY CONFIGURATION (Optimized via backtesting)
+# =========================================================
+# Symbols that consistently underperform - skip these
+BLACKLISTED_SYMBOLS = {"WET/USDT", "ID/USDT", "BAS/USDT", "AVNT/USDT", "FHE/USDT", "LUMIA/USDT"}
 
+# Signal quality filters
+MIN_SCORE = 4  # Require 4 confluence factors (was 3)
+MAX_STOP_LOSS_PCT = 3.0  # Cap stop loss at 3% to prevent large losses
+MIN_RISK_REWARD = 1.2  # Minimum risk:reward ratio
 
-shutdown_requested = False
-
-
-def signal_handler(signum: int, frame: Optional[FrameType]) -> None:  # pragma: no cover - signal path
-    global shutdown_requested
-    shutdown_requested = True
-    logger.info("Received %s, shutting down soon", signal.Signals(signum).name)
-
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-
+# =========================================================
+# UTILS
+# =========================================================
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
-
 def normalize_symbol(symbol: str) -> str:
-    """Normalize symbol to always have /USDT suffix (without duplication).
-
-    Handles cases where symbol may already contain /USDT to avoid
-    creating malformed symbols like 'NIGHT/USDT/USDT'.
-    """
     base = symbol.replace("/USDT", "").replace("_USDT", "")
     return f"{base}/USDT"
 
+# =========================================================
+# TECHNICAL ANALYSIS FUNCTIONS (Ported from CLI)
+# =========================================================
+def calculate_rsi(closes: np.ndarray, period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 50.0
+        
+    deltas = np.diff(closes)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
 
-def load_watchlist() -> List[Dict[str, object]]:
-    if not WATCHLIST_FILE.exists():
-        raise FileNotFoundError(f"Watchlist file missing: {WATCHLIST_FILE}")
-    return cast(List[Dict[str, object]], json.loads(WATCHLIST_FILE.read_text()))
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
 
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
-def load_state() -> Dict[str, Any]:
-    if not STATE_FILE.exists():
-        return {"last_alerts": {}, "open_positions": {}}
-    try:
-        data = json.loads(STATE_FILE.read_text() or "{}")
-    except json.JSONDecodeError:
-        data = {}
-    data.setdefault("last_alerts", {})
-    data.setdefault("open_positions", {})
-    return cast(Dict[str, Any], data)
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return float(100 - (100 / (1 + rs)))
 
-
-def save_state(state: Dict[str, Any]) -> None:
-    """Save state to file with file locking for concurrent access safety."""
-    with _state_lock:
-        temp_file = STATE_FILE.with_suffix('.tmp')
-        try:
-            with open(temp_file, 'w') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                json.dump(state, f, indent=2)
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            temp_file.replace(STATE_FILE)
-        except Exception as e:
-            logger.error("Failed to save state: %s", e)
-            if temp_file.exists():
-                temp_file.unlink()
-
-
-@dataclass
-class IndicatorConfig:
-    pivot_length: int = 20
-    profile_bins: int = 25
-    value_area_pct: float = 0.68
-    volume_ma_length: int = 89
-    high_volume_mult: float = 1.618
-
-
-@dataclass
-class TradeSettings:
-    range_risk_fraction: float = 0.5  # fraction of VA range used to size risk
-    buffer_fraction: float = 0.05  # extra padding beyond VA boundaries
-    tp1_rr: float = 1.2  # risk/reward multiplier for TP1
-    tp2_rr: float = 1.8  # risk/reward multiplier for TP2
-    max_positions_per_symbol: int = 40
-
-
-class PivotVolumeProfile:
-    def __init__(self, config: IndicatorConfig):
-        self.config = config
-
-    def compute(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]], closes: npt.NDArray[np.floating[Any]], volumes: npt.NDArray[np.floating[Any]]) -> Optional[Dict[str, float]]:
-        events = self._detect_pivots(highs, lows)
-        if len(events) < 2:
-            return None
-        start_idx, end_idx = events[-2][1], events[-1][1]
-        if start_idx == end_idx:
-            return None
-        lo = min(start_idx, end_idx)
-        hi = max(start_idx, end_idx)
-        segment_high = float(np.max(highs[lo : hi + 1]))
-        segment_low = float(np.min(lows[lo : hi + 1]))
-        if segment_high <= segment_low:
-            return None
-        bins = self.config.profile_bins
-        step = (segment_high - segment_low) / bins
-        if step <= 0:
-            return None
-        vol_profile = np.zeros(bins)
-        prices = (highs + lows) / 2.0
-        for idx in range(lo, hi + 1):
-            price = prices[idx]
-            bin_idx = int((price - segment_low) / step)
-            bin_idx = max(0, min(bins - 1, bin_idx))
-            vol_profile[bin_idx] += volumes[idx]
-
-        total_volume = float(np.sum(vol_profile))
-        if total_volume <= 0:
-            return None
-        poc_idx = int(np.argmax(vol_profile))
-        value_bins = {poc_idx}
-        cumulative = vol_profile[poc_idx]
-        target = total_volume * self.config.value_area_pct
-        offset = 1
-        while cumulative < target and (poc_idx - offset >= 0 or poc_idx + offset < bins):
-            left_idx = poc_idx - offset
-            right_idx = poc_idx + offset
-            left_vol = vol_profile[left_idx] if left_idx >= 0 else -1.0
-            right_vol = vol_profile[right_idx] if right_idx < bins else -1.0
-            if right_vol >= left_vol and right_idx < bins:
-                value_bins.add(right_idx)
-                cumulative += right_vol
-            if cumulative >= target:
-                break
-            if left_idx >= 0:
-                value_bins.add(left_idx)
-                cumulative += max(left_vol, 0.0)
-            offset += 1
-
-        poc_price = segment_low + (poc_idx + 0.5) * step
-        vah_idx = max(value_bins)
-        val_idx = min(value_bins)
-        vah_price = segment_low + (vah_idx + 1.0) * step
-        val_price = segment_low + val_idx * step
-
-        vols = volumes.astype(float)
-        if len(vols) < self.config.volume_ma_length + 1:
-            return {
-                "poc": poc_price,
-                "vah": vah_price,
-                "val": val_price,
-                "high_volume": False,
-            }
-        window = vols[-self.config.volume_ma_length :]
-        vol_ma = float(np.mean(window))
-        high_volume = vols[-1] > vol_ma * self.config.high_volume_mult
-        return {
-            "poc": poc_price,
-            "vah": vah_price,
-            "val": val_price,
-            "high_volume": high_volume,
-        }
-
-    def _detect_pivots(self, highs: npt.NDArray[np.floating[Any]], lows: npt.NDArray[np.floating[Any]]) -> List[Tuple[str, int, float]]:
-        length = self.config.pivot_length
-        events: List[Tuple[str, int, float]] = []
-        for idx in range(length, len(highs) - length):
-            segment_high = np.max(highs[idx - length : idx + length + 1])
-            segment_low = np.min(lows[idx - length : idx + length + 1])
-            if highs[idx] >= segment_high:
-                events.append(("H", idx, float(highs[idx])))
-            if lows[idx] <= segment_low:
-                events.append(("L", idx, float(lows[idx])))
-        events.sort(key=lambda item: item[1])
-        return events
-
-
-class VolumeProfileBot:
-    def __init__(self, interval: int = 60) -> None:
-        self.interval = interval
-        self.watchlist = load_watchlist()
-        self.state = load_state()
-        self.client = ccxt.binanceusdm({
-            "enableRateLimit": True,
-            "options": {"defaultType": "swap"}
-        })
-        self.notifier = self._init_notifier()
-        self.indicator = PivotVolumeProfile(IndicatorConfig())
-        self.trade_settings = TradeSettings()
-        self.stats = SignalStats("Volume Profile Bot", STATS_FILE)
-        self.exchange = EXCHANGE_NAME
-        self.rate_limiter = (
-            RateLimitHandler(base_delay=0.5, max_retries=5)
-            if RateLimitHandler else None
-        )
-        self.health_monitor = (
-            HealthMonitor("Volume Profile Bot", self.notifier, heartbeat_interval=3600)
-            if 'HealthMonitor' in globals() and HealthMonitor is not None
-            else None
-        )
-
-    def _init_notifier(self) -> Optional[TelegramNotifier]:
-        if TelegramNotifier is None:
-            logger.warning("Telegram notifier unavailable")
-            return None
-        token = (
-            os.getenv("TELEGRAM_BOT_TOKEN_VOLUME_PROFILE")
-            or os.getenv("TELEGRAM_BOT_TOKEN_VOLUME")
-            or os.getenv("TELEGRAM_BOT_TOKEN")
-        )
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not token or not chat_id:
-            logger.warning("Telegram credentials missing; alerts will be logged only")
-            return None
-        return TelegramNotifier(
-            bot_token=token,
-            chat_id=chat_id,
-            signals_log_file=str(LOG_DIR / "volume_profile_signals.json"),
-        )
-
-    def _record_alert(self, symbol: str, event_name: str) -> None:
-        timestamp = utcnow().isoformat()
-        self.state.setdefault("last_alerts", {}).setdefault(symbol, {})[event_name] = timestamp
-
-    def run_loop(self) -> None:
-        logger.info("Starting Volume Profile bot for %d symbols", len(self.watchlist))
-        monitor = self.health_monitor
-        if monitor:
-            monitor.send_startup_message()
-        while not shutdown_requested:
-            start_time = time.time()
-            self.run_cycle()
-            elapsed = time.time() - start_time
-            sleep_for = max(0, self.interval - elapsed)
-            if shutdown_requested:
-                break
-            if sleep_for:
-                logger.info("Cycle complete; sleeping %.1fs", sleep_for)
-                # Sleep in 1-second chunks to respond quickly to shutdown signals
-                for _ in range(int(sleep_for)):
-                    if shutdown_requested:
-                        break
-                    time.sleep(1)
-                # Sleep remaining fractional seconds
-                if not shutdown_requested and sleep_for % 1 > 0:
-                    time.sleep(sleep_for % 1)
-        logger.info("Shutdown requested, exiting main loop")
-        if monitor:
-            monitor.send_shutdown_message()
-
-    def run_cycle(self) -> None:
-        monitor = self.health_monitor
-        for entry in self.watchlist:
-            symbol = str(entry.get("symbol"))
-            timeframe = str(entry.get("period", "5m"))
-            cooldown_val = entry.get("cooldown_minutes", 5)
-            cooldown_minutes = int(cooldown_val) if isinstance(cooldown_val, (int, float, str)) else 5
-            try:
-                candles = self.fetch_ohlcv(symbol, timeframe)
-                if not candles:
-                    continue
-                closes = np.array([c[4] for c in candles], dtype=float)
-                if closes.size == 0:
-                    continue
-                curr_close = float(closes[-1])
-                levels = self.indicator.compute(
-                    highs=np.array([c[2] for c in candles], dtype=float),
-                    lows=np.array([c[3] for c in candles], dtype=float),
-                    closes=closes,
-                    volumes=np.array([c[5] for c in candles], dtype=float),
-                )
-                if levels and closes.size >= 2:
-                    prev_close = float(closes[-2])
-                    self.evaluate_events(
-                        symbol,
-                        timeframe,
-                        prev_close,
-                        curr_close,
-                        levels,
-                        cooldown_minutes,
-                    )
-                self._check_open_positions(symbol, curr_close)
-            except Exception as exc:
-                logger.error("Failed to process %s: %s", symbol, exc, exc_info=True)
-                if monitor:
-                    monitor.record_error(str(exc))
-
-        if monitor:
-            monitor.record_cycle()
-
-        save_state(self.state)
-
-    def fetch_ohlcv(self, symbol: str, timeframe: str) -> Sequence[Sequence[float]]:
-        market = f"{symbol.replace("/USDT", "")}/USDT:USDT"
-        if self.rate_limiter:
-            candles = self.rate_limiter.execute(
-                self.client.fetch_ohlcv,
-                market,
-                timeframe=timeframe,
-                limit=500
-            )
-        else:
-            candles = self.client.fetch_ohlcv(market, timeframe=timeframe, limit=500)
-        return cast(Sequence[Sequence[float]], candles)
-
-    def evaluate_events(
-        self,
-        symbol: str,
-        timeframe: str,
-        prev_close: float,
-        curr_close: float,
-        levels: Dict[str, float],
-        cooldown_minutes: int,
-    ) -> None:
-        events = [
-            ("poc", levels["poc"]),
-            ("vah", levels["vah"]),
-            ("val", levels["val"]),
-        ]
-        for key, level in events:
-            direction = self._cross_direction(prev_close, curr_close, level)
-            if not direction:
-                continue
-            event_name = f"{key}_{direction}"
-            if not self._can_alert(symbol, event_name, cooldown_minutes):
-                continue
-            outcome = self._maybe_open_trade(
-                symbol=symbol,
-                timeframe=timeframe,
-                event_name=event_name,
-                trigger_level=level,
-                prev_close=prev_close,
-                curr_close=curr_close,
-                levels=levels,
-            )
-            if outcome:
-                continue
-            if outcome is None:
-                continue
-            message = (
-                f"{symbol} ({timeframe}) price {direction}crossed {key.upper()} level at {level:.4f}.\n"
-                f"Close: {curr_close:.4f}, Previous: {prev_close:.4f}"
-            )
-            self._dispatch(symbol, event_name, message)
-
-        if levels.get("high_volume"):
-            if self._can_alert(symbol, "high_volume", cooldown_minutes):
-                message = (
-                    f"{symbol} ({timeframe}) printed a high-volume bar (>"
-                    f"{self.indicator.config.high_volume_mult}× SMA).\nClose: {curr_close:.4f}"
-                )
-                self._dispatch(symbol, "high_volume", message)
-
-    def _cross_direction(self, prev_close: float, curr_close: float, level: float) -> Optional[str]:
-        if prev_close < level <= curr_close:
-            return "up"
-        if prev_close > level >= curr_close:
-            return "down"
+def detect_candlestick_pattern(opens: List[float], highs: List[float], lows: List[float], closes: List[float]) -> Optional[str]:
+    if len(closes) < 2:
         return None
+        
+    current_open, current_high, current_low, current_close = opens[-1], highs[-1], lows[-1], closes[-1]
+    prev_open, _, _, prev_close = opens[-2], highs[-2], lows[-2], closes[-2]
 
-    def _can_alert(self, symbol: str, event_name: str, cooldown_minutes: int) -> bool:
-        last_alerts = self.state.setdefault("last_alerts", {}).setdefault(symbol, {})
-        last_time_str = last_alerts.get(event_name)
-        if last_time_str:
-            last_time = datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
-            if (utcnow() - last_time).total_seconds() < cooldown_minutes * 60:
-                return False
-        return True
+    body = abs(current_close - current_open)
+    upper_wick = current_high - max(current_close, current_open)
+    lower_wick = min(current_close, current_open) - current_low
 
-    def _dispatch(self, symbol: str, event_name: str, message: str) -> None:
-        self._record_alert(symbol, event_name)
-        logger.info("Alert %s: %s", symbol, message)
+    # Bullish patterns
+    bullish_hammer = (current_close > current_open) and (lower_wick > 2 * body) and (upper_wick < body * 0.3)
+    bullish_engulfing = (prev_close < prev_open) and (current_close > current_open) and (current_close > prev_open) and (current_open < prev_close)
 
-        # Enhanced message format
-        formatted_msg = f"📊 <b>Volume Profile Bot</b>\n\n{message}\n\n⏱️ {datetime.now(timezone.utc).isoformat()}"
-        self._send_message(formatted_msg)
+    # Bearish patterns
+    bearish_star = (current_open > current_close) and (upper_wick > 2 * body) and (lower_wick < body * 0.3)
+    bearish_engulfing = (prev_close > prev_open) and (current_close < current_open) and (current_close < prev_open) and (current_open > prev_close)
 
-    def _send_message(self, message: str) -> None:
-        if self.notifier:
-            try:
-                self.notifier.send_message(message)
-            except Exception as exc:
-                logger.error("Failed to send Telegram alert: %s", exc)
+    if bullish_hammer: return "BULLISH_HAMMER"
+    if bullish_engulfing: return "BULLISH_ENGULFING"
+    if bearish_star: return "BEARISH_STAR"
+    if bearish_engulfing: return "BEARISH_ENGULFING"
+    return None
+
+def calculate_volume_profile(highs: List[float], lows: List[float], volumes: List[float], num_rows: int = 24) -> Dict[str, Any]:
+    if not highs: return {}
+    
+    highest = max(highs)
+    lowest = min(lows)
+    price_range = highest - lowest
+    if price_range == 0: return {}
+    
+    row_height = price_range / num_rows
+    volume_profile = [0.0] * num_rows
+    price_levels = [lowest + (row_height * i) + (row_height / 2) for i in range(num_rows)]
+
+    for i in range(len(highs)):
+        bar_high, bar_low, bar_vol = highs[i], lows[i], volumes[i]
+        for j in range(num_rows):
+            level = price_levels[j]
+            if bar_low <= level <= bar_high:
+                volume_profile[j] += bar_vol
+
+    max_vol_idx = volume_profile.index(max(volume_profile))
+    poc = price_levels[max_vol_idx]
+
+    total_volume = sum(volume_profile)
+    target_volume = total_volume * 0.70
+    
+    accumulated = volume_profile[max_vol_idx]
+    upper_idx = lower_idx = max_vol_idx
+
+    while accumulated < target_volume:
+        upper_vol = volume_profile[upper_idx + 1] if upper_idx < num_rows - 1 else 0
+        lower_vol = volume_profile[lower_idx - 1] if lower_idx > 0 else 0
+
+        if upper_vol > lower_vol and upper_idx < num_rows - 1:
+            upper_idx += 1
+            accumulated += upper_vol
+        elif lower_idx > 0:
+            lower_idx -= 1
+            accumulated += lower_vol
         else:
-            logger.info("Notification (no Telegram configured): %s", message)
+            break
 
-    def _open_positions(self) -> Dict[str, Dict[str, Any]]:
-        return cast(Dict[str, Dict[str, Any]], self.state.setdefault("open_positions", {}))
+    hvn_threshold = (total_volume / num_rows) * 1.5
+    hvn_levels = [(price_levels[i], vol) for i, vol in enumerate(volume_profile) if vol > hvn_threshold]
 
-    def _symbol_open_count(self, symbol: str) -> int:
-        positions = self._open_positions()
-        return sum(1 for trade in positions.values() if trade.get("symbol") == symbol)
+    return {
+        'poc': poc,
+        'vah': price_levels[upper_idx],
+        'val': price_levels[lower_idx],
+        'hvn_levels': hvn_levels,
+        'row_height': row_height
+    }
 
-    def _maybe_open_trade(
-        self,
-        symbol: str,
-        timeframe: str,
-        event_name: str,
-        trigger_level: float,
-        prev_close: float,
-        curr_close: float,
-        levels: Dict[str, float],
-    ) -> Optional[bool]:
-        direction = "LONG" if event_name.endswith("_up") else "SHORT"
-        if self._symbol_open_count(symbol) >= self.trade_settings.max_positions_per_symbol:
-            return None
+# =========================================================
+# STATE MANAGEMENT
+# =========================================================
+class StateManager:
+    """Thread-safe state management for signal tracking."""
 
-        va_range = abs(levels["vah"] - levels["val"])
-        if va_range <= 0:
-            return False
+    def __init__(self) -> None:
+        self.state_lock = threading.Lock()
+        self.state = self._load_state()
 
-        # Use TPSLCalculator with STRUCTURE method (VAL/VAH as swing levels)
-        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
-        calc_levels = calculator.calculate(
-            entry=curr_close,
-            direction=direction,
-            method=CalculationMethod.STRUCTURE,
-            swing_high=levels["vah"],
-            swing_low=levels["val"],
-            tp1_multiplier=self.trade_settings.tp1_rr,
-            tp2_multiplier=self.trade_settings.tp2_rr,
-        )
+    def _empty_state(self) -> Dict[str, Any]:
+        return {"open_signals": {}, "closed_signals": {}, "last_alerts": {}}
 
-        if not calc_levels.is_valid:
-            logger.debug("%s: TPSLCalculator rejected - %s", symbol, calc_levels.rejection_reason)
-            return False
+    def _load_state(self) -> Dict[str, Any]:
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    data = json.load(f)
+                    # Ensure all required keys exist
+                    for key in self._empty_state():
+                        if key not in data:
+                            data[key] = {}
+                    return cast(Dict[str, Any], data)
+            except Exception:
+                return self._empty_state()
+        return self._empty_state()
 
-        sl = calc_levels.stop_loss
-        tp1 = calc_levels.take_profit_1
-        tp2 = calc_levels.take_profit_2
+    def _save_state(self) -> None:
+        with self.state_lock:
+            temp_file = STATE_FILE.with_suffix('.tmp')
+            try:
+                with open(temp_file, 'w') as f:
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    json.dump(self.state, f, indent=2)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                temp_file.replace(STATE_FILE)
+            except Exception as e:
+                logger.error(f"Failed to save state: {e}")
 
-        signal_id = f"VP-{symbol}-{int(time.time())}-{uuid4().hex[:4]}"
-        created_at = utcnow().isoformat()
-        positions = self._open_positions()
-        positions[signal_id] = {
-            "symbol": symbol,
-            "pair": normalize_symbol(symbol),
-            "direction": direction,
-            "entry": curr_close,
-            "sl": sl,
-            "tp_targets": [tp1, tp2],
-            "timeframe": timeframe,
-            "event": event_name,
-            "trigger_level": trigger_level,
-            "created_at": created_at,
-        }
-
-        extra = {
-            "display_symbol": normalize_symbol(symbol),
-            "timeframe": timeframe,
-            "exchange": self.exchange,
-            "event": event_name,
-            "sl": sl,
-            "tp_targets": [tp1, tp2],
-        }
+    def should_alert(self, symbol: str, timeframe: str, cooldown_mins: int = 30) -> bool:
+        """Check cooldown to prevent duplicate alerts."""
+        key = f"{symbol}-{timeframe}"
+        last_ts = self.state.get("last_alerts", {}).get(key)
+        if not last_ts:
+            return True
         try:
-            self.stats.record_open(
-                signal_id=signal_id,
-                symbol=normalize_symbol(symbol),
-                direction=direction,
-                entry=curr_close,
-                created_at=created_at,
-                extra=extra,
-            )
-        except Exception as exc:
-            logger.error("Failed to record open trade %s: %s", signal_id, exc)
+            last = datetime.fromisoformat(last_ts)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - last) >= timedelta(minutes=cooldown_mins)
+        except Exception:
+            return True
 
-        self._record_alert(symbol, event_name)
-        save_state(self.state)
+    def add_signal(self, sig_id: str, signal_data: Dict[str, Any], symbol: str, timeframe: str) -> None:
+        """Add a new signal to open_signals."""
+        signals = self.state.setdefault("open_signals", {})
+        signal_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        signals[sig_id] = signal_data
 
-        entry_message = self._build_entry_message(
-            signal_id=signal_id,
-            symbol=symbol,
-            timeframe=timeframe,
-            direction=direction,
-            event_name=event_name,
-            entry=curr_close,
-            sl=sl,
-            tp_targets=[tp1, tp2],
-            prev_close=prev_close,
-            trigger_level=trigger_level,
-        )
-        self._send_message(entry_message)
-        return True
+        last_alerts = self.state.setdefault("last_alerts", {})
+        last_alerts[f"{symbol}-{timeframe}"] = datetime.now(timezone.utc).isoformat()
 
-    def _build_entry_message(
-        self,
-        signal_id: str,
-        symbol: str,
-        timeframe: str,
-        direction: str,
-        event_name: str,
-        entry: float,
-        sl: float,
-        tp_targets: List[float],
-        prev_close: float,
-        trigger_level: float,
-    ) -> str:
-        """Build entry message using centralized template."""
-        # Convert LONG/SHORT to BULLISH/BEARISH
-        msg_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+        self._save_state()
+        logger.info(f"Signal added: {sig_id}")
 
-        # Get historical stats
-        symbol_key = normalize_symbol(symbol)
-        counts = self.stats.symbol_tp_sl_counts(symbol_key)
-        tp1_count = counts.get("TP1", 0)
-        tp2_count = counts.get("TP2", 0)
-        sl_count = counts.get("SL", 0)
-        total = tp1_count + tp2_count + sl_count
-
-        perf_stats = None
-        if total > 0:
-            perf_stats = {
-                "tp1": tp1_count,
-                "tp2": tp2_count,
-                "sl": sl_count,
-                "wins": tp1_count + tp2_count,
-                "total": total,
-            }
-
-        # Build extra info
-        extra_info = f"Trigger: {event_name.upper()} at {trigger_level:.4f}"
-
-        return format_signal_message(
-            bot_name="VOLUME PROFILE",
-            symbol=symbol_key,
-            direction=msg_direction,
-            entry=entry,
-            stop_loss=sl,
-            tp1=tp_targets[0],
-            tp2=tp_targets[1],
-            exchange=self.exchange.upper(),
-            timeframe=timeframe,
-            current_price=entry,
-            signal_id=signal_id,
-            performance_stats=perf_stats,
-            extra_info=extra_info,
-        )
-
-    def _check_open_positions(self, symbol: str, current_price: float) -> None:
-        positions = self._open_positions()
-        for signal_id, trade in list(positions.items()):
-            if trade.get("symbol") != symbol:
-                continue
-
-            direction = trade.get("direction", "LONG")
-            sl = float(trade.get("sl", trade.get("entry", 0.0)))
-            tp_targets = trade.get("tp_targets", [])
-            if len(tp_targets) < 2:
-                tp_targets = [trade.get("entry", current_price), trade.get("entry", current_price)]
-            tp1, tp2 = float(tp_targets[0]), float(tp_targets[1])
-
-            if direction == "LONG":
-                if current_price <= sl:
-                    self._close_trade(signal_id, current_price, "SL")
-                    continue
-                if current_price >= tp2:
-                    self._close_trade(signal_id, current_price, "TP2")
-                    continue
-                if current_price >= tp1:
-                    self._close_trade(signal_id, current_price, "TP1")
-            else:
-                if current_price >= sl:
-                    self._close_trade(signal_id, current_price, "SL")
-                    continue
-                if current_price <= tp2:
-                    self._close_trade(signal_id, current_price, "TP2")
-                    continue
-                if current_price <= tp1:
-                    self._close_trade(signal_id, current_price, "TP1")
-
-    def _close_trade(self, signal_id: str, exit_price: float, result: str) -> None:
-        positions = self._open_positions()
-        trade = positions.pop(signal_id, None)
-        if not trade:
+    def close_signal(self, sig_id: str, exit_price: float, result: str) -> None:
+        """Move signal from open to closed."""
+        signals = self.state.get("open_signals", {})
+        if sig_id not in signals:
             return
 
+        closed = self.state.setdefault("closed_signals", {})
+        closed_signal = signals[sig_id].copy()
+        closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+        closed_signal["exit_price"] = exit_price
+        closed_signal["result"] = result
+
+        # Calculate PnL
+        entry = closed_signal.get("entry", 0)
+        direction = closed_signal.get("type", "LONG")
+        if entry > 0:
+            if direction == "LONG":
+                pnl = (exit_price - entry) / entry * 100
+            else:
+                pnl = (entry - exit_price) / entry * 100
+            closed_signal["pnl_percent"] = pnl
+
+        closed[sig_id] = closed_signal
+        del signals[sig_id]
+        self._save_state()
+        logger.info(f"Signal closed: {sig_id} -> {result}")
+
+    def get_open_signals(self) -> Dict[str, Any]:
+        return self.state.get("open_signals", {})
+
+
+# =========================================================
+# BOT CLASS
+# =========================================================
+class VolumeProfileBot:
+    def __init__(self):
+        self.watchlist = json.loads(WATCHLIST_FILE.read_text())
+        self.client = ccxt.binanceusdm({"enableRateLimit": True})
+        self.notifier = TelegramNotifier(
+            os.getenv("TELEGRAM_BOT_TOKEN"),
+            os.getenv("TELEGRAM_CHAT_ID"),
+            str(LOG_DIR / "signals.json"),
+        )
+        self.stats = SignalStats("VP BOT", STATS_FILE)
+        self.state = StateManager()
+
+    def analyze_symbol(self, symbol: str, timeframe: str) -> Optional[Dict[str, Any]]:
+        # Fetch data
         try:
-            record = self.stats.record_close(signal_id, exit_price, result)
-        except Exception as exc:
-            logger.error("Failed to record close for %s: %s", signal_id, exc)
-            record = None
+            full_symbol = f"{symbol.replace('/USDT','')}/USDT:USDT"
+            ohlcv = self.client.fetch_ohlcv(full_symbol, timeframe, limit=200)
+            if not ohlcv or len(ohlcv) < 50: return None
+        except Exception as e:
+            logger.error(f"Error fetching {symbol}: {e}")
+            return None
 
-        save_state(self.state)
+        # Parse data
+        opens = [x[1] for x in ohlcv]
+        highs = [x[2] for x in ohlcv]
+        lows = [x[3] for x in ohlcv]
+        closes = [x[4] for x in ohlcv]
+        volumes = [x[5] for x in ohlcv]
 
-        if record:
-            summary = self.stats.build_summary_message(record)
-            self._send_message(summary)
+        current_price = closes[-1]
+        
+        # 1. Volume Profile Analysis (Last 100 candles)
+        vp = calculate_volume_profile(highs[-100:], lows[-100:], volumes[-100:])
+        if not vp: return None
+
+        # 2. Technical Indicators
+        rsi = calculate_rsi(np.array(closes))
+        ema20 = sum(closes[-20:]) / 20
+        pattern = detect_candlestick_pattern(opens, highs, lows, closes)
+        
+        # Volume Spike (1.2x average of last 20)
+        avg_vol = sum(volumes[-20:]) / 20
+        vol_spike = volumes[-1] > avg_vol * 1.2
+
+        # 3. Context Analysis
+        near_hvn = False
+        min_dist = float('inf')
+        for hvn_price, _ in vp['hvn_levels']:
+            dist = abs(current_price - hvn_price)
+            if dist < min_dist: min_dist = dist
+        
+        if min_dist < vp['row_height'] * 2:
+            near_hvn = True
+
+        # 4. Scoring System
+        long_score = 0
+        short_score = 0
+        reasons = []
+
+        # Trend (EMA)
+        if current_price > ema20:
+            long_score += 1
+            # reasons.append("Price > EMA20")
         else:
-            fallback = (
-                f"{trade.get('symbol')} {trade.get('direction')} closed at {exit_price:.4f}"
-                f" with result {result}"
-            )
-            self._send_message(f"📊 Volume Profile Bot\n{fallback}")
+            short_score += 1
+            # reasons.append("Price < EMA20")
 
+        # Momentum (RSI)
+        if 35 < rsi < 60:
+            long_score += 1
+            reasons.append(f"RSI Bullish ({rsi:.1f})")
+        elif 40 < rsi < 65:
+            short_score += 1
+            reasons.append(f"RSI Bearish ({rsi:.1f})")
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Volume Profile bot")
-    parser.add_argument("--interval", type=int, default=60, help="Loop interval seconds")
-    parser.add_argument("--once", action="store_true", help="Run only one cycle")
-    return parser.parse_args()
+        # Structure (HVN Bounce)
+        if near_hvn:
+            if current_price < vp['poc']: # Below POC + Near HVN = Support
+                long_score += 1
+                reasons.append("Bounce off Volume Support")
+            elif current_price > vp['poc']: # Above POC + Near HVN = Resistance
+                short_score += 1
+                reasons.append("Reject off Volume Resistance")
 
+        # Pattern
+        if pattern:
+            if "BULLISH" in pattern:
+                long_score += 1
+                reasons.append(f"Pattern: {pattern}")
+            elif "BEARISH" in pattern:
+                short_score += 1
+                reasons.append(f"Pattern: {pattern}")
 
-def main() -> None:
-    args = parse_args()
-    bot = VolumeProfileBot(interval=args.interval)
-    if not args.once:
-        bot.run_loop()
-    else:
-        bot.run_cycle()
+        # Volume
+        if vol_spike:
+            if current_price > opens[-1]:
+                long_score += 1
+                reasons.append("High Vol Buying")
+            else:
+                short_score += 1
+                reasons.append("High Vol Selling")
 
+        # Log status
+        logger.info(f"{symbol} | Price: {current_price:.4f} | Long Score: {long_score} | Short Score: {short_score}")
 
+        # 5. Signal Generation (Optimized via backtesting)
+        signal = None
+        sl = tp1 = tp2 = risk = reward = 0.0
+
+        # IMPROVEMENT: Require MIN_SCORE (4) instead of 3
+        if long_score >= MIN_SCORE and long_score > short_score:
+            signal = "LONG"
+            sl = vp['val'] - vp['row_height']
+
+            # IMPROVEMENT: Cap stop loss at MAX_STOP_LOSS_PCT (3%)
+            risk_pct = (current_price - sl) / current_price * 100
+            if risk_pct > MAX_STOP_LOSS_PCT:
+                sl = current_price * (1 - MAX_STOP_LOSS_PCT / 100)
+
+            risk = current_price - sl
+            if risk <= 0:
+                risk = current_price * 0.005  # Fallback
+
+            # Dynamic TP1
+            if current_price < vp['poc'] - (vp['row_height'] / 2):
+                tp1 = vp['poc']
+            elif current_price < vp['vah'] - (vp['row_height'] / 2):
+                tp1 = vp['vah']
+            else:
+                tp1 = current_price + (risk * 1.5)
+
+            tp2 = current_price + (risk * 3)
+            reward = tp1 - current_price
+
+        elif short_score >= MIN_SCORE and short_score > long_score:
+            signal = "SHORT"
+            sl = vp['vah'] + vp['row_height']
+
+            # IMPROVEMENT: Cap stop loss at MAX_STOP_LOSS_PCT (3%)
+            risk_pct = (sl - current_price) / current_price * 100
+            if risk_pct > MAX_STOP_LOSS_PCT:
+                sl = current_price * (1 + MAX_STOP_LOSS_PCT / 100)
+
+            risk = sl - current_price
+            if risk <= 0:
+                risk = current_price * 0.005  # Fallback
+
+            # Dynamic TP1
+            if current_price > vp['poc'] + (vp['row_height'] / 2):
+                tp1 = vp['poc']
+            elif current_price > vp['val'] + (vp['row_height'] / 2):
+                tp1 = vp['val']
+            else:
+                tp1 = current_price - (risk * 1.5)
+
+            tp2 = current_price - (risk * 3)
+            reward = current_price - tp1
+
+        if signal:
+            # IMPROVEMENT: R:R filter - skip trades with poor risk:reward
+            if risk > 0 and reward < risk * MIN_RISK_REWARD:
+                logger.debug(f"{symbol} | Skipped: R:R {reward/risk:.2f} < {MIN_RISK_REWARD}")
+                return None
+
+            return {
+                "type": signal,
+                "score": max(long_score, short_score),
+                "reasons": reasons,
+                "entry": current_price,
+                "sl": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "vp": vp
+            }
+        return None
+
+    def run_cycle(self):
+        # First check open signals for TP/SL
+        self.check_open_signals()
+
+        # Then scan for new signals
+        for w in self.watchlist:
+            symbol = w["symbol"]
+            tf = w.get("period", "1m")  # Default to 1m
+
+            # IMPROVEMENT: Skip blacklisted symbols (underperformers from backtesting)
+            if symbol in BLACKLISTED_SYMBOLS:
+                continue
+
+            # Check cooldown before analyzing
+            if not self.state.should_alert(symbol, tf, cooldown_mins=30):
+                continue
+
+            signal = self.analyze_symbol(symbol, tf)
+            if signal:
+                self.send_signal(symbol, tf, signal)
+
+    def check_open_signals(self) -> None:
+        """Check open signals for TP/SL hits."""
+        signals = self.state.get_open_signals()
+        if not signals:
+            return
+
+        for sig_id, payload in list(signals.items()):
+            symbol = payload.get("symbol")
+            direction = payload.get("type")
+
+            try:
+                full_symbol = f"{symbol.replace('/USDT','')}/USDT:USDT"
+                ticker = self.client.fetch_ticker(full_symbol)
+                price = ticker.get("last")
+            except Exception as e:
+                logger.debug(f"Error fetching {symbol}: {e}")
+                continue
+
+            if not price:
+                continue
+
+            tp1, tp2 = payload.get("tp1"), payload.get("tp2")
+            sl = payload.get("sl")
+
+            res = None
+            if direction == "LONG":
+                if price >= tp2:
+                    res = "TP2"
+                elif price >= tp1:
+                    res = "TP1"
+                elif price <= sl:
+                    res = "SL"
+            else:  # SHORT
+                if price <= tp2:
+                    res = "TP2"
+                elif price <= tp1:
+                    res = "TP1"
+                elif price >= sl:
+                    res = "SL"
+
+            if res:
+                entry = payload.get("entry", 0)
+                if direction == "LONG":
+                    pnl = (price - entry) / entry * 100
+                else:
+                    pnl = (entry - price) / entry * 100
+
+                msg = f"🎯 {normalize_symbol(symbol)} VP {res} HIT!\n💰 PnL: {pnl:.2f}%"
+                self.notifier.send_message(msg)
+                self.state.close_signal(sig_id, price, res)
+
+    def send_signal(self, symbol: str, tf: str, signal: Dict[str, Any]) -> None:
+        reasons_str = "\n".join([f"• {r}" for r in signal['reasons']])
+        emoji = "🟢" if signal['type'] == "LONG" else "🔴"
+
+        # Create signal ID
+        sig_id = f"{symbol}-{tf}-{utcnow().isoformat()}"
+
+        msg = (
+            f"{emoji} <b>SMART CONFLUENCE: {signal['type']}</b>\n"
+            f"{normalize_symbol(symbol)} [{tf}] (Score: {signal['score']}/5)\n\n"
+            f"<b>Why?</b>\n{reasons_str}\n\n"
+            f"🎯 <b>Setup:</b>\n"
+            f"Entry: {signal['entry']:.4f}\n"
+            f"TP1 (POC): {signal['tp1']:.4f}\n"
+            f"TP2 (2R): {signal['tp2']:.4f}\n"
+            f"SL: {signal['sl']:.4f}\n\n"
+            f"📊 <b>Profile:</b>\n"
+            f"VAH: {signal['vp']['vah']:.4f} | VAL: {signal['vp']['val']:.4f}\n"
+            f"⏱️ {utcnow().strftime('%H:%M UTC')}"
+        )
+        self.notifier.send_message(msg)
+
+        # Save signal to state (excluding non-serializable vp data)
+        signal_data = {
+            "symbol": symbol,
+            "timeframe": tf,
+            "type": signal['type'],
+            "score": signal['score'],
+            "reasons": signal['reasons'],
+            "entry": signal['entry'],
+            "tp1": signal['tp1'],
+            "tp2": signal['tp2'],
+            "sl": signal['sl'],
+            "vah": signal['vp']['vah'],
+            "val": signal['vp']['val'],
+            "poc": signal['vp']['poc'],
+        }
+        self.state.add_signal(sig_id, signal_data, symbol, tf)
+
+# =========================================================
+# MAIN
+# =========================================================
 if __name__ == "__main__":
-    main()
+    bot = VolumeProfileBot()
+    logger.info("Smart Confluence Bot Started")
+    
+    while True:
+        try:
+            bot.run_cycle()
+            logger.info("Cycle complete; sleeping 180s (3m)")
+            time.sleep(180)
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user")
+            break
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}", exc_info=True)
+            time.sleep(10)

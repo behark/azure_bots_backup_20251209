@@ -96,17 +96,30 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import signal
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import FrameType
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
 import ccxt  # type: ignore[import-untyped]
 import numpy as np
 import numpy.typing as npt
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
+    """Handle shutdown signals gracefully."""
+    global shutdown_requested
+    sig_name = signal.Signals(signum).name
+    logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+    shutdown_requested = True
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -167,7 +180,8 @@ try:
 except ImportError:
     pass
 
-sys.path.append(str(BASE_DIR.parent))
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 
 # Required imports (fail fast if missing)
 from message_templates import format_signal_message, format_result_message
@@ -1004,16 +1018,41 @@ class MultiIndicatorAnalyzer:
         long_pct = max(0.0, min(100.0, float(long_pct)))
         short_pct = max(0.0, min(100.0, float(short_pct)))
 
-        # Determine direction (threshold lowered from 40 to 25 for more signals)
-        if long_pct > short_pct and long_pct > 25:
+        # WIN RATE FIX: Count how many indicators agree on each direction
+        long_count = sum(1 for d in results.values() if d.get('signal') == 'LONG')
+        short_count = sum(1 for d in results.values() if d.get('signal') == 'SHORT')
+        total_indicators = len(results)
+
+        # WIN RATE FIX: Require minimum indicator agreement (at least 50% of indicators)
+        min_agreement_pct = 0.5
+        min_agreement_count = max(4, int(total_indicators * min_agreement_pct))
+
+        # WIN RATE FIX: Require clear margin between long and short (at least 15% difference)
+        min_margin = 15.0
+        score_margin = abs(long_pct - short_pct)
+
+        # WIN RATE FIX: Higher direction threshold (45% instead of 25%)
+        direction_threshold = 45.0
+
+        # Determine direction with stricter requirements
+        if (long_pct > short_pct and
+            long_pct > direction_threshold and
+            score_margin >= min_margin and
+            long_count >= min_agreement_count):
             direction = "BULLISH"
             confidence = long_pct
-        elif short_pct > long_pct and short_pct > 25:
+        elif (short_pct > long_pct and
+              short_pct > direction_threshold and
+              score_margin >= min_margin and
+              short_count >= min_agreement_count):
             direction = "BEARISH"
             confidence = short_pct
         else:
             direction = "NEUTRAL"
             confidence = 0
+            if long_pct > 30 or short_pct > 30:
+                logger.debug("Confluence: Rejected - margin=%.1f%% (need %.1f%%), long_count=%d, short_count=%d (need %d)",
+                           score_margin, min_margin, long_count, short_count, min_agreement_count)
 
         return direction, confidence, long_score, short_score
 
@@ -1392,6 +1431,21 @@ class BotState:
         if removed:
             self.save()
 
+    def archive_signal(self, signal_id: str, payload: Dict[str, Any], exit_price: float, result: str, pnl_pct: float) -> None:
+        """Archive signal to closed_signals before removal."""
+        with self.state_lock:
+            closed = self.data.setdefault("closed_signals", {})
+            if not isinstance(closed, dict):
+                closed = {}
+                self.data["closed_signals"] = closed
+            closed_signal = payload.copy()
+            closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+            closed_signal["exit_price"] = exit_price
+            closed_signal["result"] = result
+            closed_signal["pnl_percent"] = pnl_pct
+            closed[signal_id] = closed_signal
+        self.save()
+
     def iter_signals(self) -> Dict[str, Dict[str, Any]]:
         """Return a copy of signals to prevent external modification."""
         with self.state_lock:
@@ -1433,6 +1487,24 @@ class BotState:
 
         for signal_id in stale_ids:
             self.remove_signal(signal_id)
+
+        # Also cleanup old closed signals to prevent unbounded growth
+        closed_pruned = 0
+        with self.state_lock:
+            closed = self.data.get("closed_signals", {})
+            max_closed_signals = 100  # Keep only the most recent 100 closed signals
+            if isinstance(closed, dict) and len(closed) > max_closed_signals:
+                sorted_closed = sorted(
+                    closed.items(),
+                    key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                    reverse=True
+                )
+                self.data["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+                closed_pruned = len(closed) - max_closed_signals
+                logger.info("Pruned %d old closed signals (keeping %d)", closed_pruned, max_closed_signals)
+
+        if closed_pruned > 0:
+            self.save()
 
         return len(stale_ids)
 
@@ -1667,11 +1739,16 @@ class DIYBot:
         )
 
     def run(self, loop: bool = False, track_only: bool = False) -> None:
+        global shutdown_requested
         if not self.watchlist:
             logger.error("Empty watchlist; exiting")
             return
 
         logger.info("Starting DIY Multi-Indicator Bot for %d symbols", len(self.watchlist))
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
         # Send startup notification
         if self.health_monitor:
@@ -1694,7 +1771,7 @@ class DIYBot:
         last_heartbeat_time = datetime.now(timezone.utc)
 
         try:
-            while True:
+            while not shutdown_requested:
                 try:
                     signals_this_cycle = self._run_cycle()
 
@@ -1731,12 +1808,15 @@ class DIYBot:
                             last_heartbeat_time = datetime.now(timezone.utc)
                             logger.info(f"Heartbeat sent - no signals for {hours_since_signal:.1f} hours")
 
-                    if not loop:
+                    if not loop or shutdown_requested:
                         break
 
                     logger.info("Cycle complete; sleeping %ds", interval)
                     # Sleep in 1-second chunks to respond quickly to shutdown signals
                     for _ in range(interval):
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during sleep")
+                            break
                         time.sleep(1)
 
                 except Exception as exc:
@@ -1755,11 +1835,17 @@ class DIYBot:
 
     def _run_cycle(self) -> int:
         """Run one analysis cycle. Returns number of signals generated."""
+        global shutdown_requested
         symbol_delay = self.config.get("execution", {}).get("symbol_delay_seconds", 1)
         max_same_symbol = self.config.get("risk", {}).get("max_same_symbol_signals", 2)
         signals_generated = 0
 
         for item in self.watchlist:
+            # Check shutdown during watchlist scan
+            if shutdown_requested:
+                logger.info("Shutdown requested during watchlist scan")
+                break
+
             symbol_val = item.get("symbol") if isinstance(item, dict) else None
             if not isinstance(symbol_val, str):
                 continue
@@ -1903,6 +1989,26 @@ class DIYBot:
             logger.error("%s: Failed to parse OHLCV data: %s", symbol, e)
             return None
 
+        # Validate OHLCV values are not NaN/inf and are positive
+        if np.any(np.isnan(highs)) or np.any(np.isnan(lows)) or \
+           np.any(np.isnan(closes)) or np.any(np.isnan(volumes)):
+            logger.warning("%s: OHLCV contains NaN values, skipping", symbol)
+            return None
+
+        if np.any(np.isinf(highs)) or np.any(np.isinf(lows)) or \
+           np.any(np.isinf(closes)) or np.any(np.isinf(volumes)):
+            logger.warning("%s: OHLCV contains infinite values, skipping", symbol)
+            return None
+
+        if np.any(closes <= 0) or np.any(highs <= 0) or np.any(lows <= 0):
+            logger.warning("%s: OHLCV contains zero or negative prices, skipping", symbol)
+            return None
+
+        # Validate OHLCV logic: high >= low
+        if np.any(highs < lows):
+            logger.warning("%s: OHLCV has high < low, skipping", symbol)
+            return None
+
         # Analyze indicators
         results = self.analyzer.analyze_indicators(highs, lows, closes, volumes)
 
@@ -1913,16 +2019,17 @@ class DIYBot:
         # Calculate confluence
         direction, confidence, long_score, short_score = self.analyzer.calculate_confluence(results)
 
-        # Apply market regime filter to confidence
-        # In CHOPPY markets, reduce confidence by 30% (avoid false signals in noise)
-        # In RANGING markets, reduce confidence by 15% (lower quality signals)
-        # In TRENDING markets, keep full confidence (ideal conditions)
+        # WIN RATE FIX: Skip signals entirely in CHOPPY markets (too much noise)
         if regime == 'CHOPPY':
-            confidence_penalty = 0.30
-            logger.debug("%s: Market is CHOPPY, applying %.0f%% confidence penalty",
-                        symbol, confidence_penalty * 100)
-        elif regime == 'RANGING':
-            confidence_penalty = 0.15
+            logger.info("%s: Skipping signal - market is CHOPPY (ADX=%.1f, volatility=%.2f)",
+                       symbol, regime_info.get('adx_strength', 0), regime_info.get('volatility_score', 0))
+            return None
+
+        # Apply market regime filter to confidence
+        # In RANGING markets, reduce confidence by 20% (lower quality signals)
+        # In TRENDING markets, keep full confidence (ideal conditions)
+        if regime == 'RANGING':
+            confidence_penalty = 0.20
             logger.debug("%s: Market is RANGING, applying %.0f%% confidence penalty",
                         symbol, confidence_penalty * 100)
         else:  # TRENDING
@@ -2102,6 +2209,7 @@ class DIYBot:
                         "tp1": float(tp1_raw),      # type: ignore[arg-type]
                         "tp2": float(tp2_raw),      # type: ignore[arg-type]
                         "sl": float(sl_raw),        # type: ignore[arg-type]
+                        "original_payload": payload,  # Preserve original for archiving
                     }
                 except (ValueError, TypeError):
                     invalid_signal_ids.append(signal_id)
@@ -2215,9 +2323,15 @@ class DIYBot:
                         except Exception as stats_err:
                             logger.error("Failed to record stats for %s: %s", signal_id, stats_err)
 
-                    # Check if we should notify (cooldown prevention)
+                    # Check if result notifications are enabled
+                    enable_result_notifs = self.config.get("telegram", {}).get("enable_result_notifications", True)
                     cooldown = self.config.get("signal", {}).get("result_notification_cooldown_minutes", 15)
-                    should_notify = self.state.should_notify_result(symbol, cooldown)
+                    if not enable_result_notifs:
+                        logger.debug("Result notifications disabled, skipping for %s", signal_id)
+                        should_notify = False
+                    else:
+                        # Check if we should notify (cooldown prevention)
+                        should_notify = self.state.should_notify_result(symbol, cooldown)
 
                     if should_notify:
                         # Send enhanced result notification
@@ -2238,6 +2352,10 @@ class DIYBot:
                     else:
                         logger.info("⏭️  Skipping duplicate result for %s (cooldown: %dm)", symbol, cooldown)
 
+                    # Archive to closed_signals before removing
+                    # Use original_payload to preserve all fields (created_at, timeframe, etc.)
+                    original_payload = sig_data.get("original_payload", sig_data)
+                    self.state.archive_signal(signal_id, original_payload, price, result, pnl_pct)
                     self.state.remove_signal(signal_id)
 
         return hit_signals

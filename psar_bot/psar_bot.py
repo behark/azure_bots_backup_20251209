@@ -7,7 +7,12 @@ Detects strong trends and provides trailing stops
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
 import json
 import logging
 import os
@@ -33,6 +38,13 @@ STATS_FILE = LOG_DIR / "psar_stats.json"
 
 # Exchange configuration - actual exchange used for data
 EXCHANGE_NAME = "Binance Futures"
+
+# Result notification settings
+ENABLE_RESULT_NOTIFICATIONS = False  # Disable TP/SL hit messages
+
+# Price tolerance for TP/SL detection (0.5% = 0.005)
+# This accounts for spread, slippage, and minor price variations
+PRICE_TOLERANCE = 0.005
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -271,7 +283,6 @@ class PSARAnalyzer:
         atr: float,
         symbol: str = "",
         min_sl_distance_pct: float = 0.005,
-        min_rr: float = 1.5,
     ) -> Optional[Dict[str, float]]:
         """
         Calculate entry, stop loss, and targets with validation.
@@ -306,7 +317,7 @@ class PSARAnalyzer:
         tp2_mult = risk_config.tp2_atr_multiplier
         min_rr = risk_config.min_risk_reward
 
-        calculator = TPSLCalculator(min_risk_reward=0.8, min_risk_reward_tp2=1.5)
+        calculator = TPSLCalculator(min_risk_reward=1.5, min_risk_reward_tp2=2.5)
         levels = calculator.calculate(
             entry=entry,
             direction=direction,
@@ -394,25 +405,27 @@ class PSARAnalyzer:
         plus_di = np.zeros(length)
         minus_di = np.zeros(length)
         dx_values = np.zeros(length)
+        # Use tolerance for division by zero checks
+        MIN_DIVISOR = 1e-10
         atr[period] = np.mean(tr[1:period+1])
         plus_dm[period] = np.mean(plus_dm_raw[1:period+1])
         minus_dm[period] = np.mean(minus_dm_raw[1:period+1])
-        if atr[period] != 0:
+        if atr[period] > MIN_DIVISOR:
             plus_di[period] = 100 * (plus_dm[period] / atr[period])
             minus_di[period] = 100 * (minus_dm[period] / atr[period])
             di_sum = plus_di[period] + minus_di[period]
-            if di_sum != 0:
+            if di_sum > MIN_DIVISOR:
                 dx_values[period] = 100 * abs(plus_di[period] - minus_di[period]) / di_sum
         for i in range(period + 1, length):
             atr[i] = atr[i-1] - (atr[i-1] / period) + tr[i]
             plus_dm[i] = plus_dm[i-1] - (plus_dm[i-1] / period) + plus_dm_raw[i]
             minus_dm[i] = minus_dm[i-1] - (minus_dm[i-1] / period) + minus_dm_raw[i]
-            if atr[i] == 0:
+            if atr[i] < MIN_DIVISOR:
                 continue
             plus_di[i] = 100 * (plus_dm[i] / atr[i])
             minus_di[i] = 100 * (minus_dm[i] / atr[i])
             di_sum = plus_di[i] + minus_di[i]
-            if di_sum == 0:
+            if di_sum < MIN_DIVISOR:
                 continue
             dx_values[i] = 100 * abs(plus_di[i] - minus_di[i]) / di_sum
         first_adx_idx = period * 2
@@ -481,6 +494,7 @@ class PSARSignal:
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
+    timeframe: str = "5m"
     current_price: Optional[float] = None
 
 
@@ -538,9 +552,11 @@ class BotState:
             temp_file = self.path.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.data, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(self.path)
             except Exception as e:
                 logger.error("Failed to save state: %s", e)
@@ -642,16 +658,18 @@ class BotState:
 class PSARBot:
     """Main PSAR Trend Bot."""
 
-    # Configuration constants
-    ADX_THRESHOLD = 30  # Increased from 25 to filter weak trends
-    MIN_SL_DISTANCE_PCT = 0.005  # 0.5% minimum stop distance
-    MIN_RISK_REWARD = 1.5  # Minimum R:R ratio
+    # Configuration constants - WIN RATE IMPROVEMENTS
+    ADX_THRESHOLD = 30  # Minimum ADX for trend confirmation
+    MIN_ADX_FOR_SIGNAL = 20  # Skip signals in choppy markets (ADX < 20) - loosened
+    MIN_STRENGTH = 0.3  # Minimum 30% strength (consecutive bars) - loosened
+    MIN_SL_DISTANCE_PCT = 0.005  # 0.5% minimum stop distance - loosened
+    MIN_RISK_REWARD = 1.5  # Minimum R:R ratio - loosened
     MAX_OPEN_SIGNALS = 50  # Maximum concurrent signals
-    MAX_PRICE_DEVIATION_PCT = 0.02  # 2% max price move since signal
+    MAX_PRICE_DEVIATION_PCT = 0.015  # 1.5% max price move since signal (tighter)
     MAX_PSAR_JUMP_PCT = 0.03  # 3% max PSAR movement for trailing stop
     MIN_ATR_PERIODS = 10  # Minimum periods for ATR calculation
-    MIN_TREND_BARS = 3  # Minimum candles in trend before signaling
-    MAX_VOLATILITY_PCT = 0.08  # 8% max ATR/price ratio (volatility filter)
+    MIN_TREND_BARS = 3  # Minimum candles in trend before signaling - loosened
+    MAX_VOLATILITY_PCT = 0.08  # 8% max ATR/price ratio - loosened
     SL_COOLDOWN_MULTIPLIER = 2.0  # 2x cooldown after stop loss hits
 
     def __init__(self, interval: int = 60, default_cooldown: int = 5):
@@ -913,10 +931,30 @@ class PSARBot:
         if ohlcv is None or len(ohlcv) < 50:
             return None
 
-        opens = np.array([x[1] for x in ohlcv])
-        highs = np.array([x[2] for x in ohlcv])
-        lows = np.array([x[3] for x in ohlcv])
-        closes = np.array([x[4] for x in ohlcv])
+        opens = np.array([x[1] for x in ohlcv], dtype=np.float64)
+        highs = np.array([x[2] for x in ohlcv], dtype=np.float64)
+        lows = np.array([x[3] for x in ohlcv], dtype=np.float64)
+        closes = np.array([x[4] for x in ohlcv], dtype=np.float64)
+
+        # Validate OHLCV values are not NaN/inf and are positive
+        if np.any(np.isnan(opens)) or np.any(np.isnan(highs)) or \
+           np.any(np.isnan(lows)) or np.any(np.isnan(closes)):
+            logger.warning("%s: OHLCV contains NaN values, skipping", symbol)
+            return None
+
+        if np.any(np.isinf(opens)) or np.any(np.isinf(highs)) or \
+           np.any(np.isinf(lows)) or np.any(np.isinf(closes)):
+            logger.warning("%s: OHLCV contains infinite values, skipping", symbol)
+            return None
+
+        if np.any(closes <= 0) or np.any(highs <= 0) or np.any(lows <= 0):
+            logger.warning("%s: OHLCV contains zero or negative prices, skipping", symbol)
+            return None
+
+        # Validate OHLCV logic: high >= low
+        if np.any(highs < lows):
+            logger.warning("%s: OHLCV has high < low, skipping", symbol)
+            return None
 
         # Detect signal with increased ADX threshold
         result = self.analyzer.detect_signal(opens, highs, lows, closes, adx_threshold=self.ADX_THRESHOLD)
@@ -925,6 +963,18 @@ class PSARBot:
             return None
 
         direction, psar_value, strength, adx_value, signal_close = result
+
+        # WIN RATE FIX: Skip signals in choppy markets (low ADX)
+        if adx_value < self.MIN_ADX_FOR_SIGNAL:
+            logger.info("%s: Skipping signal - market is choppy (ADX=%.1f < %.1f)",
+                       symbol, adx_value, self.MIN_ADX_FOR_SIGNAL)
+            return None
+
+        # WIN RATE FIX: Require minimum strength (consecutive bars in trend)
+        if strength < self.MIN_STRENGTH:
+            logger.debug("%s: Skipping signal - strength too low (%.0f%% < %.0f%%)",
+                        symbol, strength * 100, self.MIN_STRENGTH * 100)
+            return None
 
         # Calculate ATR with minimum period requirement
         atr = float(self.analyzer.calculate_atr(highs, lows, closes, period=14, min_periods=self.MIN_ATR_PERIODS))
@@ -968,7 +1018,6 @@ class PSARBot:
         targets = self.analyzer.calculate_targets(
             direction, entry_price, psar_value, atr, symbol,
             min_sl_distance_pct=self.MIN_SL_DISTANCE_PCT,
-            min_rr=self.MIN_RISK_REWARD
         )
 
         if targets is None:
@@ -986,6 +1035,7 @@ class PSARBot:
             stop_loss=targets["stop_loss"],
             take_profit_1=targets["take_profit_1"],
             take_profit_2=targets["take_profit_2"],
+            timeframe=timeframe,
             current_price=current_price,
         )
 
@@ -1028,7 +1078,7 @@ class PSARBot:
             indicator_name="PSAR",
             adx=signal.adx,
             exchange=EXCHANGE_NAME,
-            timeframe="15m",
+            timeframe=signal.timeframe,
             current_price=signal.current_price,
             performance_stats=perf_stats,
             extra_info="PSAR acts as trailing stop - adjust as it moves",
@@ -1132,15 +1182,6 @@ class PSARBot:
                                 payload["stop_loss"] = sl
                                 self.state.add_signal(signal_id, payload)
                                 logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
-                                # Send update notification
-                                update_msg = (
-                                    f"📈 <b>{normalize_symbol(symbol)} PSAR Trailing Stop Updated</b>\n"
-                                    f"Direction: {direction}\n"
-                                    f"Old SL: <code>{old_sl:.6f}</code>\n"
-                                    f"New SL: <code>{sl:.6f}</code>\n"
-                                    f"Current Price: <code>{price:.6f}</code>"
-                                )
-                                self._dispatch(update_msg)
                         else:  # BEARISH
                             # PSAR should be above price and lower than current SL
                             if current_psar > price and current_psar < sl:
@@ -1149,15 +1190,6 @@ class PSARBot:
                                 payload["stop_loss"] = sl
                                 self.state.add_signal(signal_id, payload)
                                 logger.info("Trailing stop updated for %s: %.6f -> %.6f", symbol, old_sl, sl)
-                                # Send update notification
-                                update_msg = (
-                                    f"📉 <b>{normalize_symbol(symbol)} PSAR Trailing Stop Updated</b>\n"
-                                    f"Direction: {direction}\n"
-                                    f"Old SL: <code>{old_sl:.6f}</code>\n"
-                                    f"New SL: <code>{sl:.6f}</code>\n"
-                                    f"Current Price: <code>{price:.6f}</code>"
-                                )
-                                self._dispatch(update_msg)
 
             except Exception as exc:
                 logger.warning("Failed to update trailing stop for %s: %s", signal_id, exc)
@@ -1166,15 +1198,16 @@ class PSARBot:
                     self._register_backoff("exchange")
 
             # Check for TP/SL hits with updated stop loss and price tolerance
-            PRICE_TOLERANCE = 0.005  # 0.5% tolerance for slippage
-
+            # Uses module-level PRICE_TOLERANCE for consistency
             if direction == "BULLISH":
                 # With tolerance for slippage (allow slightly lower prices)
                 hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
                 hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and price < (tp2 * (1 - PRICE_TOLERANCE))
                 hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
             else:
-                # For BEARISH, allow slightly higher prices
+                # For BEARISH/SHORT: TP is below entry, SL is above entry
+                # Allow slightly HIGHER prices for TP (price doesn't drop quite as far)
+                # Allow slightly LOWER prices for SL (price doesn't rise quite as far)
                 hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
                 hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and price > (tp2 * (1 + PRICE_TOLERANCE))
                 hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
@@ -1202,27 +1235,47 @@ class PSARBot:
                     else:
                         self.stats.discard(signal_id)
 
-                if summary_message:
-                    self._dispatch(summary_message)
+                # Only send result notification if enabled
+                if ENABLE_RESULT_NOTIFICATIONS:
+                    if summary_message:
+                        self._dispatch(summary_message)
+                    else:
+                        message = (
+                            f"🎯 {normalize_symbol(symbol)} PSAR {direction} {result} hit!\n"
+                            f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
+                            f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
+                        )
+                        self._dispatch(message)
                 else:
-                    message = (
-                        f"🎯 {normalize_symbol(symbol)} PSAR {direction} {result} hit!\n"
-                        f"Entry <code>{entry:.6f}</code> | Exit <code>{price:.6f}</code>\n"
-                        f"TP1 <code>{tp1:.6f}</code> | TP2 <code>{tp2:.6f}</code> | SL <code>{sl:.6f}</code>"
-                    )
-                    self._dispatch(message)
+                    logger.info("Result notification disabled - %s %s", symbol, result)
 
                 self.state.remove_signal(signal_id)
 
     def _get_last_signal_result(self, symbol: str) -> Optional[str]:
-        """Get the last signal result for a symbol from stats."""
+        """Get the last signal result for a symbol from stats history."""
         if not self.stats:
             return None
 
         try:
-            # This is a simplified check - actual implementation depends on SignalStats API
-            # For now, return None to not affect cooldown
-            return None
+            history_data = self.stats.data.get("history", [])
+            if not isinstance(history_data, list) or not history_data:
+                return None
+
+            # Filter for this symbol and find the most recent
+            symbol_key = normalize_symbol(symbol)
+            symbol_entries = [
+                entry for entry in history_data
+                if isinstance(entry, dict) and entry.get("symbol") == symbol_key
+            ]
+
+            if not symbol_entries:
+                return None
+
+            # Sort by closed_at descending to get most recent
+            symbol_entries.sort(key=lambda x: x.get("closed_at", ""), reverse=True)
+            last_entry = symbol_entries[0]
+            result = last_entry.get("result")
+            return str(result) if result else None
         except Exception:
             return None
 

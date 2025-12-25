@@ -12,10 +12,17 @@ Features:
 from __future__ import annotations
 
 import argparse
-import fcntl
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl - use a no-op fallback
+    HAS_FCNTL = False
+import html
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -25,12 +32,28 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 import ccxt  # type: ignore
+import numpy as np
+
+# Graceful shutdown handling
+shutdown_requested = False
+
+
+def signal_handler(signum: int, frame: Any) -> None:
+    """Handle shutdown signals gracefully."""
+    global shutdown_requested
+    sig_name = signal.Signals(signum).name
+    logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+    shutdown_requested = True
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 STATE_FILE = BASE_DIR / "funding_state.json"
 WATCHLIST_FILE = BASE_DIR / "funding_watchlist.json"
 STATS_FILE = LOG_DIR / "funding_stats.json"
+
+# Price tolerance for TP/SL detection (0.1% = 0.001)
+# This accounts for spread, slippage, and minor price variations
+PRICE_TOLERANCE = 0.001
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -180,10 +203,19 @@ class FundingAnalyzer:
                 if abs(score) >= 2:
                     score = int(score * 1.5)
 
-        if score >= 2:
+        # WIN RATE FIX: Require higher score threshold for stronger signals
+        if score >= 3:
             direction = "BULLISH"
-        elif score <= -2:
+        elif score <= -3:
             direction = "BEARISH"
+
+        # WIN RATE FIX: Require EMA trend alignment (price must align with trend)
+        if direction == "BULLISH" and ema and price < ema:
+            logger.debug("Skipping BULLISH - price below EMA (counter-trend)")
+            return None
+        if direction == "BEARISH" and ema and price > ema:
+            logger.debug("Skipping BEARISH - price above EMA (counter-trend)")
+            return None
 
         if direction == "NEUTRAL":
             return None
@@ -201,7 +233,8 @@ class FundingAnalyzer:
         risk_config = config_mgr.get_effective_risk("funding_bot", symbol)
 
         dir_normalized = "LONG" if direction == "BULLISH" else "SHORT"
-        calculator = TPSLCalculator(min_risk_reward=risk_config.min_risk_reward)
+        # WIN RATE FIX: Higher min R:R for better profitability
+        calculator = TPSLCalculator(min_risk_reward=max(1.5, risk_config.min_risk_reward))
         levels = calculator.calculate(
             entry=entry,
             direction=dir_normalized,
@@ -224,7 +257,7 @@ class SignalTracker:
         self.state = self._load_state()
 
     def _empty_state(self) -> Dict[str, Any]:
-        return {"last_alerts": {}, "open_signals": {}, "signal_history": {}, "last_result_notifications": {}}
+        return {"last_alerts": {}, "open_signals": {}, "closed_signals": {}, "signal_history": {}, "last_result_notifications": {}}
 
     def _load_state(self) -> Dict[str, Any]:
         if STATE_FILE.exists():
@@ -240,12 +273,20 @@ class SignalTracker:
             temp_file = STATE_FILE.with_suffix('.tmp')
             try:
                 with open(temp_file, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     json.dump(self.state, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 temp_file.replace(STATE_FILE)
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
+                # Clean up temp file on error
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception:
+                    pass  # Ignore cleanup errors
 
     def should_alert(self, symbol: str, exchange: str, cooldown_mins: int, funding_ts: Optional[int] = None) -> bool:
         """Check if we should alert, using either cooldown or funding timestamp."""
@@ -303,18 +344,36 @@ class SignalTracker:
         updated = False
         for sig_id, payload in list(signals.items()):
             symbol = payload.get("symbol")
+            # Validate symbol is not empty
+            if not isinstance(symbol, str) or not symbol or not symbol.strip():
+                logger.warning(f"Removing signal {sig_id} with invalid symbol: {symbol}")
+                signals.pop(sig_id, None)
+                updated = True
+                continue
+
             display_symbol = symbol if "/" in symbol else f"{symbol}/USDT"
             exchange = payload.get("exchange", "mexc")
             direction = payload.get("direction")
 
-            # Cooldown Check
+            # Validate direction
+            if direction not in ["BULLISH", "BEARISH"]:
+                logger.warning(f"Removing signal {sig_id} with invalid direction: {direction}")
+                signals.pop(sig_id, None)
+                updated = True
+                continue
+
+            # Cooldown Check - only affects notification, not TP/SL detection
+            in_cooldown = False
             last_ts = last_notifs.get(display_symbol)
             if last_ts:
-                last_dt = datetime.fromisoformat(last_ts)
-                if last_dt.tzinfo is None:
-                    last_dt = last_dt.replace(tzinfo=timezone.utc)
-                if (datetime.now(timezone.utc) - last_dt) < timedelta(minutes=cooldown_mins):
-                    continue
+                try:
+                    last_dt = datetime.fromisoformat(last_ts)
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (datetime.now(timezone.utc) - last_dt) < timedelta(minutes=cooldown_mins):
+                        in_cooldown = True
+                except ValueError:
+                    pass  # Invalid timestamp, proceed with check
 
             try:
                 client = client_map.get(exchange)
@@ -325,53 +384,145 @@ class SignalTracker:
             except Exception:
                 continue
 
-            if not price:
+            if not price or not isinstance(price, (int, float)):
                 continue
 
             tp1, tp2 = payload.get("take_profit_1"), payload.get("take_profit_2")
             sl = payload.get("stop_loss")
             entry = payload.get("entry")
 
+            # Validate TP/SL values
+            if not all(isinstance(v, (int, float)) for v in [tp1, tp2, sl, entry] if v is not None):
+                logger.warning(f"Signal {sig_id} has invalid TP/SL values, removing")
+                signals.pop(sig_id, None)
+                updated = True
+                continue
+
+            # Check TP/SL hits with price tolerance
             res = None
             if direction == "BULLISH":
-                if price >= tp2:
+                # BULLISH: TPs are ABOVE entry, SL is BELOW entry
+                if price >= (tp2 * (1 - PRICE_TOLERANCE)):
                     res = "TP2"
-                elif price >= tp1:
+                elif price >= (tp1 * (1 - PRICE_TOLERANCE)):
                     res = "TP1"
-                elif price <= sl:
+                elif price <= (sl * (1 + PRICE_TOLERANCE)):
                     res = "SL"
             else:  # BEARISH
-                if price <= tp2:
+                # BEARISH: TPs are BELOW entry, SL is ABOVE entry
+                if price <= (tp2 * (1 + PRICE_TOLERANCE)):
                     res = "TP2"
-                elif price <= tp1:
+                elif price <= (tp1 * (1 + PRICE_TOLERANCE)):
                     res = "TP1"
-                elif price >= sl:
+                elif price >= (sl * (1 - PRICE_TOLERANCE)):
                     res = "SL"
 
             if res:
                 pnl = (price - entry) / entry * 100 if direction == "BULLISH" else (entry - price) / entry * 100
-                msg = f"🎯 {display_symbol} FUNDING {res} HIT!\n💰 PnL: {pnl:.2f}%"
 
-                if notifier:
+                # Check if result notifications are enabled (cooldown only affects notification)
+                enable_result_notifs = self.config.get("telegram", {}).get("enable_result_notifications", True)
+                if enable_result_notifs and notifier and not in_cooldown:
+                    msg = f"🎯 {display_symbol} FUNDING {res} HIT!\n💰 PnL: {pnl:.2f}%"
                     notifier.send_message(msg)
                     last_notifs[display_symbol] = datetime.now(timezone.utc).isoformat()
+                elif in_cooldown:
+                    logger.info("Result notification skipped (cooldown): %s %s", sig_id, res)
 
                 if self.stats:
                     self.stats.record_close(sig_id, price, res)
+
+                # Archive to closed_signals instead of deleting
+                closed = self.state.setdefault("closed_signals", {})
+                closed_signal = payload.copy()
+                closed_signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+                closed_signal["exit_price"] = price
+                closed_signal["result"] = res
+                closed_signal["pnl_percent"] = pnl
+                closed[sig_id] = closed_signal
                 del signals[sig_id]
                 updated = True
 
         if updated:
             self._save_state()
 
+    def cleanup_stale_signals(self, max_age_hours: int = 24) -> int:
+        """Remove signals older than max_age_hours and cleanup closed_signals."""
+        signals = self.state.get("open_signals", {})
+        now = datetime.now(timezone.utc)
+        stale_ids = []
+
+        for sig_id, payload in list(signals.items()):
+            if not isinstance(payload, dict):
+                stale_ids.append(sig_id)
+                continue
+
+            timestamp_str = payload.get("timestamp")
+            if not isinstance(timestamp_str, str):
+                stale_ids.append(sig_id)
+                continue
+
+            try:
+                created_dt = datetime.fromisoformat(timestamp_str)
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                age = now - created_dt
+                if age >= timedelta(hours=max_age_hours):
+                    stale_ids.append(sig_id)
+                    logger.info("Stale signal removed: %s (age: %.1f hours)", sig_id, age.total_seconds() / 3600)
+            except (ValueError, TypeError):
+                stale_ids.append(sig_id)
+
+        for sig_id in stale_ids:
+            if sig_id in signals:
+                # Archive to closed_signals
+                closed = self.state.setdefault("closed_signals", {})
+                closed_signal = signals[sig_id].copy()
+                closed_signal["closed_at"] = now.isoformat()
+                closed_signal["result"] = "EXPIRED"
+                closed[sig_id] = closed_signal
+                del signals[sig_id]
+
+        # Also cleanup old closed signals to prevent unbounded growth
+        closed_pruned = 0
+        closed = self.state.get("closed_signals", {})
+        max_closed_signals = 100
+        if isinstance(closed, dict) and len(closed) > max_closed_signals:
+            sorted_closed = sorted(
+                closed.items(),
+                key=lambda x: x[1].get("closed_at", "") if isinstance(x[1], dict) else "",
+                reverse=True
+            )
+            self.state["closed_signals"] = dict(sorted_closed[:max_closed_signals])
+            closed_pruned = len(closed) - max_closed_signals
+            logger.info("Pruned %d old closed signals (keeping %d)", closed_pruned, max_closed_signals)
+
+        if stale_ids or closed_pruned > 0:
+            self._save_state()
+
+        return len(stale_ids)
+
     def check_reversal(self, symbol: str, new_direction: str, notifier: Optional[Any]) -> None:
         signals = self.state.get("open_signals", {})
         for sig_id, payload in signals.items():
             if payload.get("symbol") == symbol:
                 old_dir = payload.get("direction")
-                if old_dir != new_direction:
-                    msg = f"⚠️ FUNDING REVERSAL: {symbol}\nOpen: {old_dir} | New: {new_direction}\nCheck position!"
-                    if notifier: notifier.send_message(msg)
+                # Skip if old_dir is None or same as new direction
+                if old_dir is None or old_dir == new_direction:
+                    continue
+                # Safely escape values for HTML
+                safe_symbol = html.escape(str(symbol) if symbol else "")
+                safe_old = html.escape(str(old_dir) if old_dir else "")
+                safe_new = html.escape(str(new_direction) if new_direction else "")
+                msg = (
+                    f"⚠️ <b>FUNDING REVERSAL</b> ⚠️\n\n"
+                    f"<b>Symbol:</b> {safe_symbol}\n"
+                    f"<b>Open:</b> {safe_old}\n"
+                    f"<b>New:</b> {safe_new}\n\n"
+                    f"💡 Check your position!"
+                )
+                if notifier:
+                    notifier.send_message(msg, parse_mode="HTML")
 
 class FundingBot:
     """Refactored Funding Bot."""
@@ -426,101 +577,151 @@ class FundingBot:
         return TelegramNotifier(bot_token=token, chat_id=chat_id, signals_log_file=str(LOG_DIR/"funding_signals.json")) if token and chat_id else None
 
     def run(self, run_once: bool = False) -> None:
+        global shutdown_requested
         logger.info("Starting Refactored Funding Bot...")
-        if self.health_monitor: self.health_monitor.send_startup_message()
 
-        while True:
-            try:
-                for item in self.watchlist:
-                    symbol_raw = item.get("symbol")
-                    if not symbol_raw or not isinstance(symbol_raw, str):
-                        continue
-                    symbol: str = symbol_raw
-                    exchange: str = str(item.get("exchange", "mexc"))
-                    timeframe: str = str(item.get("timeframe", "8h"))
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
-                    client = self.clients.get(exchange)
-                    if not client: continue
+        if self.health_monitor:
+            self.health_monitor.send_startup_message()
 
-                    # 1. Fetch Data via CCXT
-                    try:
-                        # Funding Rate
-                        fr_data = client.fetch_funding_rate(resolve_symbol(symbol))
-                        funding_rate = fr_data.get('fundingRate')
-                        funding_ts = fr_data.get('fundingTimestamp') # Unique ID for this funding interval
+        try:
+            while not shutdown_requested:
+                try:
+                    for item in self.watchlist:
+                        # Check shutdown during watchlist scan
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during watchlist scan")
+                            break
 
-                        # Ticker (Price)
-                        ticker = client.fetch_ticker(resolve_symbol(symbol))
-                        price = ticker.get('last')
+                        symbol_raw = item.get("symbol")
+                        if not symbol_raw or not isinstance(symbol_raw, str):
+                            continue
+                        symbol: str = symbol_raw
+                        exchange: str = str(item.get("exchange", "mexc"))
+                        timeframe: str = str(item.get("timeframe", "8h"))
 
-                        # EMA (needs history)
-                        ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=50)
-                        closes = [c[4] for c in ohlcv]
-                        ema = sum(closes[-20:]) / 20 if len(closes) >= 20 else None
+                        client = self.clients.get(exchange)
+                        if not client:
+                            continue
 
-                        # Open Interest (Try fetch, handle if not supported)
-                        oi = None
-                        oi_change = None
+                        # 1. Fetch Data via CCXT
                         try:
-                            if hasattr(client, 'fetch_open_interest'):
-                                oi_data = client.fetch_open_interest(resolve_symbol(symbol))
-                                oi = oi_data.get('openInterestAmount')
-                        except Exception as exc:
-                            logger.debug("Open interest not available for %s: %s", symbol, exc)
+                            # Funding Rate
+                            fr_data = client.fetch_funding_rate(resolve_symbol(symbol))
+                            funding_rate = fr_data.get('fundingRate')
+                            funding_ts = fr_data.get('fundingTimestamp')  # Unique ID for this funding interval
 
-                    except Exception as e:
-                        logger.error(f"Error fetching {symbol}: {e}")
-                        continue
+                            # Ticker (Price)
+                            ticker = client.fetch_ticker(resolve_symbol(symbol))
+                            price = ticker.get('last')
 
-                    # 2. Analyze
-                    if funding_rate is None or price is None: continue
+                            # EMA (needs history)
+                            ohlcv = client.fetch_ohlcv(resolve_symbol(symbol), timeframe, limit=50)
 
-                    result = self.analyzer.analyze(symbol, funding_rate, oi, oi_change, price, ema)
+                            # Validate OHLCV data
+                            if not ohlcv or len(ohlcv) < 20:
+                                logger.debug(f"Insufficient OHLCV data for {symbol}: {len(ohlcv) if ohlcv else 0}")
+                                continue
 
-                    if result:
-                        # Check direction filter
-                        allowed_dirs = self.config.get("signal", {}).get("allowed_directions", ["BULLISH", "BEARISH"])
-                        if result['direction'] not in allowed_dirs:
-                            logger.debug(f"Skipping {result['direction']} signal for {symbol} - not in allowed_directions")
+                            closes = [c[4] for c in ohlcv]
+                            closes_arr = np.array(closes, dtype=np.float64)
+
+                            # Validate closes are not NaN/inf
+                            if np.any(np.isnan(closes_arr)) or np.any(np.isinf(closes_arr)):
+                                logger.warning(f"{symbol}: OHLCV contains NaN/inf values, skipping")
+                                continue
+
+                            if np.any(closes_arr <= 0):
+                                logger.warning(f"{symbol}: OHLCV contains zero/negative prices, skipping")
+                                continue
+
+                            ema = float(np.mean(closes_arr[-20:])) if len(closes) >= 20 else None
+
+                            # Open Interest (Try fetch, handle if not supported)
+                            oi = None
+                            oi_change = None
+                            try:
+                                if hasattr(client, 'fetch_open_interest'):
+                                    oi_data = client.fetch_open_interest(resolve_symbol(symbol))
+                                    oi = oi_data.get('openInterestAmount')
+                            except Exception as exc:
+                                logger.debug("Open interest not available for %s: %s", symbol, exc)
+
+                        except Exception as e:
+                            logger.error(f"Error fetching {symbol}: {e}")
                             continue
 
-                        # 3. Targets
-                        atr = price * 0.02 # Simple proxy if calc fails
-                        targets = self.analyzer.calculate_targets(price, result['direction'], atr, symbol)
-                        if targets is None:
+                        # 2. Analyze
+                        if funding_rate is None or price is None:
                             continue
 
-                        signal = FundingSignal(
-                            symbol=symbol, direction=result['direction'],
-                            funding_rate=funding_rate, predicted_price=0,
-                            entry=price, stop_loss=targets['sl'],
-                            take_profit_1=targets['tp1'], take_profit_2=targets['tp2'],
-                            timestamp=datetime.now(timezone.utc).isoformat(),
-                            funding_timestamp=funding_ts,
-                            timeframe=timeframe, exchange=exchange, reasons=result['reasons']
-                        )
+                        result = self.analyzer.analyze(symbol, funding_rate, oi, oi_change, price, ema)
 
-                        # 4. Alert & Track
-                        cooldown = self.config.get("signal", {}).get("cooldown_minutes", 60)
-                        if self.tracker.should_alert(symbol, exchange, cooldown, funding_ts=funding_ts):
-                            self.tracker.check_reversal(symbol, signal.direction, self.notifier)
-                            self.tracker.add_signal(signal)
-                            self._send_alert(signal)
+                        if result:
+                            # Check direction filter
+                            allowed_dirs = self.config.get("signal", {}).get("allowed_directions", ["BULLISH", "BEARISH"])
+                            if result['direction'] not in allowed_dirs:
+                                logger.debug(f"Skipping {result['direction']} signal for {symbol} - not in allowed_directions")
+                                continue
 
-                self.tracker.check_open_signals(self.clients, self.notifier)
+                            # 3. Targets
+                            atr = price * 0.02  # Simple proxy if calc fails
+                            targets = self.analyzer.calculate_targets(price, result['direction'], atr, symbol)
+                            if targets is None:
+                                continue
 
-                if self.health_monitor: self.health_monitor.record_cycle()
+                            funding_signal = FundingSignal(
+                                symbol=symbol, direction=result['direction'],
+                                funding_rate=funding_rate, predicted_price=0,
+                                entry=price, stop_loss=targets['sl'],
+                                take_profit_1=targets['tp1'], take_profit_2=targets['tp2'],
+                                timestamp=datetime.now(timezone.utc).isoformat(),
+                                funding_timestamp=funding_ts,
+                                timeframe=timeframe, exchange=exchange, reasons=result['reasons']
+                            )
 
-                if run_once: break
-                time.sleep(60)
+                            # 4. Alert & Track
+                            cooldown = self.config.get("signal", {}).get("cooldown_minutes", 60)
+                            if self.tracker.should_alert(symbol, exchange, cooldown, funding_ts=funding_ts):
+                                self.tracker.check_reversal(symbol, funding_signal.direction, self.notifier)
+                                self.tracker.add_signal(funding_signal)
+                                self._send_alert(funding_signal)
 
-            except Exception as e:
-                logger.error(f"Cycle error: {e}")
-                if self.health_monitor: self.health_monitor.record_error(str(e))
-                if run_once: raise
-                time.sleep(10)
+                    self.tracker.check_open_signals(self.clients, self.notifier)
 
-        if self.health_monitor: self.health_monitor.send_shutdown_message()
+                    # Cleanup stale signals every cycle
+                    max_age = self.config.get("signal", {}).get("max_signal_age_hours", 24)
+                    stale_count = self.tracker.cleanup_stale_signals(max_age_hours=max_age)
+                    if stale_count > 0:
+                        logger.info("Cleaned up %d stale signals", stale_count)
+
+                    if self.health_monitor:
+                        self.health_monitor.record_cycle()
+
+                    if run_once or shutdown_requested:
+                        break
+
+                    # Responsive sleep that checks for shutdown
+                    for _ in range(60):
+                        if shutdown_requested:
+                            logger.info("Shutdown requested during sleep")
+                            break
+                        time.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"Cycle error: {e}")
+                    if self.health_monitor:
+                        self.health_monitor.record_error(str(e))
+                    if run_once:
+                        raise
+                    time.sleep(10)
+
+        finally:
+            if self.health_monitor:
+                self.health_monitor.send_shutdown_message()
 
     def _send_alert(self, signal: FundingSignal) -> None:
         msg = format_signal_message(
@@ -532,7 +733,7 @@ class FundingBot:
             tp1=signal.take_profit_1,
             funding_rate=signal.funding_rate,
             reasons=signal.reasons,
-            timeframe="15m",
+            timeframe=signal.timeframe,
         )
         if self.notifier: self.notifier.send_message(msg)
 

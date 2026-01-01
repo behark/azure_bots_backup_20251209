@@ -59,6 +59,10 @@ from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
+from common.risk import DEFAULT_RISK, get_price_tolerance
+
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
@@ -67,11 +71,11 @@ RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 # Result notification toggle - set to False to disable separate TP/SL hit alerts
-ENABLE_RESULT_NOTIFICATIONS = False
+# NOTE: This is now handled by the SignalAdapter's notification_mode
+ENABLE_RESULT_NOTIFICATIONS = False  # Disabled - using signal_only mode
 
-# Price tolerance for TP/SL detection (0.1% = 0.001)
-# This accounts for spread, slippage, and minor price variations
-PRICE_TOLERANCE = 0.001
+# Price tolerance for TP/SL detection (defaults to 1% via risk helper)
+PRICE_TOLERANCE = DEFAULT_RISK.price_tolerance_base
 
 
 class WatchItem(TypedDict, total=False):
@@ -319,7 +323,7 @@ class STRATSignal:
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
-    timeframe: str = "15m"
+    timeframe: str = "5m"
     current_price: Optional[float] = None
 
 
@@ -471,6 +475,19 @@ class BotState:
 
         return removed_count
 
+    def has_open_signal_for_symbol(self, symbol: str) -> bool:
+        """Check if there's already an open signal for this symbol."""
+        # Normalize symbol for comparison (strip /USDT suffix)
+        base_symbol = symbol.replace("/USDT", "").replace(":USDT", "").upper()
+        signals = self.iter_signals()
+        for sig_data in signals.values():
+            if isinstance(sig_data, dict):
+                stored_symbol = sig_data.get("symbol", "")
+                stored_base = stored_symbol.replace("/USDT", "").replace(":USDT", "").upper()
+                if stored_base == base_symbol:
+                    return True
+        return False
+
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         self.data.setdefault("open_signals", {})[signal_id] = payload
         self.save()
@@ -489,8 +506,8 @@ class BotState:
         return cast(OpenSignals, signals)
 
 
-class STRATBot:
-    """Main STRAT Bot."""
+class STRATBot(BotSignalMixin):
+    """Main STRAT Bot with unified signal management."""
 
     # Configuration constants
     MAX_OPEN_SIGNALS = 50  # Maximum concurrent signals
@@ -533,6 +550,15 @@ class STRATBot:
         self.shutdown_requested = False
         signal_module.signal(signal_module.SIGTERM, self._signal_handler)
         signal_module.signal(signal_module.SIGINT, self._signal_handler)
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="strat_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="5m",
+            notification_mode="signal_only",  # Only send new signal alerts
+        )
 
     def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
@@ -737,42 +763,43 @@ class STRATBot:
                 )
                 continue
 
-            # Send alert
-            message = self._format_message(signal)
-            self._dispatch(message)
-            self.state.mark_alert(symbol)
+            # Prevent duplicate signals for same symbol (use unified adapter)
+            if self._has_open_signal(symbol):
+                logger.info("Already have open signal for %s - skipping duplicate", symbol)
+                continue
 
-            # Track signal
-            signal_id = f"{symbol}-STRAT-{signal.timestamp}"
-            trade_data = {
-                "id": signal_id,
-                "symbol": symbol,
-                "pattern": signal.pattern_name,
-                "direction": signal.direction,
-                "entry": signal.entry,
-                "stop_loss": signal.stop_loss,
-                "take_profit_1": signal.take_profit_1,
-                "take_profit_2": signal.take_profit_2,
-                "created_at": signal.timestamp,
-                "timeframe": period,
-                "exchange": "binanceusdm",
-            }
-            self.state.add_signal(signal_id, trade_data)
-
-            if self.stats:
-                self.stats.record_open(
-                    signal_id=signal_id,
-                    symbol=self._clean_symbol(symbol),
-                    direction=signal.direction,
-                    entry=signal.entry,
-                    created_at=signal.timestamp,
-                    extra={
-                        "timeframe": period,
-                        "exchange": "binanceusdm",
-                        "strategy": "STRAT",
-                        "pattern": signal.pattern_name,
-                    },
-                )
+            # NEW: Use unified signal system - sends beautiful template with history
+            created_signal = self._send_signal(
+                symbol=symbol,
+                direction=signal.direction,
+                entry=signal.entry,
+                stop_loss=signal.stop_loss,
+                take_profit_1=signal.take_profit_1,
+                take_profit_2=signal.take_profit_2,
+                pattern_name=signal.pattern_name,
+                timeframe=period,
+                reasons=[f"STRAT {signal.bar_sequence}", signal.pattern_name],
+            )
+            
+            if created_signal:
+                self.state.mark_alert(symbol)
+                
+                # Also track in legacy state for compatibility (optional)
+                signal_id = created_signal.signal_id
+                trade_data = {
+                    "id": signal_id,
+                    "symbol": symbol,
+                    "pattern": signal.pattern_name,
+                    "direction": signal.direction,
+                    "entry": signal.entry,
+                    "stop_loss": signal.stop_loss,
+                    "take_profit_1": signal.take_profit_1,
+                    "take_profit_2": signal.take_profit_2,
+                    "created_at": signal.timestamp,
+                    "timeframe": period,
+                    "exchange": "binanceusdm",
+                }
+                self.state.add_signal(signal_id, trade_data)
 
             time.sleep(0.5)
 
@@ -866,12 +893,18 @@ class STRATBot:
             return None
 
         # Apply SMA filter early (before calculating targets)
+        # Allow 2% tolerance from SMA to prevent good setups from being rejected
+        SMA_TOLERANCE_PCT = 0.02  # 2% tolerance
         if sma50 is not None:
-            if direction == "BULLISH" and current_price <= sma50:
-                logger.debug("%s: BULLISH signal rejected - price %.6f below SMA %.6f", symbol, current_price, sma50)
+            sma_threshold_bull = sma50 * (1 - SMA_TOLERANCE_PCT)
+            sma_threshold_bear = sma50 * (1 + SMA_TOLERANCE_PCT)
+            if direction == "BULLISH" and current_price < sma_threshold_bull:
+                logger.debug("%s: BULLISH signal rejected - price %.6f too far below SMA %.6f (threshold %.6f)", 
+                            symbol, current_price, sma50, sma_threshold_bull)
                 return None
-            if direction == "BEARISH" and current_price >= sma50:
-                logger.debug("%s: BEARISH signal rejected - price %.6f above SMA %.6f", symbol, current_price, sma50)
+            if direction == "BEARISH" and current_price > sma_threshold_bear:
+                logger.debug("%s: BEARISH signal rejected - price %.6f too far above SMA %.6f (threshold %.6f)", 
+                            symbol, current_price, sma50, sma_threshold_bear)
                 return None
 
         setup_high = float(highs[-2])
@@ -880,14 +913,28 @@ class STRATBot:
 
         # Use current price as entry (more realistic) instead of trigger price
         entry = current_price
-        stop_loss = setup_low if direction == "BULLISH" else setup_high
-
+        
         # Calculate ATR for volatility filter and target sizing
         atr = float(self.analyzer.calculate_atr(highs, lows, closes))
 
         if atr == 0:
             logger.debug("%s: ATR is 0, skipping", symbol)
             return None
+        
+        # CRITICAL FIX: Use ATR-adjusted stops instead of fixed structure stops
+        # This prevents stops from being too far from entry
+        if direction == "BULLISH":
+            # Stop below recent low, but adjusted by ATR for tighter control
+            structure_stop = setup_low
+            atr_stop = current_price - (atr * 1.5)  # 1.5x ATR below entry
+            # Use the tighter of the two stops (closer to entry)
+            stop_loss = max(structure_stop, atr_stop)
+        else:  # BEARISH
+            # Stop above recent high, but adjusted by ATR
+            structure_stop = setup_high
+            atr_stop = current_price + (atr * 1.5)  # 1.5x ATR above entry
+            # Use the tighter of the two stops (closer to entry)
+            stop_loss = min(structure_stop, atr_stop)
 
         # Volatility filter - reject if ATR is too high relative to price
         volatility_ratio = atr / entry if entry > 0 else 0
@@ -909,11 +956,19 @@ class STRATBot:
 
         # Validate stop loss position
         risk = abs(entry - stop_loss)
+        risk_pct = (risk / entry) * 100 if entry > 0 else 0
 
-        # Validate minimum risk threshold (increased to 0.3%)
-        min_risk = entry * self.MIN_RISK_PCT
+        # CRITICAL FIX: Increase minimum risk threshold to 0.5%
+        MIN_RISK_PCT_NEW = 0.005  # 0.5% minimum risk
+        min_risk = entry * MIN_RISK_PCT_NEW
         if risk < min_risk:
-            logger.debug("%s: Risk too low: %.6f < %.6f (%.2f%%)", symbol, risk, min_risk, self.MIN_RISK_PCT * 100)
+            logger.debug("%s: Risk too low: %.6f < %.6f (%.2f%%)", symbol, risk, min_risk, MIN_RISK_PCT_NEW * 100)
+            return None
+        
+        # CRITICAL FIX: Add maximum risk threshold to prevent catastrophic losses
+        MAX_RISK_PCT = 0.025  # 2.5% maximum risk
+        if risk_pct > MAX_RISK_PCT * 100:
+            logger.debug("%s: Risk too high: %.2f%% (max %.2f%%)", symbol, risk_pct, MAX_RISK_PCT * 100)
             return None
 
         if direction == "BULLISH" and stop_loss >= entry:
@@ -972,25 +1027,25 @@ class STRATBot:
 
     def _format_message(self, signal: STRATSignal) -> str:
         """Format Telegram message for signal using centralized template."""
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
         clean_symbol = self._clean_symbol(signal.symbol)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats is not None:
             symbol_key = clean_symbol
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-
-            if total > 0:
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                }
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+        }
 
         # Build extra info with STRAT-specific data
         extra_info = f"Bar Sequence: {signal.bar_sequence}"
@@ -1012,147 +1067,31 @@ class STRATBot:
         )
 
     def _monitor_open_signals(self) -> None:
-        """Monitor open signals for TP/SL hits."""
-        signals = self.state.iter_signals()
-        if not signals:
-            return
-
-        for signal_id, payload_obj in list(signals.items()):
-            if not isinstance(payload_obj, dict):
-                self.state.remove_signal(signal_id)
-                continue
-
-            symbol_val = payload_obj.get("symbol")
-            if not isinstance(symbol_val, str) or not symbol_val:
-                self.state.remove_signal(signal_id)
-                continue
-            symbol = symbol_val
-
+        """Monitor open signals for TP/SL hits using unified signal system."""
+        # Create price fetcher for this client
+        def fetch_price(symbol: str):
             try:
                 ticker = self.client.fetch_ticker(symbol)
-                price_raw = ticker.get("last") if isinstance(ticker, dict) else None
-                if price_raw is None and isinstance(ticker, dict):
-                    price_raw = ticker.get("close")
+                price = ticker.get("last") if isinstance(ticker, dict) else None
+                if price is None and isinstance(ticker, dict):
+                    price = ticker.get("close")
+                return float(price) if price else None
             except Exception as exc:
-                logger.warning("Failed to fetch ticker for %s: %s", signal_id, exc)
-                # Handle rate limit errors in monitoring
                 if self._is_rate_limit_error(exc):
                     self._register_backoff("binanceusdm")
-                    logger.warning("Rate limit hit during monitoring; backing off")
-                continue
-
-            if not isinstance(price_raw, (int, float, str)):
-                continue
-            try:
-                price = float(price_raw)
-            except (TypeError, ValueError):
-                continue
-
-            direction_val = payload_obj.get("direction")
-            if not isinstance(direction_val, str):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-            direction = direction_val
-
-            entry_raw = payload_obj.get("entry")
-            tp1_raw = payload_obj.get("take_profit_1")
-            tp2_raw = payload_obj.get("take_profit_2")
-            sl_raw = payload_obj.get("stop_loss")
-
-            if not isinstance(entry_raw, (int, float, str)):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-            if not isinstance(tp1_raw, (int, float, str)):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-            if not isinstance(tp2_raw, (int, float, str)):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-            if not isinstance(sl_raw, (int, float, str)):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-
-            try:
-                entry = float(entry_raw)
-                tp1 = float(tp1_raw)
-                tp2 = float(tp2_raw)
-                sl = float(sl_raw)
-            except (TypeError, ValueError):
-                self.state.remove_signal(signal_id)
-                if self.stats:
-                    self.stats.discard(signal_id)
-                continue
-
-            # Check TP/SL hits based on direction with price tolerance
-            # Tolerance makes it slightly easier to hit TPs (accounts for spread/slippage)
-            # Priority order: TP2 > TP1 > SL (maximize profit if multiple levels hit)
-            if direction == "BULLISH":
-                # BULLISH: TPs are ABOVE entry, SL is BELOW entry
-                # For TPs: price >= tp * (1 - tolerance) makes it slightly easier to hit
-                # For SL: price <= sl * (1 + tolerance) makes it slightly easier to hit
-                hit_tp2 = price >= (tp2 * (1 - PRICE_TOLERANCE))
-                hit_tp1 = price >= (tp1 * (1 - PRICE_TOLERANCE)) and not hit_tp2
-                hit_sl = price <= (sl * (1 + PRICE_TOLERANCE))
-            else:  # BEARISH
-                # BEARISH: TPs are BELOW entry, SL is ABOVE entry
-                # For TPs: price <= tp * (1 + tolerance) makes it slightly easier to hit
-                # For SL: price >= sl * (1 - tolerance) makes it slightly easier to hit
-                hit_tp2 = price <= (tp2 * (1 + PRICE_TOLERANCE))
-                hit_tp1 = price <= (tp1 * (1 + PRICE_TOLERANCE)) and not hit_tp2
-                hit_sl = price >= (sl * (1 - PRICE_TOLERANCE))
-
-            result = None
-            # Check in priority order: TP2 (best) > TP1 > SL (worst)
-            if hit_tp2:
-                result = "TP2"
-            elif hit_tp1:
-                result = "TP1"
-            elif hit_sl:
-                result = "SL"
-
-            if result:
-                summary_message = None
-                if self.stats:
-                    stats_record = self.stats.record_close(
-                        signal_id,
-                        exit_price=price,
-                        result=result,
-                    )
-                    if stats_record:
-                        summary_message = self.stats.build_summary_message(stats_record)
-                    else:
-                        self.stats.discard(signal_id)
-
-                if ENABLE_RESULT_NOTIFICATIONS:
-                    if summary_message:
-                        self._dispatch(summary_message)
-                    else:
-                        message = format_result_message(
-                            symbol=symbol,
-                            direction=direction,
-                            result=result,
-                            entry=entry,
-                            exit_price=price,
-                            stop_loss=sl,
-                            tp1=tp1,
-                            tp2=tp2,
-                            signal_id=signal_id,
-                        )
-                        self._dispatch(message)
-                else:
-                    logger.info("Result notification skipped (disabled): %s %s", signal_id, result)
-
-                self.state.remove_signal(signal_id)
+                return None
+        
+        # NEW: Use unified signal system for TP/SL checking
+        # Results are recorded silently in signal_only mode
+        # They will appear in the next signal's history line
+        results = self._check_signals(fetch_price)
+        
+        # Also clean up legacy state for any closed signals
+        for result in results:
+            signal_id = result.signal.signal_id
+            self.state.remove_signal(signal_id)
+            logger.info("Signal closed: %s %s P&L: %.2f%%", 
+                       result.signal.symbol, result.close_reason.value, result.pnl_pct)
 
     def _dispatch(self, message: str) -> None:
         """Send message via Telegram."""

@@ -44,6 +44,9 @@ class SignalManagementConfig:
     allow_simultaneous_directions: bool = False
     check_exchange_for_duplicates: bool = True
     check_timeframe_for_duplicates: bool = False
+    result_notification_cooldown_minutes: float = 15.0
+    enable_result_notifications: bool = True
+    min_confidence_score: float = 2.0
 
 
 @dataclass
@@ -65,6 +68,21 @@ class ExecutionConfig:
     health_check_interval_seconds: int = 3600
     enable_startup_notification: bool = True
     enable_shutdown_notification: bool = True
+    enable_detailed_logging: bool = False
+    log_level: str = "INFO"
+
+
+@dataclass
+class FilteringConfig:
+    """Signal filtering parameters."""
+    min_factors_long: int = 4
+    min_factors_short: int = 4
+    require_volume_spike: bool = False
+    require_near_hvn: bool = False
+    min_rsi_long: int = 45
+    max_rsi_long: int = 65
+    min_rsi_short: int = 35
+    max_rsi_short: int = 55
 
 
 @dataclass
@@ -112,10 +130,11 @@ class VolumeConfig:
         self.signal = SignalManagementConfig()
         self.rate_limit = RateLimitingConfig()
         self.execution = ExecutionConfig()
-        
+        self.filtering = FilteringConfig()
+
         # Load from environment first
         self._load_from_env()
-        
+
         # Override with config file if provided
         if config_file and config_file.exists():
             self._load_from_file(config_file)
@@ -187,7 +206,13 @@ class VolumeConfig:
                 for key, value in volume_config['execution'].items():
                     if hasattr(self.execution, key):
                         setattr(self.execution, key, value)
-            
+
+            # Filtering
+            if 'filtering' in volume_config:
+                for key, value in volume_config['filtering'].items():
+                    if hasattr(self.filtering, key):
+                        setattr(self.filtering, key, value)
+
             logger.info("Loaded configuration from %s", config_file)
         except Exception as e:
             logger.warning("Failed to load config file %s: %s", config_file, e)
@@ -262,7 +287,19 @@ class VolumeConfig:
                 'cycle_interval_seconds': self.execution.cycle_interval_seconds,
                 'symbol_delay_seconds': self.execution.symbol_delay_seconds,
                 'health_check_interval_seconds': self.execution.health_check_interval_seconds,
-            }
+                'enable_detailed_logging': self.execution.enable_detailed_logging,
+                'log_level': self.execution.log_level,
+            },
+            'filtering': {
+                'min_factors_long': self.filtering.min_factors_long,
+                'min_factors_short': self.filtering.min_factors_short,
+                'require_volume_spike': self.filtering.require_volume_spike,
+                'require_near_hvn': self.filtering.require_near_hvn,
+                'min_rsi_long': self.filtering.min_rsi_long,
+                'max_rsi_long': self.filtering.max_rsi_long,
+                'min_rsi_short': self.filtering.min_rsi_short,
+                'max_rsi_short': self.filtering.max_rsi_short,
+            },
         }
 
 

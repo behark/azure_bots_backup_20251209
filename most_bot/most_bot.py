@@ -40,7 +40,7 @@ STATS_FILE = LOG_DIR / "most_stats.json"
 EXCHANGE_NAME = "Binance Futures"
 
 # Result notification toggle - set to False to disable separate TP/SL hit alerts
-ENABLE_RESULT_NOTIFICATIONS = False
+ENABLE_RESULT_NOTIFICATIONS = True
 
 # Price tolerance for TP/SL hit detection (0.5% tolerance for slippage)
 PRICE_TOLERANCE = 0.005
@@ -74,6 +74,9 @@ from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
+
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
@@ -472,6 +475,19 @@ class BotState:
 
         return removed_count
 
+    def has_open_signal_for_symbol(self, symbol: str) -> bool:
+        """Check if there's already an open signal for this symbol."""
+        # Normalize symbol for comparison (strip /USDT suffix)
+        base_symbol = symbol.replace("/USDT", "").replace(":USDT", "").upper()
+        signals = self.iter_signals()
+        for sig_data in signals.values():
+            if isinstance(sig_data, dict):
+                stored_symbol = sig_data.get("symbol", "")
+                stored_base = stored_symbol.replace("/USDT", "").replace(":USDT", "").upper()
+                if stored_base == base_symbol:
+                    return True
+        return False
+
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         signals = self.iter_signals()
         signals[signal_id] = payload
@@ -491,8 +507,8 @@ class BotState:
         return cast(OpenSignals, signals)
 
 
-class MOSTBot:
-    """Main MOST Bot."""
+class MOSTBot(BotSignalMixin):
+    """Main MOST Bot with unified signal management."""
 
     def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
@@ -513,6 +529,15 @@ class MOSTBot:
         )
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="most_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="5m",
+            notification_mode="signal_only",
+        )
 
     def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
@@ -651,40 +676,44 @@ class MOSTBot:
                 )
                 continue
 
-            # Send alert
-            message = self._format_message(signal)
-            self._dispatch(message)
-            self.state.mark_alert(symbol)
+            # Prevent duplicate signals for same symbol
+            # Prevent duplicate signals (use unified adapter)
+            if self._has_open_signal(symbol):
+                logger.info("Already have open signal for %s - skipping duplicate", symbol)
+                continue
 
-            # Track signal
-            signal_id = f"{symbol}-MOST-{signal.timestamp}"
-            trade_data = {
-                "id": signal_id,
-                "symbol": symbol,
-                "direction": signal.direction,
-                "entry": signal.entry,
-                "stop_loss": signal.stop_loss,
-                "take_profit_1": signal.take_profit_1,
-                "take_profit_2": signal.take_profit_2,
-                "created_at": signal.timestamp,
-                "timeframe": period,
-                "exchange": EXCHANGE_NAME,
-            }
-            self.state.add_signal(signal_id, trade_data)
+            # NEW: Send via unified signal adapter
+            created_signal = self._send_signal(
+                symbol=symbol,
+                direction=signal.direction,
+                entry=signal.entry,
+                stop_loss=signal.stop_loss,
+                take_profit_1=signal.take_profit_1,
+                take_profit_2=signal.take_profit_2,
+                pattern_name="MOST Crossover",
+                timeframe=period,
+                reasons=["EMA crossed MOST indicator", "Trailing stop active"],
+            )
+            
+            if created_signal:
+                self.state.mark_alert(symbol)
 
-            if self.stats:
-                self.stats.record_open(
-                    signal_id=signal_id,
-                    symbol=normalize_symbol(symbol),
-                    direction=signal.direction,
-                    entry=signal.entry,
-                    created_at=signal.timestamp,
-                    extra={
-                        "timeframe": period,
-                        "exchange": EXCHANGE_NAME,
-                        "strategy": "MOST",
-                    },
-                )
+                # Track signal in legacy state for compatibility
+                signal_id = created_signal.signal_id
+                trade_data = {
+                    "id": signal_id,
+                    "symbol": symbol,
+                    "direction": signal.direction,
+                    "entry": signal.entry,
+                    "stop_loss": signal.stop_loss,
+                    "take_profit_1": signal.take_profit_1,
+                    "take_profit_2": signal.take_profit_2,
+                    "created_at": signal.timestamp,
+                    "timeframe": period,
+                    "exchange": EXCHANGE_NAME,
+                    "most_value": signal.most_value,  # CRITICAL FIX: Store MOST value for trailing
+                }
+                self.state.add_signal(signal_id, trade_data)
 
             time.sleep(0.5)
 
@@ -798,24 +827,24 @@ class MOSTBot:
 
     def _format_message(self, signal: MOSTSignal) -> str:
         """Format Telegram message for signal using centralized template."""
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats is not None:
-            symbol_key = signal.symbol if "/" in signal.symbol else f"{signal.symbol}/USDT"
+            symbol_key = normalize_symbol(signal.symbol)  # Must match record_open format
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-
-            if total > 0:
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                }
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+        }
 
         return format_signal_message(
             bot_name="MOST",
@@ -838,7 +867,7 @@ class MOSTBot:
         """Build a compact TP/SL history line for the symbol."""
         if not self.stats:
             return None
-        symbol_key = symbol if "/" in symbol else f"{symbol}/USDT"
+        symbol_key = normalize_symbol(symbol)  # Must match record_open format
         counts = self.stats.symbol_tp_sl_counts(symbol_key)
         tp1 = counts.get("TP1", 0)
         tp2 = counts.get("TP2", 0)
@@ -913,6 +942,58 @@ class MOSTBot:
                     self.stats.discard(signal_id)
                 continue
 
+            # CRITICAL FIX: Update trailing stop based on MOST line movement
+            # MOST indicator should trail the stop as price moves in favor
+            most_value_raw = payload.get("most_value")
+            if most_value_raw is not None:
+                try:
+                    most_value = float(most_value_raw)
+                    
+                    # Update trailing stop for BULLISH (LONG) trades
+                    if direction == "BULLISH":
+                        # MOST line acts as trailing stop for longs
+                        # Move stop up as MOST rises, never down
+                        if most_value > sl:
+                            # Check if we should move to breakeven first
+                            profit_pct = ((price - entry) / entry) * 100
+                            if profit_pct >= 1.5:  # 1.5% profit
+                                # Move to at least breakeven
+                                new_sl = max(most_value, entry)
+                            else:
+                                new_sl = most_value
+                            
+                            # Only update if new stop is higher (tighter)
+                            if new_sl > sl:
+                                old_sl = sl
+                                payload["stop_loss"] = new_sl
+                                sl = new_sl  # Update local variable
+                                logger.info("%s: Trailing stop updated: %.6f -> %.6f (profit: %.2f%%)",
+                                          signal_id, old_sl, new_sl, profit_pct)
+                    
+                    # Update trailing stop for BEARISH (SHORT) trades
+                    elif direction == "BEARISH":
+                        # MOST line acts as trailing stop for shorts
+                        # Move stop down as MOST falls, never up
+                        if most_value < sl:
+                            # Check if we should move to breakeven first
+                            profit_pct = ((entry - price) / entry) * 100
+                            if profit_pct >= 1.5:  # 1.5% profit
+                                # Move to at least breakeven
+                                new_sl = min(most_value, entry)
+                            else:
+                                new_sl = most_value
+                            
+                            # Only update if new stop is lower (tighter)
+                            if new_sl < sl:
+                                old_sl = sl
+                                payload["stop_loss"] = new_sl
+                                sl = new_sl  # Update local variable
+                                logger.info("%s: Trailing stop updated: %.6f -> %.6f (profit: %.2f%%)",
+                                          signal_id, old_sl, new_sl, profit_pct)
+                
+                except (TypeError, ValueError) as e:
+                    logger.debug("Could not update trailing stop for %s: %s", signal_id, e)
+            
             # Check for TP/SL with tolerance for slippage
             result = None
             if direction == "BULLISH":

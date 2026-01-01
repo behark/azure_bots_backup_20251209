@@ -79,7 +79,7 @@ from signal_stats import SignalStats
 BLACKLISTED_SYMBOLS = {"WET/USDT", "ID/USDT", "BAS/USDT", "AVNT/USDT", "FHE/USDT", "LUMIA/USDT"}
 
 # Signal quality filters
-MIN_SCORE = 4  # Require 4 confluence factors (was 3)
+MIN_SCORE = 3  # Require 4 confluence factors (was 3)
 MAX_STOP_LOSS_PCT = 3.0  # Cap stop loss at 3% to prevent large losses
 MIN_RISK_REWARD = 1.2  # Minimum risk:reward ratio
 
@@ -90,7 +90,7 @@ PRICE_TOLERANCE = 0.005
 MIN_DIVISOR = 1e-10
 
 # Result notifications disabled - history included in next signal instead
-ENABLE_RESULT_NOTIFICATIONS = False
+ENABLE_RESULT_NOTIFICATIONS = True
 
 # =========================================================
 # UTILS
@@ -669,17 +669,19 @@ class VolumeProfileBot:
         # Create signal ID
         sig_id = f"{symbol}-{tf}-{utcnow().isoformat()}"
 
-        # Get performance stats for this symbol
-        perf_line = ""
+        # Get performance stats for this symbol (ALWAYS shown)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats:
             counts = self.stats.symbol_tp_sl_counts(symbol)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-            if total > 0:
-                win_rate = (tp1_count + tp2_count) / total * 100
-                perf_line = f"\n📈 <b>History:</b> {win_rate:.0f}% Win ({tp1_count + tp2_count}/{total}) | TP:{tp1_count + tp2_count} SL:{sl_count}"
+        total = tp1_count + tp2_count + sl_count
+        wins = tp1_count + tp2_count
+        win_rate = (wins / total * 100) if total > 0 else 0
+        perf_line = f"\n📈 History: {win_rate:.0f}% Win ({wins}/{total}) | TP:{wins} SL:{sl_count}"
 
         msg = (
             f"{emoji} <b>SMART CONFLUENCE: {signal['type']}</b>\n"

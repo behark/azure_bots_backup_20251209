@@ -5,7 +5,7 @@
     "check_timeframe_for_duplicates": true
   },
   "execution": {
-    "cycle_interval_seconds": 300,
+    "cycle_interval_seconds": 60,
     "symbol_delay_seconds": 8,
     "health_check_interval_seconds": 3600,
     "enable_startup_notification": true,
@@ -15,14 +15,14 @@
   },
   "risk": {
     "max_open_signals": 45,
-    "min_risk_reward_ratio": 2.0,
+    "min_risk_reward_ratio": 1.0,
     "max_risk_per_trade_pct": 1.0,
     "enable_stop_loss": true
   },
   "analysis": {
     "candle_limit": 100,
     "request_timeout_seconds": 30,
-    "timeframe_override": "15m",
+    "timeframe_override": "5m",
     "breakout_buffer_pct": 0.001,
     "session_times": {
       "london_open": "08:00",
@@ -40,7 +40,7 @@
     "atr_sl_multiplier": 1.5,
     "atr_tp1_multiplier": 2.0,
     "atr_tp2_multiplier": 3.5,
-    "min_risk_reward": 1.5
+    "min_risk_reward": 1.0
   },
   "rate_limit": {
     "calls_per_minute": 20,
@@ -51,9 +51,9 @@
     "rate_limit_backoff_max": 300
   },
   "signal": {
-    "cooldown_minutes": 30,
+    "cooldown_minutes": 10,
     "max_signal_age_hours": 12,
-    "result_notification_cooldown_minutes": 15
+    "result_notification_cooldown_minutes": 5
   },
   "telegram": {
     "bot_token_env_var": "TELEGRAM_BOT_TOKEN_ORB",

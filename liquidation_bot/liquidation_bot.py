@@ -37,7 +37,7 @@ STATS_FILE = LOG_DIR / "liquidation_stats.json"
 EXCHANGE_NAME = "Binance Futures"
 
 # Result notification toggle - set to False to disable separate TP/SL hit alerts
-ENABLE_RESULT_NOTIFICATIONS = False
+ENABLE_RESULT_NOTIFICATIONS = True
 
 # Price tolerance for TP/SL detection (0.1% = 0.001)
 # This accounts for spread, slippage, and minor price variations
@@ -73,6 +73,9 @@ from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
+
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
@@ -356,6 +359,19 @@ class LiquidationState:
         last_map[symbol] = utc_now().isoformat()
         self.save()
 
+    def has_open_signal_for_symbol(self, symbol: str) -> bool:
+        """Check if there's already an open signal for this symbol."""
+        # Normalize symbol for comparison (strip /USDT suffix)
+        base_symbol = symbol.replace("/USDT", "").replace(":USDT", "").upper()
+        signals = self.iter_signals()
+        for sig_data in signals.values():
+            if isinstance(sig_data, dict):
+                stored_symbol = sig_data.get("symbol", "")
+                stored_base = stored_symbol.replace("/USDT", "").replace(":USDT", "").upper()
+                if stored_base == base_symbol:
+                    return True
+        return False
+
     def add_signal(self, signal_id: str, payload: Dict[str, Any]) -> None:
         signals = self.iter_signals()
         signals[signal_id] = payload
@@ -432,7 +448,9 @@ class LiquidationState:
         return removed_count
 
 
-class LiquidationBot:
+class LiquidationBot(BotSignalMixin):
+    """Liquidation Bot with unified signal management."""
+    
     def __init__(self, interval: int = 60):
         self.interval = interval
         self.watchlist: List[WatchItem] = load_watchlist()
@@ -445,6 +463,15 @@ class LiquidationBot:
         self.health_monitor = HealthMonitor("Liquidation Bot", self.notifier, heartbeat_interval=3600) if HealthMonitor else None
         self.rate_limiter = RateLimiter(calls_per_minute=60, backoff_file=LOG_DIR / "rate_limiter.json") if RateLimiter else None
         self.large_trade_multiplier = float(os.getenv("LIQ_LARGE_TRADE_MULTIPLIER", "20"))
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="liquidation_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="5m",
+            notification_mode="signal_only",
+        )
 
     def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
@@ -575,6 +602,11 @@ class LiquidationBot:
                         "Max open signals limit reached (%d/%d). Skipping new signal for %s",
                         current_open, MAX_OPEN_SIGNALS, symbol
                     )
+                    continue
+
+                # Prevent duplicate signals for same symbol
+                if self.state.has_open_signal_for_symbol(symbol):
+                    logger.info("Already have open signal for %s - skipping duplicate", symbol)
                     continue
 
                 trade_levels["exchange"] = EXCHANGE_NAME
@@ -831,30 +863,31 @@ class LiquidationBot:
         reasons_val = evaluation.get("reasons", [])
         reasons = [r for r in reasons_val if isinstance(r, str)] if isinstance(reasons_val, list) else []
 
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats is not None:
             symbol_key = normalize_symbol(snapshot.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total_count = tp1_count + tp2_count + sl_count
-            if total_count > 0:
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total_count,
-                }
+        total_count = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total_count,
+        }
 
         # Build signal message using centralized template
         entry = float(cast(float, trade_levels.get("entry", snapshot.price or 0))) if trade_levels else float(snapshot.price or 0)
         sl = float(cast(float, trade_levels.get("stop_loss", entry * 0.98))) if trade_levels else entry * 0.98
         tp1 = float(cast(float, trade_levels.get("take_profit_1", entry * 1.03))) if trade_levels else entry * 1.03
         tp2 = float(cast(float, trade_levels.get("take_profit_2", entry * 1.05))) if trade_levels else entry * 1.05
-        timeframe = str(trade_levels.get("timeframe", "15m")) if trade_levels else "15m"
+        timeframe = str(trade_levels.get("timeframe", "5m")) if trade_levels else "5m"
 
         return format_signal_message(
             bot_name="LIQUIDATION",
@@ -968,8 +1001,10 @@ class LiquidationBot:
                 result = "SL"
 
             if result:
-                # Get updated performance stats
-                perf_stats = None
+                # Get updated performance stats (ALWAYS included)
+                tp1_count = 0
+                tp2_count = 0
+                sl_count = 0
                 if self.stats:
                     stats_record = self.stats.record_close(
                         signal_id,
@@ -985,17 +1020,16 @@ class LiquidationBot:
                         tp1_count = counts.get("TP1", 0)
                         tp2_count = counts.get("TP2", 0)
                         sl_count = counts.get("SL", 0)
-                        total_count = tp1_count + tp2_count + sl_count
-                        if total_count > 0:
-                            perf_stats = {
-                                "tp1": tp1_count,
-                                "tp2": tp2_count,
-                                "sl": sl_count,
-                                "wins": tp1_count + tp2_count,
-                                "total": total_count,
-                            }
                     else:
                         self.stats.discard(signal_id)
+                total_count = tp1_count + tp2_count + sl_count
+                perf_stats = {
+                    "tp1": tp1_count,
+                    "tp2": tp2_count,
+                    "sl": sl_count,
+                    "wins": tp1_count + tp2_count,
+                    "total": total_count,
+                }
 
                 # Use centralized result template
                 if ENABLE_RESULT_NOTIFICATIONS:

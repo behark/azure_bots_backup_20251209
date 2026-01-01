@@ -1,0 +1,15 @@
+{
+  "harmonic": {
+    "zigzag_depth": 12,
+    "zigzag_deviation": 5.0,
+    "fib_tolerance": 0.05,
+    "min_risk_reward": 1.0,
+    "atr_period": 14,
+    "atr_sl_multiplier": 1.5,
+    "tp1_rr": 1.5,
+    "tp2_rr": 2.5,
+    "max_stop_pct": 3.0,
+    "cooldown_minutes": 10,
+    "min_pattern_score": 70.0
+  }
+}

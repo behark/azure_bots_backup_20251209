@@ -190,6 +190,9 @@ from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
 
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
+
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
@@ -273,7 +276,7 @@ def get_default_config() -> Dict[str, Any]:
         "analysis": {
             "candle_limit": 200,
             "request_timeout_seconds": 30,
-            "min_confidence_threshold": 60.0,
+            "min_confidence_threshold": 40.0,
             "indicator_weights": {
                 "trending_market": {
                     "RSI": 1.0, "MACD": 2.0, "EMA": 2.0, "ADX": 1.5,
@@ -1509,8 +1512,8 @@ class BotState:
         return len(stale_ids)
 
 
-class DIYBot:
-    """Main DIY Multi-Indicator Bot with Volume Bot features."""
+class DIYBot(BotSignalMixin):
+    """Main DIY Multi-Indicator Bot with unified signal management."""
 
     def __init__(self, config_path: str = str(CONFIG_FILE)):
         # Load configuration
@@ -1534,6 +1537,15 @@ class DIYBot:
         self.health_monitor = (
             HealthMonitor("DIY Bot", self.notifier, heartbeat_interval=health_check_interval)
             if HealthMonitor and self.notifier else None
+        )
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="diy_bot",
+            notifier=self.notifier,
+            exchange="MEXC",
+            default_timeframe="15m",
+            notification_mode="signal_only",
         )
 
         # Get RateLimiter from HealthMonitor
@@ -1705,25 +1717,26 @@ class DIYBot:
         tp2: float
     ) -> str:
         """Format enhanced result message with performance history."""
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
+        avg_pnl = 0.0
         if self.stats:
             counts = self.stats.symbol_tp_sl_counts(symbol)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-
-            if total > 0:
-                avg_pnl = self.stats.get_avg_pnl(symbol) if hasattr(self.stats, 'get_avg_pnl') else 0.0
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                    "avg_pnl": avg_pnl,
-                }
+            avg_pnl = self.stats.get_avg_pnl(symbol) if hasattr(self.stats, 'get_avg_pnl') else 0.0
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+            "avg_pnl": avg_pnl,
+        }
 
         return format_result_message(
             symbol=symbol,
@@ -2019,11 +2032,10 @@ class DIYBot:
         # Calculate confluence
         direction, confidence, long_score, short_score = self.analyzer.calculate_confluence(results)
 
-        # WIN RATE FIX: Skip signals entirely in CHOPPY markets (too much noise)
+        # WIN RATE FIX: Log choppy markets but don't skip (testing mode)
         if regime == 'CHOPPY':
-            logger.info("%s: Skipping signal - market is CHOPPY (ADX=%.1f, volatility=%.2f)",
+            logger.debug("%s: Market is CHOPPY (ADX=%.1f, volatility=%.2f) - proceeding anyway",
                        symbol, regime_info.get('adx_strength', 0), regime_info.get('volatility_score', 0))
-            return None
 
         # Apply market regime filter to confidence
         # In RANGING markets, reduce confidence by 20% (lower quality signals)
@@ -2115,26 +2127,27 @@ class DIYBot:
 
     def _format_message(self, signal: DIYSignal) -> str:
         """Format Telegram message for signal using centralized template."""
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
+        avg_pnl = 0.0
         if self.stats is not None:
             symbol_key = signal.symbol
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-
-            if total > 0:
-                avg_pnl = self.stats.get_avg_pnl(symbol_key) if hasattr(self.stats, 'get_avg_pnl') else 0.0
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                    "avg_pnl": avg_pnl,
-                }
+            avg_pnl = self.stats.get_avg_pnl(symbol_key) if hasattr(self.stats, 'get_avg_pnl') else 0.0
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+            "avg_pnl": avg_pnl,
+        }
 
         # Build extra info with confluence scores
         extra_info = f"Long: {signal.long_score:.0f} | Short: {signal.short_score:.0f}"
@@ -2151,7 +2164,7 @@ class DIYBot:
             tp2=signal.take_profit_2,
             confidence=signal.confidence,
             exchange="MEXC",
-            timeframe="15m",
+            timeframe="5m",
             current_price=current_price,
             performance_stats=perf_stats,
             extra_info=extra_info,

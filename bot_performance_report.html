@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bot Performance Analysis</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; border-bottom: 2px solid #ecf0f1; padding-bottom: 8px; }
+        h3 { color: #7f8c8d; margin-top: 20px; }
+        .bot-section { margin: 30px 0; padding: 20px; background: #fafafa; border-left: 4px solid #3498db; border-radius: 5px; }
+        .metric { display: inline-block; margin: 10px 20px 10px 0; }
+        .metric-label { font-weight: bold; color: #7f8c8d; }
+        .metric-value { color: #2c3e50; font-size: 1.1em; }
+        .positive { color: #27ae60; font-weight: bold; }
+        .negative { color: #e74c3c; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th { background: #34495e; color: white; padding: 12px; text-align: left; }
+        td { padding: 10px; border-bottom: 1px solid #ecf0f1; }
+        tr:hover { background: #f8f9fa; }
+        .summary { background: #e8f5e9; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .timestamp { color: #95a5a6; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Bot Performance Analysis Report</h1>
+        <p class="timestamp">Generated: 2026-01-01 04:30:41 UTC</p>
+
+        <div class="summary">
+            <h2>📈 Portfolio Summary</h2>
+            <div class="metric">
+                <span class="metric-label">Active Bots:</span>
+                <span class="metric-value">9</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">1376</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">29.6%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-535.87%</span>
+            </div>
+        </div>
+
+        <div class="bot-section">
+            <h2>PSAR Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Parabolic SAR with trailing stop</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">3</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">100.0%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value positive">+3.06%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">+1.02%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">∞</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">1.49</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>SOON/USDT</td>
+                    <td>1</td>
+                    <td>100.0%</td>
+                    <td class="positive">+1.81%</td>
+                    <td>+1.81%</td>
+                </tr>
+
+                <tr>
+                    <td>ON/USDT</td>
+                    <td>2</td>
+                    <td>100.0%</td>
+                    <td class="positive">+1.25%</td>
+                    <td>+0.62%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>ORB Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Opening Range Breakout strategy</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">96</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">67.7%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value positive">+1.77%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">+0.02%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">1.02</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">0.00</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>RLS/USDT</td>
+                    <td>6</td>
+                    <td>100.0%</td>
+                    <td class="positive">+13.62%</td>
+                    <td>+2.27%</td>
+                </tr>
+
+                <tr>
+                    <td>ASR/USDT</td>
+                    <td>10</td>
+                    <td>80.0%</td>
+                    <td class="positive">+13.40%</td>
+                    <td>+1.34%</td>
+                </tr>
+
+                <tr>
+                    <td>IRYS/USDT</td>
+                    <td>9</td>
+                    <td>66.7%</td>
+                    <td class="positive">+6.48%</td>
+                    <td>+0.72%</td>
+                </tr>
+
+                <tr>
+                    <td>TRUTH/USDT</td>
+                    <td>1</td>
+                    <td>100.0%</td>
+                    <td class="positive">+4.20%</td>
+                    <td>+4.20%</td>
+                </tr>
+
+                <tr>
+                    <td>CLO/USDT</td>
+                    <td>4</td>
+                    <td>100.0%</td>
+                    <td class="positive">+3.67%</td>
+                    <td>+0.92%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>Liquidation Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Liquidation cluster analysis</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">97</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">45.4%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value positive">+0.59%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">+0.01%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">1.00</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">0.00</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>POWER/USDT</td>
+                    <td>6</td>
+                    <td>33.3%</td>
+                    <td class="positive">+21.39%</td>
+                    <td>+3.57%</td>
+                </tr>
+
+                <tr>
+                    <td>ASR/USDT</td>
+                    <td>8</td>
+                    <td>100.0%</td>
+                    <td class="positive">+19.86%</td>
+                    <td>+2.48%</td>
+                </tr>
+
+                <tr>
+                    <td>CLO/USDT</td>
+                    <td>7</td>
+                    <td>71.4%</td>
+                    <td class="positive">+17.22%</td>
+                    <td>+2.46%</td>
+                </tr>
+
+                <tr>
+                    <td>NIGHT/USDT</td>
+                    <td>11</td>
+                    <td>45.5%</td>
+                    <td class="positive">+5.53%</td>
+                    <td>+0.50%</td>
+                </tr>
+
+                <tr>
+                    <td>SOON/USDT</td>
+                    <td>9</td>
+                    <td>66.7%</td>
+                    <td class="positive">+2.20%</td>
+                    <td>+0.24%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>MTF Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Multi-timeframe analysis strategy</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">1</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">0.0%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-0.34%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">-0.34%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">0.00</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">0.00</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>IRYS/USDT</td>
+                    <td>1</td>
+                    <td>0.0%</td>
+                    <td class="negative">-0.34%</td>
+                    <td>-0.34%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>Harmonic Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Harmonic pattern detection (Gartley, Butterfly, Bat, Crab)</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">231</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">18.3%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-26.00%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">-0.11%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">0.80</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">-0.05</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>TRUTH/USDT</td>
+                    <td>10</td>
+                    <td>20.0%</td>
+                    <td class="positive">+10.26%</td>
+                    <td>+1.03%</td>
+                </tr>
+
+                <tr>
+                    <td>IRYS/USDT</td>
+                    <td>6</td>
+                    <td>33.3%</td>
+                    <td class="positive">+4.74%</td>
+                    <td>+0.79%</td>
+                </tr>
+
+                <tr>
+                    <td>XRP/USDT</td>
+                    <td>15</td>
+                    <td>33.3%</td>
+                    <td class="positive">+4.35%</td>
+                    <td>+0.29%</td>
+                </tr>
+
+                <tr>
+                    <td>APR/USDT</td>
+                    <td>11</td>
+                    <td>30.0%</td>
+                    <td class="positive">+2.70%</td>
+                    <td>+0.25%</td>
+                </tr>
+
+                <tr>
+                    <td>ON/USDT</td>
+                    <td>12</td>
+                    <td>33.3%</td>
+                    <td class="positive">+2.06%</td>
+                    <td>+0.17%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>MOST Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Moving Stop Loss (MOST) indicator with EMA</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">205</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">30.2%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-74.39%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">-0.36%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">0.70</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">-0.10</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>POWER/USDT</td>
+                    <td>14</td>
+                    <td>78.6%</td>
+                    <td class="positive">+63.95%</td>
+                    <td>+4.57%</td>
+                </tr>
+
+                <tr>
+                    <td>APR/USDT</td>
+                    <td>13</td>
+                    <td>53.8%</td>
+                    <td class="positive">+16.59%</td>
+                    <td>+1.28%</td>
+                </tr>
+
+                <tr>
+                    <td>IRYS/USDT</td>
+                    <td>13</td>
+                    <td>53.8%</td>
+                    <td class="positive">+7.89%</td>
+                    <td>+0.61%</td>
+                </tr>
+
+                <tr>
+                    <td>BLUAI/USDT</td>
+                    <td>11</td>
+                    <td>63.6%</td>
+                    <td class="positive">+2.82%</td>
+                    <td>+0.26%</td>
+                </tr>
+
+                <tr>
+                    <td>ON/USDT</td>
+                    <td>25</td>
+                    <td>16.0%</td>
+                    <td class="negative">-1.47%</td>
+                    <td>-0.06%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>STRAT Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Rob Smith's STRAT strategy</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">404</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">24.5%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-78.15%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">-0.19%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">0.83</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">-0.06</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>H/USDT</td>
+                    <td>37</td>
+                    <td>37.8%</td>
+                    <td class="positive">+24.39%</td>
+                    <td>+0.66%</td>
+                </tr>
+
+                <tr>
+                    <td>APR/USDT</td>
+                    <td>30</td>
+                    <td>36.7%</td>
+                    <td class="positive">+20.63%</td>
+                    <td>+0.69%</td>
+                </tr>
+
+                <tr>
+                    <td>RLS/USDT</td>
+                    <td>18</td>
+                    <td>44.4%</td>
+                    <td class="positive">+17.91%</td>
+                    <td>+0.99%</td>
+                </tr>
+
+                <tr>
+                    <td>POWER/USDT</td>
+                    <td>33</td>
+                    <td>18.2%</td>
+                    <td class="positive">+6.23%</td>
+                    <td>+0.19%</td>
+                </tr>
+
+                <tr>
+                    <td>SOON/USDT</td>
+                    <td>38</td>
+                    <td>34.2%</td>
+                    <td class="positive">+3.35%</td>
+                    <td>+0.09%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>Volume Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Volume profile and volume node analysis</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">138</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">20.5%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-84.76%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">-0.61%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">0.62</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">-0.16</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>LIGHT/USDT</td>
+                    <td>5</td>
+                    <td>75.0%</td>
+                    <td class="positive">+28.07%</td>
+                    <td>+5.61%</td>
+                </tr>
+
+                <tr>
+                    <td>H/USDT</td>
+                    <td>3</td>
+                    <td>100.0%</td>
+                    <td class="positive">+11.11%</td>
+                    <td>+3.70%</td>
+                </tr>
+
+                <tr>
+                    <td>TRUTH/USDT</td>
+                    <td>6</td>
+                    <td>20.0%</td>
+                    <td class="positive">+8.36%</td>
+                    <td>+1.39%</td>
+                </tr>
+
+                <tr>
+                    <td>ASR/USDT</td>
+                    <td>3</td>
+                    <td>100.0%</td>
+                    <td class="positive">+3.69%</td>
+                    <td>+1.23%</td>
+                </tr>
+
+                <tr>
+                    <td>LUMIA/USDT</td>
+                    <td>5</td>
+                    <td>25.0%</td>
+                    <td class="positive">+1.30%</td>
+                    <td>+0.26%</td>
+                </tr>
+
+            </table>
+        </div>
+
+        <div class="bot-section">
+            <h2>Fibonacci Swing Bot</h2>
+            <p style="color: #7f8c8d; font-style: italic;">Fibonacci retracement levels with swing confirmation</p>
+            
+            <h3>Performance Metrics</h3>
+            <div class="metric">
+                <span class="metric-label">Total Trades:</span>
+                <span class="metric-value">201</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Win Rate:</span>
+                <span class="metric-value">29.9%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span class="metric-value negative">-277.64%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Avg P&L:</span>
+                <span class="metric-value">-1.38%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Profit Factor:</span>
+                <span class="metric-value">0.51</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">-0.22</span>
+            </div>
+            
+            <h3>Top Symbols</h3>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total P&L</th>
+                    <th>Avg P&L</th>
+                </tr>
+
+                <tr>
+                    <td>IRYS/USDT</td>
+                    <td>13</td>
+                    <td>61.5%</td>
+                    <td class="positive">+47.26%</td>
+                    <td>+3.64%</td>
+                </tr>
+
+                <tr>
+                    <td>BLUAI/USDT</td>
+                    <td>14</td>
+                    <td>64.3%</td>
+                    <td class="positive">+17.52%</td>
+                    <td>+1.25%</td>
+                </tr>
+
+                <tr>
+                    <td>ASR/USDT</td>
+                    <td>20</td>
+                    <td>60.0%</td>
+                    <td class="positive">+17.23%</td>
+                    <td>+0.86%</td>
+                </tr>
+
+                <tr>
+                    <td>RLS/USDT</td>
+                    <td>13</td>
+                    <td>46.2%</td>
+                    <td class="positive">+16.46%</td>
+                    <td>+1.27%</td>
+                </tr>
+
+                <tr>
+                    <td>APR/USDT</td>
+                    <td>22</td>
+                    <td>31.8%</td>
+                    <td class="positive">+0.27%</td>
+                    <td>+0.01%</td>
+                </tr>
+
+            </table>
+        </div>
+
+    </div>
+</body>
+</html>

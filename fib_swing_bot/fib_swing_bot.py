@@ -67,13 +67,16 @@ from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, CalculationMethod
 from trade_config import get_config_manager
 
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
+
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimiter = None  # Disabled for testing
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
-# Result notification toggle - set to False to disable separate TP/SL hit alerts
+# Result notification toggle - using signal_only mode now
 ENABLE_RESULT_NOTIFICATIONS = False
 
 
@@ -194,6 +197,29 @@ class FibSwingDetector:
             ema[i] = prev_ema
 
         return ema
+    
+    @staticmethod
+    def calculate_atr(highs: npt.NDArray[np.floating[Any]], 
+                      lows: npt.NDArray[np.floating[Any]], 
+                      closes: npt.NDArray[np.floating[Any]], 
+                      period: int = 14) -> float:
+        """Calculate Average True Range (ATR)"""
+        if len(highs) < period + 1 or len(lows) < period + 1 or len(closes) < period + 1:
+            return 0.0
+        
+        # Calculate True Range
+        high_low = highs[1:] - lows[1:]
+        high_close = np.abs(highs[1:] - closes[:-1])
+        low_close = np.abs(lows[1:] - closes[:-1])
+        
+        true_range = np.maximum(high_low, np.maximum(high_close, low_close))
+        
+        # Calculate ATR as simple moving average of True Range
+        if len(true_range) < period:
+            return float(np.mean(true_range))
+        
+        atr = float(np.mean(true_range[-period:]))
+        return atr
 
     def find_swing_high(self, highs: npt.NDArray[np.floating[Any]], index: int) -> bool:
         """Check if index is a swing high"""
@@ -463,15 +489,32 @@ class FibSignalEvaluator:
         stop_loss = levels.stop_loss
         tp1 = levels.take_profit_1
         tp2 = levels.take_profit_2
-        # TP3 fallback: extend TP2 distance further from entry
+        
+        # CRITICAL FIX: Add maximum stop loss limit to prevent catastrophic losses
+        MAX_SL_PERCENT = 2.5  # Maximum 2.5% stop loss
+        risk_pct = abs(stop_loss - current_price) / current_price * 100
+        if risk_pct > MAX_SL_PERCENT:
+            logger.debug("%s: Stop loss too wide: %.2f%% (max %.2f%%), rejecting signal", 
+                        symbol, risk_pct, MAX_SL_PERCENT)
+            return None
+        
+        # CRITICAL FIX: Validate minimum R:R ratio
+        MIN_RR_RATIO = 1.5  # Minimum 1.5:1 risk/reward
+        rr_ratio = abs(tp1 - current_price) / abs(stop_loss - current_price) if abs(stop_loss - current_price) > 0 else 0
+        if rr_ratio < MIN_RR_RATIO:
+            logger.debug("%s: Risk/reward too low: 1:%.2f (min 1:%.2f), rejecting signal",
+                        symbol, rr_ratio, MIN_RR_RATIO)
+            return None
+        # CRITICAL FIX: TP3 calculation using ATR for more realistic targets
         if levels.take_profit_3:
             tp3 = levels.take_profit_3
         else:
-            tp2_distance = abs(tp2 - current_price)
+            # Calculate ATR for realistic TP3 extension
+            atr = self.detector.calculate_atr(highs, lows, closes, period=14)
             if direction == "LONG":
-                tp3 = tp2 + tp2_distance * 0.5  # Extend 50% beyond TP2
+                tp3 = tp2 + (atr * 2.0)  # Extend by 2x ATR beyond TP2
             else:
-                tp3 = tp2 - tp2_distance * 0.5  # Extend 50% below TP2 for SHORT
+                tp3 = tp2 - (atr * 2.0)  # Extend by 2x ATR below TP2 for SHORT
 
         # Create signal (use timezone-aware datetime, not deprecated utcnow())
         now_utc = datetime.now(timezone.utc)
@@ -812,8 +855,8 @@ class SignalTracker:
             self._save_state()
 
 
-class FibSwingBot:
-    """Main Fibonacci Swing Bot"""
+class FibSwingBot(BotSignalMixin):
+    """Main Fibonacci Swing Bot with unified signal management."""
 
     def __init__(self, watchlist_file: Path, interval: int = 60):
         self.watchlist_file = watchlist_file
@@ -828,6 +871,15 @@ class FibSwingBot:
         self.rate_limiter_handler = RateLimitHandler(base_delay=0.5, max_retries=5) if RateLimitHandler else None
         # Pass exchange and rate limiter to tracker for monitoring
         self.tracker = SignalTracker(self.stats, self.exchange, self.rate_limiter_handler)
+
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="fib_swing_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="15m",
+            notification_mode="signal_only",
+        )
 
         logger.info("Fib Swing Bot initialized with %d symbols", len(self.watchlist))
 
@@ -887,7 +939,10 @@ class FibSwingBot:
     def _format_signal_message(self, signal: FibSignal) -> str:
         """Format Fibonacci signal for Telegram using centralized template."""
         # Get performance stats (with error handling for corrupted stats)
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats is not None:
             try:
                 symbol_key = normalize_symbol(signal.symbol)
@@ -895,18 +950,16 @@ class FibSwingBot:
                 tp1_count = counts.get("TP1", 0)
                 tp2_count = counts.get("TP2", 0)
                 sl_count = counts.get("SL", 0)
-                total = tp1_count + tp2_count + sl_count
-
-                if total > 0:
-                    perf_stats = {
-                        "tp1": tp1_count,
-                        "tp2": tp2_count,
-                        "sl": sl_count,
-                        "wins": tp1_count + tp2_count,
-                        "total": total,
-                    }
             except Exception as e:
                 logger.warning("Failed to get performance stats for %s: %s", signal.symbol, e)
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+        }
 
         # Build extra info with Fibonacci-specific data
         fib_info = f"Fib: {signal.fib_level}" if signal.fib_level != "N/A" else ""
@@ -1011,11 +1064,26 @@ class FibSwingBot:
                                     current_open, MAX_OPEN_SIGNALS, symbol
                                 )
                                 continue
+                            
+                            # Check for duplicates using unified adapter
+                            if self._has_open_signal(signal.symbol):
+                                logger.debug("Already have open signal for %s - skipping", signal.symbol)
+                                continue
 
-                            # Send alert
-                            message = self._format_signal_message(signal)
-                            if self.notifier:
-                                self.notifier.send_message(message)
+                            # NEW: Send via unified signal adapter
+                            created = self._send_signal(
+                                symbol=signal.symbol,
+                                direction=signal.direction,
+                                entry=signal.entry,
+                                stop_loss=signal.stop_loss,
+                                take_profit_1=signal.take_profit_1,
+                                take_profit_2=signal.take_profit_2,
+                                take_profit_3=getattr(signal, 'take_profit_3', 0),
+                                pattern_name=f"Fib {signal.fib_level}",
+                                timeframe=timeframe,
+                                confidence=signal.confidence * 100 if hasattr(signal, 'confidence') else 70,
+                                reasons=[f"Quality: {signal.quality}", f"Fib {signal.fib_level}"],
+                            )
 
                             logger.info(
                                 "%s %s signal: %s at %.6f (Fib %s)",
@@ -1023,9 +1091,10 @@ class FibSwingBot:
                                 signal.entry, signal.fib_level
                             )
 
-                            # Track signal
-                            self.tracker.add_signal(signal)
-                            self.tracker.mark_alert(symbol, timeframe)
+                            # Track signal in legacy tracker for compatibility
+                            if created:
+                                self.tracker.add_signal(signal)
+                                self.tracker.mark_alert(symbol, timeframe)
 
                         time.sleep(1)  # Small delay between symbols
 

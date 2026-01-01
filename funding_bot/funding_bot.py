@@ -68,6 +68,9 @@ from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
 
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
+
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
@@ -534,8 +537,8 @@ class SignalTracker:
                 if notifier:
                     notifier.send_message(msg, parse_mode="HTML")
 
-class FundingBot:
-    """Refactored Funding Bot."""
+class FundingBot(BotSignalMixin):
+    """Refactored Funding Bot with unified signal management."""
 
     def __init__(self, config_path: Path):
         self.config = load_json_config(config_path)
@@ -559,6 +562,15 @@ class FundingBot:
                 max_backoff=rate_cfg.get("max_backoff_seconds", 30.0)
             )
             logger.info("RateLimitHandler initialized for API protection")
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="funding_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="8h",
+            notification_mode="signal_only",
+        )
 
         # Init Exchange Clients with rate limiting
         self.clients: Dict[str, Any] = {}
@@ -739,22 +751,23 @@ class FundingBot:
                 self.health_monitor.send_shutdown_message()
 
     def _send_alert(self, signal: FundingSignal) -> None:
-        # Get performance stats for this symbol
-        perf_stats = None
+        # Get performance stats for this symbol (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.tracker and self.tracker.stats:
             counts = self.tracker.stats.symbol_tp_sl_counts(signal.symbol)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-            if total > 0:
-                perf_stats = {
-                    "total": total,
-                    "wins": tp1_count + tp2_count,
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                }
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "total": total,
+            "wins": tp1_count + tp2_count,
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+        }
 
         msg = format_signal_message(
             bot_name="FUNDING",

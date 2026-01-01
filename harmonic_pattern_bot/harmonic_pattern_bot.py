@@ -46,7 +46,7 @@ shutdown_requested = False
 PRICE_TOLERANCE = 0.005
 
 # Result notifications disabled - history included in next signal instead
-ENABLE_RESULT_NOTIFICATIONS = False
+ENABLE_RESULT_NOTIFICATIONS = True
 
 
 def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
@@ -85,6 +85,9 @@ from message_templates import format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
+
 # =========================================================
 # CONFIGURATION
 # =========================================================
@@ -99,7 +102,7 @@ class HarmonicConfig:
     fib_tolerance: float = 0.05  # 5% tolerance on fib ratios
 
     # Risk management
-    min_risk_reward: float = 1.5  # Minimum R:R ratio
+    min_risk_reward: float = 1.0  # Minimum R:R ratio
     atr_period: int = 14
     atr_sl_multiplier: float = 1.5  # SL = ATR * multiplier
     tp1_rr: float = 1.5  # TP1 at 1.5R
@@ -108,7 +111,7 @@ class HarmonicConfig:
 
     # Signal management
     cooldown_minutes: int = 60
-    min_pattern_score: float = 70.0  # Minimum pattern quality score (0-100)
+    min_pattern_score: float = 50.0  # Minimum pattern quality score (0-100)
 
 
 def load_config() -> HarmonicConfig:
@@ -610,8 +613,8 @@ class StateManager:
 # =========================================================
 # BOT CLASS
 # =========================================================
-class HarmonicPatternBot:
-    """Main bot class for harmonic pattern detection."""
+class HarmonicPatternBot(BotSignalMixin):
+    """Main bot class for harmonic pattern detection with unified signal management."""
 
     def __init__(self):
         self.config = load_config()
@@ -624,6 +627,15 @@ class HarmonicPatternBot:
         )
         self.state = StateManager()
         self.stats = SignalStats("Harmonic Pattern Bot", STATS_FILE)
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="harmonic_pattern_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="1h",
+            notification_mode="signal_only",
+        )
 
     def _load_watchlist(self) -> List[Dict]:
         if WATCHLIST_FILE.exists():
@@ -831,17 +843,19 @@ class HarmonicPatternBot:
 
         sig_id = f"{symbol}-{timeframe}-{datetime.now(timezone.utc).isoformat()}"
 
-        # Get performance stats for this symbol
-        perf_line = ""
+        # Get performance stats for this symbol (ALWAYS shown)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats:
             counts = self.stats.symbol_tp_sl_counts(symbol)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-            if total > 0:
-                win_rate = (tp1_count + tp2_count) / total * 100
-                perf_line = f"\n📊 <b>History:</b> {win_rate:.0f}% Win ({tp1_count + tp2_count}/{total}) | TP:{tp1_count + tp2_count} SL:{sl_count}"
+        total = tp1_count + tp2_count + sl_count
+        wins = tp1_count + tp2_count
+        win_rate = (wins / total * 100) if total > 0 else 0
+        perf_line = f"\n📈 History: {win_rate:.0f}% Win ({wins}/{total}) | TP:{wins} SL:{sl_count}"
 
         msg = (
             f"{direction_emoji} <b>HARMONIC: {pattern_name}</b>\n"

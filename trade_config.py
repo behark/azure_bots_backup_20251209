@@ -25,17 +25,22 @@ class RiskConfig:
     tp1_atr_multiplier: float = 2.0
     tp2_atr_multiplier: float = 3.0
     tp3_atr_multiplier: float = 4.5
-    # Dual R:R validation for asymmetric trades
-    min_risk_reward: float = 0.8      # Minimum R:R for TP1 (relaxed)
-    min_risk_reward_tp2: float = 1.5  # Minimum R:R for TP2 (asymmetric filter)
+    # STANDARDIZED: Dual R:R validation for asymmetric trades
+    min_risk_reward: float = 1.2      # Minimum R:R for TP1 (standardized)
+    min_risk_reward_tp2: float = 2.0  # Minimum R:R for TP2 (standardized)
     # Maximum risk per trade (% of account)
-    max_risk_percent: float = 2.0
+    max_risk_percent: float = 2.5     # Increased to 2.5%
+    max_stop_loss_percent: float = 2.5  # NEW: Maximum stop loss distance
+    emergency_stop_percent: float = 5.0  # NEW: Emergency stop loss trigger
     # Use trailing stop
-    use_trailing_stop: bool = False
-    trailing_stop_activation: float = 1.0  # ATR units of profit before trailing activates
+    use_trailing_stop: bool = True    # ENABLED: Use trailing stops
+    trailing_stop_activation: float = 1.5  # UPDATED: Trigger at 1.5% profit
     trailing_stop_distance: float = 0.5    # ATR units for trailing distance
     # Buffer for stop loss (% added to SL to avoid wicks)
     sl_buffer_percent: float = 0.4  # Reduced from 0.75% to restore R:R geometry
+    # NEW: Portfolio protection
+    max_drawdown_percent: float = 25.0  # Maximum portfolio drawdown
+    breakeven_trigger_percent: float = 1.5  # Move to breakeven at 1.5% profit
 
 
 @dataclass
@@ -43,7 +48,7 @@ class SymbolConfig:
     """Per-symbol configuration."""
     symbol: str
     enabled: bool = True
-    period: str = "15m"
+    period: str = "5m"
     cooldown_minutes: int = 30
     # Override global risk settings per symbol
     sl_atr_multiplier: Optional[float] = None
@@ -221,7 +226,7 @@ def create_default_config() -> None:
                     "tp1_atr_multiplier": 2.5,
                     "tp2_atr_multiplier": 4.0
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "liquidation_bot": {
                 "enabled": True,
@@ -233,7 +238,7 @@ def create_default_config() -> None:
                     "tp1_atr_multiplier": 3.0,
                     "tp2_atr_multiplier": 5.0
                 },
-                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "harmonic_bot": {
                 "enabled": True,
@@ -246,7 +251,7 @@ def create_default_config() -> None:
                     "tp2_atr_multiplier": 4.0,
                     "min_risk_reward": 2.0
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "candlestick_bot": {
                 "enabled": True,
@@ -258,7 +263,7 @@ def create_default_config() -> None:
                     "tp1_atr_multiplier": 1.5,
                     "tp2_atr_multiplier": 2.5
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "volume_bot": {
                 "enabled": True,
@@ -270,7 +275,7 @@ def create_default_config() -> None:
                     "tp1_atr_multiplier": 2.0,
                     "tp2_atr_multiplier": 3.0
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "psar_bot": {
                 "enabled": True,
@@ -283,7 +288,7 @@ def create_default_config() -> None:
                     "tp2_atr_multiplier": 3.5,
                     "use_trailing_stop": True
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "most_bot": {
                 "enabled": True,
@@ -296,7 +301,7 @@ def create_default_config() -> None:
                     "tp2_atr_multiplier": 3.5,
                     "use_trailing_stop": True
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "mtf_bot": {
                 "enabled": True,
@@ -309,7 +314,7 @@ def create_default_config() -> None:
                     "tp2_atr_multiplier": 4.0,
                     "min_risk_reward": 1.8
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "diy_bot": {
                 "enabled": True,
@@ -321,7 +326,7 @@ def create_default_config() -> None:
                     "tp1_atr_multiplier": 2.5,
                     "tp2_atr_multiplier": 4.0
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "strat_bot": {
                 "enabled": True,
@@ -333,7 +338,7 @@ def create_default_config() -> None:
                     "tp1_atr_multiplier": 2.0,
                     "tp2_atr_multiplier": 3.0
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "fib_reversal_bot": {
                 "enabled": True,
@@ -346,7 +351,7 @@ def create_default_config() -> None:
                     "tp2_atr_multiplier": 3.5,
                     "min_risk_reward": 1.5
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             },
             "fib_swing_bot": {
                 "enabled": True,
@@ -359,7 +364,7 @@ def create_default_config() -> None:
                     "tp2_atr_multiplier": 4.0,
                     "min_risk_reward": 2.0
                 },
-                "symbols": [{"symbol": s, "period": "15m", "cooldown_minutes": 30} for s in default_symbols]
+                "symbols": [{"symbol": s, "period": "5m", "cooldown_minutes": 10} for s in default_symbols]
             }
         }
     }

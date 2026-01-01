@@ -40,7 +40,7 @@ STATS_FILE = LOG_DIR / "psar_stats.json"
 EXCHANGE_NAME = "Binance Futures"
 
 # Result notification settings
-ENABLE_RESULT_NOTIFICATIONS = False  # Disable TP/SL hit messages
+ENABLE_RESULT_NOTIFICATIONS = True  # Enable TP/SL hit messages
 
 # Price tolerance for TP/SL detection (0.5% = 0.005)
 # This accounts for spread, slippage, and minor price variations
@@ -77,6 +77,9 @@ from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
+
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
@@ -657,8 +660,8 @@ class BotState:
         return cast(OpenSignals, signals)
 
 
-class PSARBot:
-    """Main PSAR Trend Bot."""
+class PSARBot(BotSignalMixin):
+    """Main PSAR Trend Bot with unified signal management."""
 
     # Configuration constants - WIN RATE IMPROVEMENTS
     ADX_THRESHOLD = 30  # Minimum ADX for trend confirmation
@@ -698,6 +701,15 @@ class PSARBot:
         self.shutdown_requested = False
         signal_module.signal(signal_module.SIGTERM, self._signal_handler)
         signal_module.signal(signal_module.SIGINT, self._signal_handler)
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="psar_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="5m",
+            notification_mode="signal_only",
+        )
 
     def _init_notifier(self) -> Optional[Any]:
         if TelegramNotifier is None:
@@ -1048,24 +1060,24 @@ class PSARBot:
 
     def _format_message(self, signal: PSARSignal) -> str:
         """Format Telegram message for signal using centralized template."""
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats is not None:
             symbol_key = normalize_symbol(signal.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-
-            if total > 0:
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                }
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+        }
 
         return format_signal_message(
             bot_name="PSAR",

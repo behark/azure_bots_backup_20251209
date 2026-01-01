@@ -86,9 +86,9 @@ class TPSLCalculator:
     
     def __init__(
         self,
-        min_risk_reward: float = 0.8,  # Minimum R:R for TP1 (relaxed - TP2 validation compensates)
-        min_risk_reward_tp2: float = 1.5,  # Minimum R:R for TP2 (asymmetric trade filter)
-        max_sl_percent: float = 10.0,  # Relaxed for testing - allow wider stops
+        min_risk_reward: float = 1.2,  # Standardized minimum R:R for TP1
+        min_risk_reward_tp2: float = 2.0,  # Standardized minimum R:R for TP2
+        max_sl_percent: float = 2.5,  # Cap SL distance to prevent excessive risk
         min_sl_percent: float = 0.05,
         sl_buffer_percent: float = 0.4,  # Reduced from 0.75% to restore R:R geometry
     ):
@@ -589,20 +589,26 @@ class TPSLCalculator:
             rejection_reason = f"TP2 R:R too low ({rr2:.2f} < {self.min_risk_reward_tp2})"
             is_valid = False
         
-        # Validate direction consistency
+        # Validate direction consistency and TP ordering
         if direction == "LONG":
             if sl >= entry:
                 rejection_reason = "Invalid LONG: SL >= Entry"
                 is_valid = False
-            if tp1 <= entry:
+            elif tp1 <= entry:
                 rejection_reason = "Invalid LONG: TP1 <= Entry"
+                is_valid = False
+            elif tp2 <= tp1:
+                rejection_reason = "Invalid LONG: TP2 <= TP1 (wrong ordering)"
                 is_valid = False
         else:
             if sl <= entry:
                 rejection_reason = "Invalid SHORT: SL <= Entry"
                 is_valid = False
-            if tp1 >= entry:
+            elif tp1 >= entry:
                 rejection_reason = "Invalid SHORT: TP1 >= Entry"
+                is_valid = False
+            elif tp2 >= tp1:
+                rejection_reason = "Invalid SHORT: TP2 >= TP1 (wrong ordering)"
                 is_valid = False
         
         return TradeLevels(
@@ -708,7 +714,7 @@ class TPSLCalculator:
 
 def calculate_atr(candles: List[Any], period: int = 14) -> Optional[float]:
     """
-    Calculate Average True Range (ATR) from candle data.
+    Calculate Average True Range (ATR) from candle data (optimized with NumPy).
 
     ATR measures market volatility by calculating the average of True Range values
     over a specified period. True Range is the greatest of:
@@ -762,38 +768,38 @@ def calculate_atr(candles: List[Any], period: int = 14) -> Optional[float]:
         - Commonly used for: stop loss placement, position sizing, volatility filters
         - Flexible input format supports both dict and OHLCV array formats from exchanges
     """
-    if len(candles) < period + 1:
+    import numpy as np
+
+    n = len(candles)
+    if n < period + 1:
         return None
-    
-    trs: List[float] = []
-    for i in range(1, len(candles)):
-        # Handle both dict and OHLCV list formats
-        candle = candles[i]
-        prev_candle = candles[i - 1]
 
-        if isinstance(candle, dict):
-            high: float = float(candle.get("high", 0))
-            low: float = float(candle.get("low", 0))
-        else:
-            high = float(candle[2])  # OHLCV: [timestamp, open, high, low, close, volume]
-            low = float(candle[3])
+    # Convert to numpy arrays in one pass (vectorized extraction)
+    if isinstance(candles[0], dict):
+        highs = np.array([c.get("high", 0) for c in candles], dtype=np.float64)
+        lows = np.array([c.get("low", 0) for c in candles], dtype=np.float64)
+        closes = np.array([c.get("close", 0) for c in candles], dtype=np.float64)
+    else:
+        # OHLCV array format - vectorized conversion
+        data = np.array(candles, dtype=np.float64)
+        highs = data[:, 2]
+        lows = data[:, 3]
+        closes = data[:, 4]
 
-        if isinstance(prev_candle, dict):
-            prev_close: float = float(prev_candle.get("close", 0))
-        else:
-            prev_close = float(prev_candle[4])
-        
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close)
-        )
-        trs.append(tr)
-    
+    # Vectorized True Range calculation (avoids Python loop)
+    prev_closes = np.roll(closes, 1)
+    prev_closes[0] = closes[0]  # Handle first element
+
+    tr1 = highs[1:] - lows[1:]
+    tr2 = np.abs(highs[1:] - prev_closes[1:])
+    tr3 = np.abs(lows[1:] - prev_closes[1:])
+
+    trs = np.maximum(np.maximum(tr1, tr2), tr3)
+
     if len(trs) < period:
-        return sum(trs) / len(trs) if trs else None
-    
-    return float(sum(trs[-period:])) / period
+        return float(np.mean(trs)) if len(trs) > 0 else None
+
+    return float(np.mean(trs[-period:]))
 
 
 # Convenience function for quick calculations

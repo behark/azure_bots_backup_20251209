@@ -10,7 +10,7 @@
   },
   "execution": {
     "_description": "How often the bot runs and checks for signals",
-    "cycle_interval_seconds": 300,
+    "cycle_interval_seconds": 60,
     "symbol_delay_seconds": 8.0,
     "health_check_interval_seconds": 3600,
     "enable_startup_notification": true,
@@ -21,7 +21,7 @@
   "risk": {
     "_description": "Risk management settings - VERY IMPORTANT for protecting your capital",
     "max_open_signals": 45,
-    "min_risk_reward_ratio": 1.8,
+    "min_risk_reward_ratio": 1.0,
     "max_risk_per_trade_pct": 1.0,
     "enable_stop_loss": true,
     "max_same_symbol_signals": 1
@@ -30,7 +30,7 @@
     "_description": "Technical analysis settings - These control signal accuracy",
     "candle_limit": 250,
     "request_timeout_seconds": 30,
-    "min_confidence_threshold": 30.0,
+    "min_confidence_threshold": 40.0,
     "indicator_weights": {
       "_description": "How much weight each indicator has in trending vs ranging markets",
       "trending_market": {
@@ -76,16 +76,16 @@
   },
   "tp_sl": {
     "_description": "Take Profit and Stop Loss settings - Critical for profitability",
-    "use_tpsl_calculator": false,
+    "use_tpsl_calculator": true,
     "calculation_method": "ATR",
     "atr_period": 14,
     "atr_sl_multiplier": 1.0,
-    "atr_tp1_multiplier": 1.2,
-    "atr_tp2_multiplier": 2.5,
-    "min_risk_reward_tp1": 0.9,
-    "min_risk_reward_tp2": 2.5,
-    "price_tolerance": 0.0025,
-    "min_sl_percent": 0.01
+    "atr_tp1_multiplier": 2.0,
+    "atr_tp2_multiplier": 3.5,
+    "min_risk_reward_tp1": 1.0,
+    "min_risk_reward_tp2": 1.5,
+    "price_tolerance": 0.002,
+    "min_sl_percent": 0.008
   },
   "rate_limit": {
     "_description": "API rate limiting to avoid being blocked by the exchange",
@@ -98,7 +98,7 @@
   },
   "signal": {
     "_description": "Signal generation and notification settings",
-    "cooldown_minutes": 30,
+    "cooldown_minutes": 10,
     "max_signal_age_hours": 24,
     "result_notification_cooldown_minutes": 1,
     "no_signal_alert_hours": 1
@@ -107,7 +107,8 @@
     "_description": "Telegram notification settings",
     "bot_token_env_var": "TELEGRAM_BOT_TOKEN_DIY",
     "chat_id_env_var": "TELEGRAM_CHAT_ID",
-    "enabled": true
+    "enabled": true,
+    "enable_result_notifications": true
   },
   "cache": {
     "_description": "Caching settings to reduce API calls and improve speed",

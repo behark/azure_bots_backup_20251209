@@ -64,6 +64,9 @@ from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, calculate_atr
 from trade_config import get_config_manager
 
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
+
 # Optional imports (safe fallback)
 from safe_import import safe_import
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
@@ -108,7 +111,7 @@ def setup_logging(log_level: str = "INFO", enable_detailed: bool = False) -> log
 logger = logging.getLogger("orb_bot")
 
 # Result notification toggle - set to False to disable separate TP/SL hit alerts
-ENABLE_RESULT_NOTIFICATIONS = False
+ENABLE_RESULT_NOTIFICATIONS = True
 
 # Price tolerance for TP/SL hit detection (0.5% tolerance for slippage)
 PRICE_TOLERANCE = 0.005
@@ -502,8 +505,8 @@ class SignalTracker:
 
         return removed_count
 
-class ORBBot:
-    """Refactored ORB Bot."""
+class ORBBot(BotSignalMixin):
+    """Refactored ORB Bot with unified signal management."""
 
     def __init__(self, config_path: Path) -> None:
         self.config = load_json_config(config_path)
@@ -526,6 +529,15 @@ class ORBBot:
 
         heartbeat = self.config.get("execution", {}).get("health_check_interval_seconds", 3600)
         self.health_monitor = HealthMonitor("ORB Bot", self.notifier, heartbeat_interval=heartbeat) if HealthMonitor and self.notifier else None
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="orb_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="15m",
+            notification_mode="signal_only",
+        )
 
         # Initialize rate limit handler from config
         rate_cfg = self.config.get("rate_limit", {})
@@ -717,22 +729,23 @@ class ORBBot:
         # Build extra info with ORB-specific data
         extra_info = f"ORB Range: {signal.range_pct:.2f}% (${signal.orb_low:.4f} - ${signal.orb_high:.4f})"
 
-        # Get performance stats for this symbol
-        perf_stats = None
+        # Get performance stats for this symbol (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.tracker and self.tracker.stats:
             counts = self.tracker.stats.symbol_tp_sl_counts(signal.symbol)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-            if total > 0:
-                perf_stats = {
-                    "total": total,
-                    "wins": tp1_count + tp2_count,
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                }
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "total": total,
+            "wins": tp1_count + tp2_count,
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+        }
 
         msg = format_signal_message(
             bot_name="ORB",

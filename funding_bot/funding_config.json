@@ -5,7 +5,7 @@
     "check_timeframe_for_duplicates": true
   },
   "execution": {
-    "cycle_interval_seconds": 300,
+    "cycle_interval_seconds": 60,
     "symbol_delay_seconds": 8,
     "health_check_interval_seconds": 3600,
     "enable_startup_notification": true,
@@ -15,14 +15,14 @@
   },
   "risk": {
     "max_open_signals": 45,
-    "min_risk_reward_ratio": 2.0,
+    "min_risk_reward_ratio": 1.0,
     "max_risk_per_trade_pct": 1.0,
     "enable_stop_loss": true
   },
   "analysis": {
     "candle_limit": 100,
     "request_timeout_seconds": 30,
-    "timeframe_override": "15m",
+    "timeframe_override": "5m",
     "funding_thresholds": {
       "extreme_positive": 0.0003,
       "extreme_negative": -0.0003,
@@ -44,9 +44,9 @@
     "rate_limit_backoff_max": 300
   },
   "signal": {
-    "cooldown_minutes": 30,
+    "cooldown_minutes": 10,
     "max_signal_age_hours": 24,
-    "result_notification_cooldown_minutes": 15,
+    "result_notification_cooldown_minutes": 5,
     "allowed_directions": [
       "BEARISH"
     ],
@@ -55,6 +55,7 @@
   "telegram": {
     "bot_token_env_var": "TELEGRAM_BOT_TOKEN_FUNDING",
     "chat_id_env_var": "TELEGRAM_CHAT_ID",
-    "enabled": true
+    "enabled": true,
+    "enable_result_notifications": true
   }
 }

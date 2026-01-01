@@ -2,112 +2,104 @@
   {
     "symbol": "POWER/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "BLUAI/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "IRYS/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ON/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "CLO/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "APR/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "RLS/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "TRUTH/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "SOON/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ASR/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ZKJ/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "H/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "FHE/USDT",
     "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
-    "exchange": "binanceusdm",
-    "market_type": "swap"
-  },
-  {
-    "symbol": "NIGHT/USDT",
-    "period": "15m",
-    "cooldown_minutes": 30,
-    "timeframe": "15m",
+    "cooldown_minutes": 10,
+    "timeframe": "5m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   }

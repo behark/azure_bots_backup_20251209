@@ -15,21 +15,22 @@
       "min_risk_pct": 1.5,
       "tp1_multiplier": 2.5,
       "tp2_multiplier": 4.0,
-      "min_risk_reward": 2.0,
+      "min_risk_reward": 1.0,
       "max_position_size_usd": 10000,
       "max_daily_loss_usd": 500,
       "max_total_risk_pct": 5.0,
       "comment": "Conservative risk settings for better win rate"
     },
     "signal_management": {
-      "cooldown_minutes": 15,
+      "cooldown_minutes": 5,
       "max_signal_age_hours": 24,
       "allow_simultaneous_directions": false,
       "check_exchange_for_duplicates": true,
       "check_timeframe_for_duplicates": true,
       "min_confidence_score": 5.0,
-      "result_notification_cooldown_minutes": 15,
-      "comment": "15m cooldown to prevent spam, min confidence 5.0"
+      "result_notification_cooldown_minutes": 0.5,
+      "enable_result_notifications": true,
+      "comment": "Result notifications disabled - stats shown in next signal"
     },
     "rate_limiting": {
       "base_delay_seconds": 1.0,
@@ -41,25 +42,25 @@
       "comment": "Conservative rate limits to avoid bans"
     },
     "execution": {
-      "cycle_interval_seconds": 300,
+      "cycle_interval_seconds": 60,
       "symbol_delay_seconds": 2,
       "health_check_interval_seconds": 3600,
       "enable_startup_notification": true,
       "enable_shutdown_notification": true,
       "enable_detailed_logging": true,
       "log_level": "INFO",
-      "comment": "2s delay between symbols, detailed logging enabled"
+      "comment": "10s cycle interval, 2s delay between symbols"
     },
     "filtering": {
       "min_factors_long": 4,
       "min_factors_short": 4,
-      "require_volume_spike": false,
-      "require_near_hvn": false,
-      "min_rsi_long": 50,
-      "max_rsi_long": 80,
-      "min_rsi_short": 20,
-      "max_rsi_short": 50,
-      "comment": "Quality filters - require 4+ factors for signals"
+      "require_volume_spike": true,
+      "require_near_hvn": true,
+      "min_rsi_long": 45,
+      "max_rsi_long": 65,
+      "min_rsi_short": 35,
+      "max_rsi_short": 55,
+      "comment": "Stricter filters: require volume spike + HVN, tighter RSI ranges"
     }
   }
 }

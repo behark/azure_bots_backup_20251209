@@ -59,6 +59,9 @@ from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator, calculate_atr
 from trade_config import get_config_manager
 
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
+
 # Optional imports (safe fallback)
 from safe_import import safe_import
 from file_lock import safe_read_json, safe_write_json
@@ -66,7 +69,7 @@ HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
 RateLimitHandler = safe_import('rate_limit_handler', 'RateLimitHandler')
 
 # Result notification toggle - set to False to disable separate TP/SL hit alerts
-ENABLE_RESULT_NOTIFICATIONS = False
+ENABLE_RESULT_NOTIFICATIONS = True
 
 # Bot configuration (previously hardcoded values)
 class BotConfigDict(TypedDict):
@@ -121,8 +124,8 @@ def load_watchlist() -> List[WatchItem]:
         if not isinstance(symbol_val, str):
             continue
         # Use timeframe field (standardized across all bots)
-        timeframe_val = item.get("timeframe", "15m")
-        timeframe = timeframe_val if isinstance(timeframe_val, str) else "15m"
+        timeframe_val = item.get("timeframe", "5m")
+        timeframe = timeframe_val if isinstance(timeframe_val, str) else "5m"
         cooldown_val = item.get("cooldown_minutes", 30)
         try:
             cooldown = int(cooldown_val)
@@ -243,7 +246,7 @@ class MultiTimeframeAnalyzer:
         # Detect trend on base timeframe
         base_trend, base_conf = self.detect_trend(base_ohlcv)
 
-        if base_trend == "NEUTRAL" or base_conf < 0.05:  # loosened from 0.15
+        if base_trend == "NEUTRAL" or base_conf < 0.02:  # loosened from 0.05 to allow more signals
             logger.info("MTF: Base trend=%s, conf=%.2f - SKIPPED (neutral or low conf)", base_trend, base_conf)
             return None
 
@@ -263,7 +266,7 @@ class MultiTimeframeAnalyzer:
             return None
         total_possible = 2 + max(0, len(higher_trends) - 1)
         confluence_pct = (score / total_possible) * 100
-        if score >= 3:
+        if score >= 2:
             strength = "STRONG"
         elif score == 2:
             strength = "MODERATE"
@@ -546,8 +549,8 @@ class BotState:
         return cast(OpenSignals, signals)
 
 
-class MTFBot:
-    """Main Multi-Timeframe Bot."""
+class MTFBot(BotSignalMixin):
+    """Main Multi-Timeframe Bot with unified signal management."""
 
     def __init__(self, interval: int = 60, default_cooldown: int = 5):
         self.interval = interval
@@ -565,6 +568,15 @@ class MTFBot:
         self.rate_limiter = (
             RateLimitHandler(base_delay=0.5, max_retries=5)
             if RateLimitHandler else None
+        )
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="mtf_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="1h",
+            notification_mode="signal_only",
         )
 
     def _init_notifier(self) -> Optional[Any]:
@@ -644,7 +656,7 @@ class MTFBot:
                 continue
             symbol = symbol_val
             timeframe_val = item.get("timeframe") if isinstance(item, dict) else None
-            timeframe = timeframe_val if isinstance(timeframe_val, str) else "15m"
+            timeframe = timeframe_val if isinstance(timeframe_val, str) else "5m"
             cooldown_raw = item.get("cooldown_minutes") if isinstance(item, dict) else None
             try:
                 cooldown = int(cooldown_raw) if cooldown_raw is not None else self.default_cooldown
@@ -828,24 +840,24 @@ class MTFBot:
         strength_map = {"STRONG": 0.9, "MODERATE": 0.7, "WEAK": 0.5}
         strength_val = strength_map.get(signal.strength, 0.6)
 
-        # Get performance stats
-        perf_stats = None
+        # Get performance stats (ALWAYS included)
+        tp1_count = 0
+        tp2_count = 0
+        sl_count = 0
         if self.stats is not None:
             symbol_key = normalize_symbol(signal.symbol)
             counts = self.stats.symbol_tp_sl_counts(symbol_key)
             tp1_count = counts.get("TP1", 0)
             tp2_count = counts.get("TP2", 0)
             sl_count = counts.get("SL", 0)
-            total = tp1_count + tp2_count + sl_count
-
-            if total > 0:
-                perf_stats = {
-                    "tp1": tp1_count,
-                    "tp2": tp2_count,
-                    "sl": sl_count,
-                    "wins": tp1_count + tp2_count,
-                    "total": total,
-                }
+        total = tp1_count + tp2_count + sl_count
+        perf_stats = {
+            "tp1": tp1_count,
+            "tp2": tp2_count,
+            "sl": sl_count,
+            "wins": tp1_count + tp2_count,
+            "total": total,
+        }
 
         # Build extra info with MTF-specific data
         extra_info = f"MTF Confluence: {signal.confluence_pct:.0f}% | {signal.strength} | Base TF: {signal.base_timeframe}"

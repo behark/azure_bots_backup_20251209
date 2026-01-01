@@ -5,7 +5,7 @@
     "check_timeframe_for_duplicates": true
   },
   "execution": {
-    "cycle_interval_seconds": 300,
+    "cycle_interval_seconds": 60,
     "symbol_delay_seconds": 8,
     "health_check_interval_seconds": 3600,
     "enable_startup_notification": true,
@@ -15,7 +15,7 @@
   },
   "risk": {
     "max_open_signals": 45,
-    "min_risk_reward_ratio": 2.0,
+    "min_risk_reward_ratio": 1.2,
     "max_risk_per_trade_pct": 1.0,
     "enable_stop_loss": true,
     "max_slippage_pct": 0.5,
@@ -24,24 +24,24 @@
   "analysis": {
     "candle_limit": 200,
     "request_timeout_seconds": 30,
-    "timeframe_override": "15m",
+    "timeframe_override": "5m",
     "pattern_error_thresholds": {
-      "Cypher": 0.12,
-      "Shark": 0.12,
-      "Gartley": 0.15,
-      "Bat": 0.15,
-      "Butterfly": 0.18,
-      "Crab": 0.18,
-      "Deep Crab": 0.18,
-      "ABCD": 0.2
+      "Cypher": 0.25,
+      "Shark": 0.25,
+      "Gartley": 0.30,
+      "Bat": 0.30,
+      "Butterfly": 0.35,
+      "Crab": 0.35,
+      "Deep Crab": 0.35,
+      "ABCD": 0.40
     },
-    "zigzag_atr_multiplier": 2.5,
-    "min_leg_candles": 2,
+    "zigzag_atr_multiplier": 1.5,
+    "min_leg_candles": 1,
     "enable_rsi_filter": false,
     "rsi_period": 14,
     "rsi_overbought": 70,
     "rsi_oversold": 30,
-    "max_pattern_age_candles": 3,
+    "max_pattern_age_candles": 10,
     "atr_fallback_period": 50,
     "entry_buffer_atr_multiplier": 0.05,
     "sl_fib_range_multiplier": 0.5,
@@ -49,9 +49,9 @@
     "tp2_risk_multiplier": 3.0,
     "tp3_risk_multiplier": 4.5,
     "signal_history_limit": 10,
-    "prz_atr_multiplier": 0.5,
-    "enable_prz_validation": true,
-    "confidence_threshold": 0.35
+    "prz_atr_multiplier": 2.0,
+    "enable_prz_validation": false,
+    "confidence_threshold": 0.0
   },
   "rate_limit": {
     "calls_per_minute": 20,
@@ -62,14 +62,15 @@
     "rate_limit_backoff_max": 300
   },
   "signal": {
-    "cooldown_minutes": 30,
+    "cooldown_minutes": 10,
     "max_signal_age_hours": 24,
-    "result_notification_cooldown_minutes": 15,
+    "result_notification_cooldown_minutes": 5,
     "no_signal_alert_hours": 6
   },
   "telegram": {
     "bot_token_env_var": "TELEGRAM_BOT_TOKEN_HARMONIC",
     "chat_id_env_var": "TELEGRAM_CHAT_ID",
-    "enabled": true
+    "enabled": true,
+    "enable_result_notifications": true
   }
 }

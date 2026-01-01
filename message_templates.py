@@ -48,7 +48,7 @@ EMOJI_EXPIRED = "⏰"
 
 # Exchange and timeframe defaults
 DEFAULT_EXCHANGE = "MEXC"
-DEFAULT_TIMEFRAME = "15m"
+DEFAULT_TIMEFRAME = "5m"
 
 
 # =============================================================================
@@ -81,152 +81,106 @@ def format_signal_message(
     extra_info: Optional[str] = None,
 ) -> str:
     """
-    Format a standardized signal message for Telegram.
-
-    Args:
-        bot_name: Name of the bot (e.g., "PSAR", "HARMONIC", "FUNDING")
-        symbol: Trading pair (e.g., "POWER/USDT")
-        direction: "BULLISH" or "BEARISH"
-        entry: Entry price
-        stop_loss: Stop loss price
-        tp1: Take profit 1 price
-        tp2: Take profit 2 price (optional)
-        tp3: Take profit 3 price (optional)
-        confidence: Confidence score 0-100 (optional)
-        strength: Trend strength 0-1 (optional)
-        indicator_value: Main indicator value (e.g., PSAR, MOST level)
-        indicator_name: Name of the indicator (e.g., "PSAR", "MOST")
-        adx: ADX value (optional)
-        rsi: RSI value (optional)
-        funding_rate: Funding rate for funding bot (optional)
-        pattern_name: Pattern name for harmonic bot (optional)
-        reasons: List of signal reasons (optional)
-        exchange: Exchange name
-        timeframe: Timeframe string
-        current_price: Current market price (optional)
-        signal_id: Unique signal ID (optional)
-        performance_stats: Dict with tp1, tp2, sl, wins, total, avg_pnl (optional)
-        extra_info: Additional info to append (optional)
-
-    Returns:
-        Formatted HTML message string
+    Format a compact signal message for Telegram.
     """
-    # Clean symbol
-    safe_symbol = html.escape(symbol.replace("/USDT:USDT", "").replace(":USDT", ""))
-    if not safe_symbol.endswith("/USDT"):
-        safe_symbol = f"{safe_symbol}/USDT"
+    # Clean symbol - extract base currency only
+    safe_symbol = html.escape(symbol.replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", ""))
 
-    # Direction emoji
-    emoji = EMOJI_BULLISH if direction == "BULLISH" else EMOJI_BEARISH
+    # Direction emoji and short text
+    if direction == "BULLISH":
+        emoji = EMOJI_BULLISH
+        dir_text = "LONG"
+    else:
+        emoji = EMOJI_BEARISH
+        dir_text = "SHORT"
 
     # Confidence emoji
     conf_emoji = ""
-    conf_text = ""
     if confidence is not None:
         for level, config in CONFIDENCE_LEVELS.items():
             min_val = config["min"]
             if isinstance(min_val, (int, float)) and confidence >= min_val:
-                emoji_val = config["emoji"]
-                conf_emoji = str(emoji_val) if emoji_val else ""
-                conf_text = level.replace("_", " ")
+                conf_emoji = str(config["emoji"]) if config["emoji"] else ""
                 break
     elif strength is not None:
         strength_pct = strength * 100
         for level, config in CONFIDENCE_LEVELS.items():
             min_val = config["min"]
             if isinstance(min_val, (int, float)) and strength_pct >= min_val:
-                emoji_val = config["emoji"]
-                conf_emoji = str(emoji_val) if emoji_val else ""
+                conf_emoji = str(config["emoji"]) if config["emoji"] else ""
                 break
 
-    # Build header
+    # Build compact header
     if pattern_name:
-        header = f"{emoji} <b>{direction} {html.escape(pattern_name)} - {safe_symbol}</b>"
+        header = f"{emoji} <b>{dir_text} {html.escape(pattern_name)}</b> | {safe_symbol}"
     else:
-        header = f"{emoji} <b>{direction} {bot_name} - {safe_symbol}</b>"
+        header = f"{emoji} <b>{dir_text} {bot_name}</b> | {safe_symbol}"
 
     if conf_emoji:
         header += f" {conf_emoji}"
 
     lines = [header, ""]
 
-    # Signal ID if provided
-    if signal_id:
-        lines.append(f"🆔 <code>{signal_id}</code>")
-        lines.append("")
-
-    # Strategy info
-    lines.append(f"📊 <b>Strategy:</b> {bot_name}")
-
-    # Current price
-    if current_price is not None:
-        lines.append(f"💵 <b>Current:</b> <code>{current_price:.6f}</code>")
-
-    # Indicator value (PSAR, MOST, etc.)
-    if indicator_value is not None and indicator_name:
-        lines.append(f"📍 <b>{indicator_name}:</b> <code>{indicator_value:.6f}</code>")
-
-    # Funding rate (for funding bot)
-    if funding_rate is not None:
-        lines.append(f"📈 <b>Funding Rate:</b> {funding_rate*100:.4f}%")
-
-    # Technical indicators
-    if adx is not None:
-        lines.append(f"💪 <b>ADX:</b> {adx:.1f}")
-    if rsi is not None:
-        lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
-
-    # Confidence/Strength
-    if confidence is not None:
-        lines.append(f"⭐ <b>Confidence:</b> {confidence:.0f}% ({conf_text})")
-    elif strength is not None:
-        lines.append(f"⚡ <b>Strength:</b> {strength*100:.0f}%")
-
-    lines.append("")
-
-    # Trade levels
-    lines.append("<b>🎯 TRADE LEVELS:</b>")
+    # Entry and levels on compact lines
     lines.append(f"💰 Entry: <code>{entry:.6f}</code>")
-    lines.append(f"🛑 Stop Loss: <code>{stop_loss:.6f}</code>")
-    lines.append(f"🎯 TP1: <code>{tp1:.6f}</code>")
-    if tp2 is not None:
-        lines.append(f"🚀 TP2: <code>{tp2:.6f}</code>")
-    if tp3 is not None:
-        lines.append(f"🎆 TP3: <code>{tp3:.6f}</code>")
+    lines.append(f"🛑 SL: <code>{stop_loss:.6f}</code>")
 
-    # Risk/Reward calculation
+    # TPs on one line if possible
+    tp_line = f"🎯 TP1: <code>{tp1:.6f}</code>"
+    if tp2 is not None:
+        tp_line += f" | TP2: <code>{tp2:.6f}</code>"
+    lines.append(tp_line)
+
+    # R:R and confidence on one line
     risk = abs(entry - stop_loss)
     if risk > 0:
         rr1 = abs(tp1 - entry) / risk
-        lines.append("")
-        rr_text = f"⚖️ <b>R:R:</b> 1:{rr1:.2f}"
+        rr_text = f"⚖️ R:R 1:{rr1:.1f}"
         if tp2 is not None:
             rr2 = abs(tp2 - entry) / risk
-            rr_text += f" | 1:{rr2:.2f}"
+            rr_text += f" | 1:{rr2:.1f}"
+        if confidence is not None:
+            rr_text += f" | Conf: {confidence:.0f}%"
+        elif strength is not None:
+            rr_text += f" | Str: {strength*100:.0f}%"
         lines.append(rr_text)
 
-    # Reasons (for funding, liquidation bots)
-    if reasons and len(reasons) > 0:
-        lines.append("")
-        lines.append(f"📝 <b>Reasons:</b> {', '.join(reasons)}")
+    # Indicator value if provided (compact)
+    if indicator_value is not None and indicator_name:
+        lines.append(f"📍 {indicator_name}: <code>{indicator_value:.6f}</code>")
 
-    # Performance history
-    if performance_stats and performance_stats.get("total", 0) > 0:
+    # Funding rate (for funding bot)
+    if funding_rate is not None:
+        lines.append(f"📈 Funding: {funding_rate*100:.4f}%")
+
+    # Performance history (ALWAYS shown - no exceptions)
+    if performance_stats:
         stats = performance_stats
-        win_rate = (stats.get("wins", 0) / stats["total"]) * 100
+        total = stats.get("total", 0)
+        wins = stats.get("wins", 0)
+        tp_count = stats.get("tp1", 0) + stats.get("tp2", 0) + stats.get("tp3", 0)
+        sl_count = stats.get("sl", 0)
+        win_rate = (wins / total * 100) if total > 0 else 0
         lines.append("")
-        lines.append(f"📈 <b>History:</b> TP1:{stats.get('tp1', 0)} | TP2:{stats.get('tp2', 0)} | SL:{stats.get('sl', 0)}")
-        lines.append(f"🏆 <b>Win Rate:</b> {win_rate:.1f}% ({stats.get('wins', 0)}/{stats['total']})")
-        if stats.get("avg_pnl") is not None:
-            lines.append(f"💵 <b>Avg PnL:</b> {stats['avg_pnl']:+.2f}%")
+        hist_line = f"📈 History: {win_rate:.0f}% Win ({wins}/{total}) | TP:{tp_count} SL:{sl_count}"
+        if stats.get("avg_pnl") is not None and stats["avg_pnl"] != 0:
+            hist_line += f" | PnL:{stats['avg_pnl']:+.1f}%"
+        lines.append(hist_line)
+    else:
+        # Even without stats object, always show history line
+        lines.append("")
+        lines.append("📈 History: 0% Win (0/0) | TP:0 SL:0")
 
-    # Footer with exchange and timeframe
+    # Footer with exchange and timeframe (compact)
     lines.append("")
-    lines.append(f"🏦 {exchange} | ⏰ {timeframe}")
+    lines.append(f"🏦 {exchange} {timeframe}")
+
+    # Reasons (compact)
+    if reasons and len(reasons) > 0:
+        lines.append(f"💡 {', '.join(reasons[:3])}")  # Max 3 reasons
 
     # Extra info
     if extra_info:
-        lines.append("")
         lines.append(f"💡 {extra_info}")
 
     return "\n".join(lines)

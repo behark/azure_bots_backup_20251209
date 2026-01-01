@@ -71,6 +71,10 @@ from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from tp_sl_calculator import TPSLCalculator
 from trade_config import get_config_manager
+from common.risk import DEFAULT_RISK, get_price_tolerance
+
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
 
 # Optional imports (safe fallback)
 HealthMonitor = safe_import('health_monitor', 'HealthMonitor')
@@ -88,9 +92,20 @@ SIGNALS_FILE = BASE_DIR / "volume_vn_signals.json"
 WATCHLIST_FILE = BASE_DIR / "volume_watchlist.json"
 STATS_FILE = LOG_DIR / "volume_stats.json"
 
-# Price tolerance for TP/SL detection (0.1% = 0.001)
-# This accounts for spread, slippage, and minor price variations
-PRICE_TOLERANCE = 0.001
+# Price tolerance for TP/SL detection (defaults to 1% via risk helper)
+PRICE_TOLERANCE = DEFAULT_RISK.price_tolerance_base
+
+# CRITICAL FIX: Maximum trade duration to prevent capital lockup
+MAX_TRADE_DURATION_HOURS = 4  # Maximum 4 hours per trade
+BREAKEVEN_AFTER_MINUTES = 60  # Move to breakeven after 1 hour
+
+# CRITICAL FIX: Maximum trade duration to prevent capital lockup
+MAX_TRADE_DURATION_HOURS = 4  # Maximum 4 hours per trade
+BREAKEVEN_AFTER_MINUTES = 60  # Move to breakeven after 1 hour
+
+# CRITICAL FIX: Maximum trade duration to prevent capital lockup
+MAX_TRADE_DURATION_HOURS = 4  # Maximum 4 hours per trade
+BREAKEVEN_AFTER_MINUTES = 60  # Move to breakeven after 1 hour
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -579,16 +594,29 @@ class VolumeAnalyzer:
         short_factors: List[str],
         symbol: str = "",
     ) -> Tuple[str, Optional[Dict[str, float]]]:
-        # Use config values for min factors (default 4 for higher quality signals)
-        min_long = 4
-        min_short = 4
+        # Use config values for min factors (default 3 for higher quality signals)
+        min_long = 3
+        min_short = 3
         if self.config:
             filtering = getattr(self.config, 'filtering', None)
             if filtering:
-                min_long = getattr(filtering, 'min_factors_long', 4)
-                min_short = getattr(filtering, 'min_factors_short', 4)
+                min_long = getattr(filtering, 'min_factors_long', 3)
+                min_short = getattr(filtering, 'min_factors_short', 3)
+
+        def _quality_score(factors: List[str]) -> float:
+            weights = {
+                'Volume at POC': 2.0,
+                'POC Rejection': 1.5,
+                'Price near VAL/VAH': 1.5,
+                'Strong trend': 1.5,
+                'RSI confirmation': 1.0,
+                'Volume Spike': 1.0,
+            }
+            return sum(weights.get(f, 0.5) for f in factors)
 
         if len(long_factors) >= min_long and len(long_factors) > len(short_factors):
+            if _quality_score(long_factors) < 4.0:
+                return "NEUTRAL", None
             val = float(vp_result.get("val", current_price)) if isinstance(vp_result.get("val"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
             raw_sl = val - row_height
@@ -603,7 +631,7 @@ class VolumeAnalyzer:
                 tp2_mult = risk_config.tp2_atr_multiplier
                 min_rr = risk_config.min_risk_reward
             except Exception:
-                tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.5
+                tp1_mult, tp2_mult, min_rr = 2.0, 3.0, 1.0
 
             # Increased minimum risk from 0.3% to 1.0% for more reasonable position sizing
             risk = max(current_price - custom_sl, current_price * 0.01)
@@ -618,18 +646,30 @@ class VolumeAnalyzer:
             )
 
             if levels.is_valid:
-                # For LONG: TP1 should be lower than TP2 (TP1 is closer to entry)
+                # CRITICAL FIX: For LONG trades, TP1 should be CLOSER to entry (hit first)
+                # TP2 should be FURTHER from entry (hit second)
+                # Correct order: Entry < TP1 < TP2
                 tp1 = float(levels.take_profit_1)
                 tp2 = float(levels.take_profit_2)
-                # Ensure TP2 > TP1 > Entry for longs
-                if tp2 <= tp1:
-                    tp2 = tp1 + risk  # Make TP2 further from entry
+                
+                # Validate and fix TP ordering if needed
+                if tp1 >= tp2:  # If TP1 is further than TP2, swap them
+                    tp1, tp2 = tp2, tp1
+                
+                # Validate correct order for LONG: entry < tp1 < tp2
+                if not (current_price < tp1 < tp2):
+                    logger.debug("%s: Invalid LONG TP ordering (entry=%.6f, tp1=%.6f, tp2=%.6f), rejecting",
+                                symbol, current_price, tp1, tp2)
+                    return "NEUTRAL", None
+                
                 return "LONG", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
 
             # If levels not valid, return None
             return "NEUTRAL", None
 
         if len(short_factors) >= min_short and len(short_factors) > len(long_factors):
+            if _quality_score(short_factors) < 4.0:
+                return "NEUTRAL", None
             vah = float(vp_result.get("vah", current_price)) if isinstance(vp_result.get("vah"), (int, float)) else current_price
             row_height = float(vp_result.get("row_height", 0.0)) if isinstance(vp_result.get("row_height"), (int, float)) else 0.0
             raw_sl = vah + row_height
@@ -659,12 +699,22 @@ class VolumeAnalyzer:
             )
 
             if levels.is_valid:
-                # For SHORT: TP1 should be higher than TP2 (TP1 is closer to entry)
+                # CRITICAL FIX: For SHORT trades, TP1 should be CLOSER to entry (hit first)
+                # TP2 should be FURTHER from entry (hit second)
+                # Correct order: Entry > TP1 > TP2
                 tp1 = float(levels.take_profit_1)
                 tp2 = float(levels.take_profit_2)
-                # Ensure TP2 < TP1 < Entry for shorts
-                if tp2 >= tp1:
-                    tp2 = tp1 - risk  # Make TP2 further from entry
+                
+                # Validate and fix TP ordering if needed
+                if tp1 <= tp2:  # If TP1 is further than TP2, swap them
+                    tp1, tp2 = tp2, tp1
+                
+                # Validate correct order for SHORT: entry > tp1 > tp2
+                if not (current_price > tp1 > tp2):
+                    logger.debug("%s: Invalid SHORT TP ordering (entry=%.6f, tp1=%.6f, tp2=%.6f), rejecting",
+                                symbol, current_price, tp1, tp2)
+                    return "NEUTRAL", None
+                
                 return "SHORT", {"entry": current_price, "sl": custom_sl, "tp1": tp1, "tp2": tp2}
 
             # If levels not valid, return None
@@ -828,9 +878,13 @@ class SignalTracker:
         return False
 
     def cleanup_stale_signals(self, max_age_hours: Optional[int] = None) -> int:
-        """Remove stale signals and archive to stats (FIX: Issue #2 - Enable cleanup)."""
+        """Remove stale signals and archive to stats (FIX: Issue #2 - Enable cleanup).
+        
+        CRITICAL FIX: Now enforces MAX_TRADE_DURATION_HOURS (4h) to prevent capital lockup.
+        """
         if max_age_hours is None:
-            max_age_hours = self.config.signal.max_signal_age_hours if self.config else 24
+            # CRITICAL: Use MAX_TRADE_DURATION_HOURS to prevent capital lockup
+            max_age_hours = MAX_TRADE_DURATION_HOURS
 
         signals = self.state.get("open_signals", {})
         if not isinstance(signals, dict) or not signals:
@@ -1045,8 +1099,8 @@ class SignalTracker:
         }
 
     def check_open_signals(self, notifier: Optional[Any]) -> None:
-        # First, cleanup stale signals (older than 24 hours)
-        stale_count = self.cleanup_stale_signals(max_age_hours=24)
+        # First, cleanup stale signals using MAX_TRADE_DURATION_HOURS constant
+        stale_count = self.cleanup_stale_signals(max_age_hours=MAX_TRADE_DURATION_HOURS)
         if stale_count > 0:
             logger.info("Cleaned up %d stale signals", stale_count)
 
@@ -1105,6 +1159,19 @@ class SignalTracker:
             tp2_raw = payload.get("take_profit_secondary")
             sl_raw = payload.get("stop_loss")
             entry_raw = payload.get("entry")
+            created_str = payload.get("created_at")
+            created_dt: Optional[datetime] = None
+            age_hours: Optional[float] = None
+            if isinstance(created_str, str):
+                try:
+                    created_dt = datetime.fromisoformat(created_str)
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    age_hours = (datetime.now(timezone.utc) - created_dt).total_seconds() / 3600
+                except Exception:
+                    created_dt = None
+                    age_hours = None
+
             if not isinstance(direction, str):
                 signals.pop(signal_id, None)
                 updated = True
@@ -1123,30 +1190,53 @@ class SignalTracker:
                 updated = True
                 continue
 
-            # Check TP/SL hits with price tolerance
-            # Tolerance makes it slightly easier to hit TPs (accounts for spread/slippage)
-            if direction == "LONG":
-                # LONG: TPs are ABOVE entry, SL is BELOW entry
-                # For TPs: price >= tp * (1 - tolerance) makes it slightly easier to hit
-                # For SL: price <= sl * (1 + tolerance) makes it slightly easier to hit
-                hit_tp1 = current_price >= (tp1 * (1 - PRICE_TOLERANCE))
-                hit_tp2 = current_price >= (tp2 * (1 - PRICE_TOLERANCE))
-                hit_sl = current_price <= (sl * (1 + PRICE_TOLERANCE))
-            else:
-                # SHORT: TPs are BELOW entry, SL is ABOVE entry
-                # For TPs: price <= tp * (1 + tolerance) makes it slightly easier to hit
-                # For SL: price >= sl * (1 - tolerance) makes it slightly easier to hit
-                hit_tp1 = current_price <= (tp1 * (1 + PRICE_TOLERANCE))
-                hit_tp2 = current_price <= (tp2 * (1 + PRICE_TOLERANCE))
-                hit_sl = current_price >= (sl * (1 - PRICE_TOLERANCE))
+            # Apply breakeven stop after 1 hour if price moved in favor
+            if age_hours is not None and age_hours >= (BREAKEVEN_AFTER_MINUTES / 60):
+                if direction.upper() == "LONG" and current_price >= entry * 1.003:
+                    new_sl = max(sl, entry)
+                    if new_sl > sl:
+                        sl = new_sl
+                        payload["stop_loss"] = sl
+                        updated = True
+                elif direction.upper() == "SHORT" and current_price <= entry * 0.997:
+                    new_sl = min(sl, entry)
+                    if new_sl < sl:
+                        sl = new_sl
+                        payload["stop_loss"] = sl
+                        updated = True
 
+            # Enforce max trade duration
             result = None
-            if hit_tp2:
-                result = "TP2"
-            elif hit_tp1:
-                result = "TP1"
-            elif hit_sl:
-                result = "SL"
+            if age_hours is not None and age_hours >= MAX_TRADE_DURATION_HOURS:
+                result = "EXPIRED"
+
+            # Emergency stop check
+            if result is None:
+                if direction.upper() == "LONG":
+                    loss_pct = (entry - current_price) / entry * 100
+                else:
+                    loss_pct = (current_price - entry) / entry * 100
+                if loss_pct >= 5.0:
+                    result = "EMERGENCY_SL"
+
+            # Check TP/SL hits with price tolerance
+            price_tolerance = get_price_tolerance(None, tp1)
+            if result is None:
+                if direction == "LONG":
+                    hit_tp1 = current_price >= (tp1 * (1 - price_tolerance))
+                    hit_tp2 = current_price >= (tp2 * (1 - price_tolerance))
+                    hit_sl = current_price <= (sl * (1 + price_tolerance))
+                else:
+                    hit_tp1 = current_price <= (tp1 * (1 + price_tolerance))
+                    hit_tp2 = current_price <= (tp2 * (1 + price_tolerance))
+                    hit_sl = current_price >= (sl * (1 - price_tolerance))
+
+                if hit_tp2:
+                    result = "TP2"
+                elif hit_tp1:
+                    result = "TP1"
+                elif hit_sl:
+                    result = "SL"
 
             if result:
                 # Check if result notifications are enabled
@@ -1215,7 +1305,9 @@ class SignalTracker:
             self._save_state()
 
 
-class VolumeVNBOT:
+class VolumeVNBOT(BotSignalMixin):
+    """Volume Node Bot with unified signal management."""
+    
     def __init__(self, cooldown_minutes: Optional[int] = None, config: Optional[Any] = None) -> None:
         # Load configuration
         self.config = config if config else (load_config() if load_config else None)
@@ -1240,6 +1332,15 @@ class VolumeVNBOT:
 
         # Validate exchange credentials on startup (FIX: Security - API Key Validation)
         self._validate_exchanges()
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="volume_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="5m",
+            notification_mode="signal_only",
+        )
 
     def _validate_exchanges(self) -> None:
         """Validate exchange credentials for all exchanges in watchlist (FIX: Security)."""
@@ -1512,11 +1613,30 @@ class VolumeVNBOT:
         )
 
     def _dispatch_signal(self, signal: VolumeSignal, snapshot: Dict[str, object]) -> None:
-        message = self._format_message(signal, snapshot)
-        if self.notifier:
-            self.notifier.send_message(message)
-        else:
-            logger.info("Alert:\n%s", message)
+        """Send signal using unified signal system with beautiful templates."""
+        # NEW: Use unified signal adapter instead of legacy format
+        reasons = [str(r) for r in signal.rationale] if signal.rationale else None
+        
+        created_signal = self._send_signal(
+            symbol=signal.symbol,
+            direction=signal.direction,
+            entry=signal.entry,
+            stop_loss=signal.stop_loss,
+            take_profit_1=signal.take_profit_primary,
+            take_profit_2=signal.take_profit_secondary,
+            confidence=signal.confidence * 10,  # Scale to 0-100
+            pattern_name="Volume Node",
+            timeframe=signal.timeframe,
+            reasons=reasons,
+        )
+        
+        if not created_signal:
+            # Fallback to legacy method
+            message = self._format_message(signal, snapshot)
+            if self.notifier:
+                self.notifier.send_message(message)
+            else:
+                logger.info("Alert:\n%s", message)
 
     def _format_message(self, signal: VolumeSignal, snapshot: Dict[str, Any]) -> str:
         """Format volume signal using centralized template."""
@@ -1530,13 +1650,13 @@ class VolumeVNBOT:
         val = metrics.get("val", 0.0) if isinstance(metrics, dict) else 0.0
         extra_info = f"POC: {float(poc):.4f} | VAH: {float(vah):.4f} | VAL: {float(val):.4f}"
 
-        # Get performance stats
-        perf_stats = None
-        symbol_key = signal.symbol if "/" in signal.symbol else f"{signal.symbol}/USDT"
+        # Get performance stats (ALWAYS included)
+        # Use raw signal.symbol to match how it was recorded in record_open
+        symbol_key = signal.symbol
+        tp1 = tp2 = sl = 0
         if self.stats and isinstance(self.stats.data, dict):
             history = self.stats.data.get("history", [])
             if isinstance(history, list):
-                tp1 = tp2 = sl = 0
                 for entry in history:
                     if not isinstance(entry, dict):
                         continue
@@ -1549,16 +1669,14 @@ class VolumeVNBOT:
                         tp2 += 1
                     elif result == "SL":
                         sl += 1
-
-                total = tp1 + tp2 + sl
-                if total > 0:
-                    perf_stats = {
-                        "tp1": tp1,
-                        "tp2": tp2,
-                        "sl": sl,
-                        "wins": tp1 + tp2,
-                        "total": total,
-                    }
+        total = tp1 + tp2 + sl
+        perf_stats = {
+            "tp1": tp1,
+            "tp2": tp2,
+            "sl": sl,
+            "wins": tp1 + tp2,
+            "total": total,
+        }
 
         # Format reasons
         reasons = [html.escape(str(r)) for r in signal.rationale] if signal.rationale else None

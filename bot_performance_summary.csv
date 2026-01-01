@@ -1,0 +1,12 @@
+Bot,Description,Total Trades,Open,Closed,Wins,Losses,Win Rate %,Total P&L %,Avg P&L %,Profit Factor,Sharpe Ratio,Max Drawdown %,Avg Duration (h),Symbols Traded,Best Symbol,Best Symbol P&L %
+DIY Bot,Multi-indicator confluence strategy (30+ indicators),0,0,0,0,0,0.0,0.00,0.00,0.00,0.00,0.00,0.0,0,N/A,0.00
+Fibonacci Swing Bot,Fibonacci retracement levels with swing confirmation,272,71,201,60,141,29.9,-277.64,-1.38,0.51,-0.22,337.66,8.9,14,IRYS/USDT,47.26
+Funding Rate Bot,Funding rate arbitrage strategy,0,0,0,0,0,0.0,0.00,0.00,0.00,0.00,0.00,0.0,0,N/A,0.00
+Harmonic Bot,"Harmonic pattern detection (Gartley, Butterfly, Bat, Crab)",243,12,231,41,183,18.3,-26.00,-0.11,0.80,-0.05,32.42,3.8,22,TRUTH/USDT,10.26
+Liquidation Bot,Liquidation cluster analysis,106,9,97,44,53,45.4,0.59,0.01,1.00,0.00,49.34,3.1,14,POWER/USDT,21.39
+MOST Bot,Moving Stop Loss (MOST) indicator with EMA,222,17,205,62,143,30.2,-74.39,-0.36,0.70,-0.10,138.81,2.5,14,POWER/USDT,63.95
+MTF Bot,Multi-timeframe analysis strategy,1,0,1,0,1,0.0,-0.34,-0.34,0.00,0.00,0.34,0.1,1,IRYS/USDT,-0.34
+ORB Bot,Opening Range Breakout strategy,121,25,96,65,31,67.7,1.77,0.02,1.02,0.00,40.21,2.7,14,RLS/USDT,13.62
+PSAR Bot,Parabolic SAR with trailing stop,3,0,3,3,0,100.0,3.06,1.02,INF,1.49,0.00,0.2,2,SOON/USDT,1.81
+STRAT Bot,Rob Smith's STRAT strategy,439,35,404,99,305,24.5,-78.15,-0.19,0.83,-0.06,126.11,2.8,14,H/USDT,24.39
+Volume Bot,Volume profile and volume node analysis,156,18,138,23,89,20.5,-84.76,-0.61,0.62,-0.16,93.29,16.5,22,LIGHT/USDT,28.07

@@ -69,7 +69,10 @@ from message_templates import format_signal_message, format_result_message
 from notifier import TelegramNotifier
 from signal_stats import SignalStats
 from trade_config import get_config_manager
-from tp_sl_calculator import calculate_atr as shared_calculate_atr
+from tp_sl_calculator import calculate_atr as shared_calculate_atr, TPSLCalculator
+
+# NEW: Import unified signal system
+from core.bot_signal_mixin import BotSignalMixin, create_price_fetcher
 
 # Optional imports (safe fallback)
 from safe_import import safe_import
@@ -211,10 +214,10 @@ class HarmonicPatternDetector:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        # Relaxed error thresholds to allow more pattern matches
+        # Tightened error thresholds for higher quality patterns (8-12% max deviation)
         self.error_thresholds = self.config.get("analysis", {}).get("pattern_error_thresholds", {
-            "Cypher": 0.15, "Shark": 0.15, "Gartley": 0.18, "Bat": 0.18,
-            "Butterfly": 0.20, "Crab": 0.20, "Deep Crab": 0.20, "ABCD": 0.25
+            "Cypher": 0.08, "Shark": 0.08, "Gartley": 0.10, "Bat": 0.10,
+            "Butterfly": 0.10, "Crab": 0.10, "Deep Crab": 0.10, "ABCD": 0.12
         })
 
     def calculate_atr(self, highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
@@ -300,6 +303,7 @@ class HarmonicPatternDetector:
             highs = [x[2] for x in ohlcv]
             lows = [x[3] for x in ohlcv]
             closes = [x[4] for x in ohlcv]
+            volumes = [x[5] for x in ohlcv]  # CRITICAL FIX: Extract volume for confirmation
         except (IndexError, TypeError) as e:
             logger.error(f"Malformed OHLCV data for {symbol}: {e}")
             return None
@@ -411,6 +415,23 @@ class HarmonicPatternDetector:
             logger.debug(f"{symbol}: No pattern match (ratios: XAB={xab:.3f}, ABC={abc:.3f}, BCD={bcd:.3f}, XAD={xad:.3f})")
             return None
 
+        # CRITICAL FIX: Volume confirmation filter
+        # Require volume at point D to be above average for higher conviction
+        enable_volume_filter = self.config.get("analysis", {}).get("enable_volume_filter", True)
+        if enable_volume_filter:
+            try:
+                volumes = [float(x[5]) for x in ohlcv if len(x) > 5]
+                if len(volumes) >= 20:
+                    volume_ma = float(np.mean(volumes[-20:]))
+                    current_volume = float(volumes[-1])
+                    volume_ratio = current_volume / volume_ma if volume_ma > 0 else 1.0
+                    min_volume_ratio = self.config.get("analysis", {}).get("min_volume_ratio", 0.8)
+                    if volume_ratio < min_volume_ratio:
+                        logger.debug(f"{symbol}: Pattern rejected - volume too low ({volume_ratio:.2f}x avg, need {min_volume_ratio}x)")
+                        return None
+            except (IndexError, ValueError, TypeError) as e:
+                logger.debug(f"{symbol}: Volume filter skipped due to data issue: {e}")
+
         # RSI Check - now optional with enable_rsi_filter (Fix 1.4)
         rsi = self.calculate_rsi(closes)
         enable_rsi_filter = self.config.get("analysis", {}).get("enable_rsi_filter", True)
@@ -424,14 +445,21 @@ class HarmonicPatternDetector:
                 logger.debug(f"{symbol}: BEARISH pattern rejected - RSI too low ({rsi:.1f} < {rsi_oversold})")
                 return None
 
-        # Stale Check - relaxed from 3 to 5 candles
+        # CRITICAL FIX: Tighten pattern age check - patterns older than 3 candles are stale
+        # Previous value of 5 allowed too much price movement from the ideal entry
         d_age = (len(closes) - 1) - d_idx
-        if d_age > self.config.get("analysis", {}).get("max_pattern_age_candles", 5):
-            logger.debug(f"{symbol}: Pattern too old ({d_age} candles, max 5)")
+        max_pattern_age = self.config.get("analysis", {}).get("max_pattern_age_candles", 3)
+        if d_age > max_pattern_age:
+            logger.debug(f"{symbol}: Pattern too old ({d_age} candles, max {max_pattern_age})")
             return None
 
         # Targets
         targets = self._calculate_targets(c, d, direction, atr, symbol)
+
+        # Validate targets using TPSLCalculator result
+        if not targets.get("is_valid", True):
+            logger.debug(f"{symbol}: TPSLCalculator rejected - {targets.get('rejection_reason', 'Unknown')}")
+            return None
 
         # PRZ Validation - check if current price is within PRZ zone (Fix 1.5)
         enable_prz_validation = self.config.get("analysis", {}).get("enable_prz_validation", True)
@@ -444,6 +472,19 @@ class HarmonicPatternDetector:
 
         d_ts_ms = ohlcv[d_idx][0]
         d_ts_str = datetime.fromtimestamp(d_ts_ms/1000, timezone.utc).isoformat()
+
+        # CRITICAL FIX: Volume confirmation for harmonic patterns
+        # Reject patterns without significant volume at D point
+        enable_volume_confirmation = self.config.get("analysis", {}).get("enable_volume_confirmation", True)
+        if enable_volume_confirmation and len(volumes) >= 21:
+            avg_volume = sum(volumes[-21:-1]) / 20  # Average of last 20 CLOSED candles
+            d_volume = volumes[-1] if d_idx == len(volumes) - 1 else volumes[d_idx] if d_idx < len(volumes) else volumes[-1]
+            volume_threshold = self.config.get("analysis", {}).get("volume_threshold_multiplier", 1.2)
+            
+            if d_volume < avg_volume * volume_threshold:
+                logger.debug(f"{symbol}: Volume confirmation failed - D volume {d_volume:.2f} < {avg_volume * volume_threshold:.2f} (avg * {volume_threshold})")
+                return None
+            logger.debug(f"{symbol}: Volume confirmation passed - D volume {d_volume:.2f} >= {avg_volume * volume_threshold:.2f}")
 
         # Compute confidence score (from Volume Bot)
         prz_dist_pct = abs(current_price - d) / d * 100 if d > 0 else 0
@@ -546,41 +587,56 @@ class HarmonicPatternDetector:
 
         fib_range = abs(d - c)
         entry_buffer = atr * entry_buffer_mult
-        prz_buffer = atr * prz_atr_mult  # PRZ range around D (Fix 1.5)
+        prz_buffer = atr * prz_atr_mult  # PRZ range around D
 
+        # Calculate entry and custom SL based on direction
         if direction == "BULLISH":
             entry = d + entry_buffer
-            # PRZ zone: price should be within this range for valid entry
             prz_low = d - prz_buffer
             prz_high = d + prz_buffer
-            sl_default = d - (fib_range * sl_fib_mult)
-            if sl_default >= entry: sl_default = entry - (atr * 2)
-            risk = abs(entry - sl_default)
-            tp1 = entry + (risk * tp1_mult)
-            tp2 = entry + (risk * tp2_mult)
-            tp3 = entry + (risk * tp3_mult)
-            sl = sl_default
+            custom_sl = d - (fib_range * sl_fib_mult)
+            if custom_sl >= entry:
+                custom_sl = entry - (atr * 2)
         else:
             entry = d - entry_buffer
-            # PRZ zone for bearish
             prz_low = d - prz_buffer
             prz_high = d + prz_buffer
-            sl_default = d + (fib_range * sl_fib_mult)
-            if sl_default <= entry: sl_default = entry + (atr * 2)
-            risk = abs(entry - sl_default)
-            tp1 = entry - (risk * tp1_mult)
-            tp2 = entry - (risk * tp2_mult)
-            tp3 = entry - (risk * tp3_mult)
-            sl = sl_default
+            custom_sl = d + (fib_range * sl_fib_mult)
+            if custom_sl <= entry:
+                custom_sl = entry + (atr * 2)
 
+        # Use centralized TPSLCalculator for consistent validation
+        # This ensures R:R ratios and SL limits are properly checked
+        calculator = TPSLCalculator(
+            min_risk_reward=risk_config.min_risk_reward,
+            min_risk_reward_tp2=getattr(risk_config, 'min_risk_reward_tp2', 2.0),
+            max_sl_percent=getattr(risk_config, 'max_stop_loss_percent', 2.5),
+        )
+        
+        dir_normalized = "LONG" if direction == "BULLISH" else "SHORT"
+        levels = calculator.calculate(
+            entry=entry,
+            direction=dir_normalized,
+            atr=atr,
+            tp1_multiplier=tp1_mult,
+            tp2_multiplier=tp2_mult,
+            tp3_multiplier=tp3_mult,
+            custom_sl=custom_sl,
+        )
+
+        # Use calculated levels (TPSLCalculator validates and may adjust)
         return {
             "entry": entry,
-            "stop_loss": sl,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
-            "take_profit_3": tp3,
+            "stop_loss": levels.stop_loss,
+            "take_profit_1": levels.take_profit_1,
+            "take_profit_2": levels.take_profit_2,
+            "take_profit_3": levels.take_profit_3 if levels.take_profit_3 else entry + (atr * tp3_mult) if direction == "BULLISH" else entry - (atr * tp3_mult),
             "prz_low": prz_low,
-            "prz_high": prz_high
+            "prz_high": prz_high,
+            "is_valid": levels.is_valid,
+            "rejection_reason": levels.rejection_reason,
+            "risk_reward_1": levels.risk_reward_1,
+            "risk_reward_2": levels.risk_reward_2,
         }
 
 
@@ -869,6 +925,12 @@ class SignalTracker:
                 if close_signal:
                     if self.stats: self.stats.record_close(sig_id, price, res)
 
+                    # Calculate PnL percentage
+                    if direction == "BULLISH":
+                        pnl = (price - entry) / entry * 100
+                    else:
+                        pnl = (entry - price) / entry * 100
+
                     # Archive to closed_signals before deleting
                     closed = self.state.setdefault("closed_signals", {})
                     closed_signal = payload.copy()
@@ -1030,8 +1092,8 @@ class SignalTracker:
                 if notifier:
                     notifier.send_message(msg, parse_mode="HTML")
 
-class HarmonicBot:
-    """Refactored Harmonic Bot with Volume Bot features."""
+class HarmonicBot(BotSignalMixin):
+    """Refactored Harmonic Bot with unified signal management."""
 
     def __init__(self, config_path: Path):
         self.config = load_json_config(config_path)
@@ -1052,6 +1114,15 @@ class HarmonicBot:
         # Exchange backoff tracking (from Volume Bot)
         self.exchange_backoff: Dict[str, float] = {}
         self.exchange_delay: Dict[str, float] = {}
+        
+        # NEW: Initialize unified signal adapter
+        self._init_signal_adapter(
+            bot_name="harmonic_bot",
+            notifier=self.notifier,
+            exchange="Binance",
+            default_timeframe="15m",
+            notification_mode="signal_only",
+        )
 
         # Init Exchanges with timeout and rate limiting
         request_timeout = self.config.get("analysis", {}).get("request_timeout_seconds", 30)
@@ -1323,17 +1394,17 @@ class HarmonicBot:
                             continue
 
                         # 2. Analyze
-                        signal = self.analyzer.detect(ohlcv, symbol, timeframe, price, exchange)
+                        detected_signal = self.analyzer.detect(ohlcv, symbol, timeframe, price, exchange)
 
-                        if signal:
+                        if detected_signal:
                             # 2.3 Confidence threshold check (from Volume Bot)
-                            if hasattr(signal, 'confidence') and signal.confidence < confidence_threshold:
-                                logger.debug(f"{symbol}: Confidence too low ({signal.confidence:.2f} < {confidence_threshold})")
+                            if hasattr(detected_signal, 'confidence') and detected_signal.confidence < confidence_threshold:
+                                logger.debug(f"{symbol}: Confidence too low ({detected_signal.confidence:.2f} < {confidence_threshold})")
                                 continue
 
                             # 2.5 Slippage protection (Fix 1.8)
-                            if signal.entry > 0:
-                                slippage = abs(price - signal.entry) / signal.entry * 100
+                            if detected_signal.entry > 0:
+                                slippage = abs(price - detected_signal.entry) / detected_signal.entry * 100
                                 if slippage > max_slippage_pct:
                                     logger.debug(f"{symbol}: Slippage too high ({slippage:.2f}% > {max_slippage_pct}%), skipping")
                                     continue
@@ -1351,19 +1422,19 @@ class HarmonicBot:
                                 continue
 
                             # 4. Check Cooldown
-                            if not self.tracker.should_alert(symbol, signal.pattern_name, cooldown_minutes):
-                                logger.debug(f"Cooldown active for {symbol} {signal.pattern_name}")
+                            if not self.tracker.should_alert(symbol, detected_signal.pattern_name, cooldown_minutes):
+                                logger.debug(f"Cooldown active for {symbol} {detected_signal.pattern_name}")
                                 continue
 
                             # 5. Deduplicate (Fix 1.6 - pass exchange and timeframe)
-                            if not self.tracker.is_duplicate(symbol, signal.pattern_name, signal.d_timestamp, exchange, timeframe):
+                            if not self.tracker.is_duplicate(symbol, detected_signal.pattern_name, detected_signal.d_timestamp, exchange, timeframe):
                                 # 6. Check Reversal
-                                self.tracker.check_reversal(symbol, signal.direction, self.notifier)
+                                self.tracker.check_reversal(symbol, detected_signal.direction, self.notifier)
 
                                 # 7. Alert & Track
-                                self.tracker.add_signal(signal)
-                                self._send_alert(signal)
-                                self.tracker.mark_alert(symbol, signal.pattern_name)
+                                self.tracker.add_signal(detected_signal)
+                                self._send_alert(detected_signal)
+                                self.tracker.mark_alert(symbol, detected_signal.pattern_name)
                                 signals_this_cycle += 1
                                 last_signal_time = datetime.now(timezone.utc)  # Fix 2.2
 
@@ -1475,25 +1546,42 @@ class HarmonicBot:
         }
 
     def _send_alert(self, signal: HarmonicSignal) -> None:
-        # Get symbol performance stats
-        symbol_stats = self._get_symbol_performance(signal.symbol)
-
-        msg = format_signal_message(
-            bot_name="HARMONIC",
+        """Send signal using unified signal system with beautiful templates."""
+        # NEW: Use unified signal adapter instead of legacy format
+        created_signal = self._send_signal(
             symbol=signal.symbol,
             direction=signal.direction,
             entry=signal.entry,
             stop_loss=signal.stop_loss,
-            tp1=signal.take_profit_1,
-            tp2=signal.take_profit_2,
+            take_profit_1=signal.take_profit_1,
+            take_profit_2=signal.take_profit_2,
             pattern_name=signal.pattern_name,
-            exchange=signal.exchange.upper(),
             timeframe=signal.timeframe,
-            performance_stats=symbol_stats if symbol_stats.get("total", 0) > 0 else None,
+            confidence=signal.confidence * 100,  # Scale to 0-100
+            reasons=[f"Harmonic {signal.pattern_name}", f"Confidence: {signal.confidence:.0%}"],
         )
-        if self.notifier:
-            self.notifier.send_message(msg, parse_mode="HTML")
+        
+        if created_signal:
             logger.info(f"Signal sent: {signal.symbol} {signal.pattern_name} {signal.direction}")
+        else:
+            # Fallback to legacy method
+            symbol_stats = self._get_symbol_performance(signal.symbol)
+            msg = format_signal_message(
+                bot_name="HARMONIC",
+                symbol=signal.symbol,
+                direction=signal.direction,
+                entry=signal.entry,
+                stop_loss=signal.stop_loss,
+                tp1=signal.take_profit_1,
+                tp2=signal.take_profit_2,
+                pattern_name=signal.pattern_name,
+                exchange=signal.exchange.upper(),
+                timeframe=signal.timeframe,
+                performance_stats=symbol_stats,
+            )
+            if self.notifier:
+                self.notifier.send_message(msg, parse_mode="HTML")
+                logger.info(f"Signal sent (legacy): {signal.symbol} {signal.pattern_name} {signal.direction}")
 
 def validate_environment() -> bool:
     """Validate all required environment variables are set (from Volume Bot)."""

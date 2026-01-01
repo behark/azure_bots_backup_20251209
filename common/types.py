@@ -423,6 +423,134 @@ class TradingSignal:
 
 
 # ============================================================================
+# Risk Management TypedDicts
+# ============================================================================
+
+class RiskConfig(TypedDict, total=False):
+    """
+    Risk management configuration.
+    
+    Attributes:
+        sl_atr_multiplier: ATR multiplier for stop loss calculation
+        tp1_atr_multiplier: ATR multiplier for first take profit
+        tp2_atr_multiplier: ATR multiplier for second take profit
+        tp3_atr_multiplier: ATR multiplier for third take profit
+        min_risk_reward: Minimum R:R ratio for TP1
+        min_risk_reward_tp2: Minimum R:R ratio for TP2
+        max_risk_percent: Maximum risk per trade (% of account)
+        max_stop_loss_percent: Maximum stop loss distance (%)
+        min_stop_loss_percent: Minimum stop loss distance (%)
+        emergency_stop_percent: Emergency stop loss trigger (%)
+        use_trailing_stop: Whether to use trailing stops
+        trailing_stop_activation: Profit % to activate trailing
+        trailing_stop_distance: Trail distance in ATR
+        sl_buffer_percent: Buffer to add to stop loss
+        max_drawdown_percent: Maximum portfolio drawdown
+        breakeven_trigger_percent: Profit % to move to breakeven
+        slippage_percent: Expected slippage buffer
+        max_correlation_signals: Max signals in same direction
+        price_tolerance: TP/SL hit detection tolerance
+    """
+    sl_atr_multiplier: float
+    tp1_atr_multiplier: float
+    tp2_atr_multiplier: float
+    tp3_atr_multiplier: float
+    min_risk_reward: float
+    min_risk_reward_tp2: float
+    max_risk_percent: float
+    max_stop_loss_percent: float
+    min_stop_loss_percent: float
+    emergency_stop_percent: float
+    use_trailing_stop: bool
+    trailing_stop_activation: float
+    trailing_stop_distance: float
+    sl_buffer_percent: float
+    max_drawdown_percent: float
+    breakeven_trigger_percent: float
+    slippage_percent: float
+    max_correlation_signals: int
+    price_tolerance: float
+
+
+class WatchlistItem(TypedDict, total=False):
+    """
+    Watchlist item configuration.
+    
+    Attributes:
+        symbol: Trading pair symbol
+        timeframe: Candle timeframe
+        period: Alternative name for timeframe
+        cooldown_minutes: Cooldown after signal
+        exchange: Exchange identifier
+        market_type: "swap" or "spot"
+        enabled: Whether symbol is active
+    """
+    symbol: str
+    timeframe: str
+    period: str
+    cooldown_minutes: int
+    exchange: str
+    market_type: str
+    enabled: bool
+
+
+class MarketRegime(TypedDict):
+    """
+    Market regime detection result.
+    
+    Attributes:
+        regime: TRENDING, RANGING, CHOPPY, TRANSITIONING
+        adx: Average Directional Index value
+        trend_strength: Trend strength 0-100
+        volatility: Normalized volatility
+        efficiency: Price efficiency ratio
+        trend_direction: UP, DOWN, NEUTRAL
+        confidence: Detection confidence 0-1
+    """
+    regime: str
+    adx: float
+    trend_strength: float
+    volatility: float
+    efficiency: float
+    trend_direction: str
+    confidence: float
+
+
+class EquityUpdate(TypedDict):
+    """
+    Equity curve update result.
+    
+    Attributes:
+        current_equity: Current equity percentage
+        current_drawdown: Current drawdown percentage
+        protection_triggered: Whether protection was just triggered
+        protection_active: Whether protection is currently active
+    """
+    current_equity: float
+    current_drawdown: float
+    protection_triggered: bool
+    protection_active: bool
+
+
+class ValidationResult(TypedDict):
+    """
+    Signal validation result.
+    
+    Attributes:
+        is_valid: Whether signal passed validation
+        errors: List of error messages
+        warnings: List of warning messages
+        quality_score: Quality score 0-100
+        adjusted_values: Dictionary of corrected values
+    """
+    is_valid: bool
+    errors: List[str]
+    warnings: List[str]
+    quality_score: float
+    adjusted_values: Dict[str, float]
+
+
+# ============================================================================
 # Type Aliases
 # ============================================================================
 
@@ -431,6 +559,8 @@ Timeframe = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h
 Direction = Literal["LONG", "SHORT"]
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop", "stop_limit"]
+MarketRegimeType = Literal["TRENDING", "RANGING", "CHOPPY", "TRANSITIONING", "UNKNOWN"]
+SignalQuality = Literal["PREMIUM", "CONFIRMED", "STANDARD", "WEAK"]
 
 
 # Example usage

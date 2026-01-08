@@ -154,11 +154,15 @@ def format_signal_message(
         lines.append(f"📈 Funding: {funding_rate*100:.4f}%")
 
     # Performance history (ALWAYS shown - no exceptions)
+    # Standardized format for all bots
     if performance_stats:
         stats = performance_stats
         total = stats.get("total", 0)
         wins = stats.get("wins", 0)
-        tp_count = stats.get("tp1", 0) + stats.get("tp2", 0) + stats.get("tp3", 0)
+        tp1 = stats.get("tp1", 0)
+        tp2 = stats.get("tp2", 0)
+        tp3 = stats.get("tp3", 0)
+        tp_count = tp1 + tp2 + tp3
         sl_count = stats.get("sl", 0)
         win_rate = (wins / total * 100) if total > 0 else 0
         lines.append("")
@@ -167,7 +171,7 @@ def format_signal_message(
             hist_line += f" | PnL:{stats['avg_pnl']:+.1f}%"
         lines.append(hist_line)
     else:
-        # Even without stats object, always show history line
+        # Even without stats object, always show history line with consistent format
         lines.append("")
         lines.append("📈 History: 0% Win (0/0) | TP:0 SL:0")
 

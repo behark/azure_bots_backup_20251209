@@ -568,7 +568,7 @@ class FundingBot(BotSignalMixin):
             bot_name="funding_bot",
             notifier=self.notifier,
             exchange="Binance",
-            default_timeframe="8h",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

@@ -24,7 +24,7 @@
   "analysis": {
     "candle_limit": 200,
     "request_timeout_seconds": 30,
-    "timeframe_override": "5m",
+    "timeframe_override": "1m",
     "pattern_error_thresholds": {
       "Cypher": 0.25,
       "Shark": 0.25,
@@ -62,7 +62,7 @@
     "rate_limit_backoff_max": 300
   },
   "signal": {
-    "cooldown_minutes": 10,
+    "cooldown_minutes": 1,
     "max_signal_age_hours": 24,
     "result_notification_cooldown_minutes": 5,
     "no_signal_alert_hours": 6

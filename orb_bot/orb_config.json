@@ -22,7 +22,7 @@
   "analysis": {
     "candle_limit": 100,
     "request_timeout_seconds": 30,
-    "timeframe_override": "5m",
+    "timeframe_override": "1m",
     "breakout_buffer_pct": 0.001,
     "session_times": {
       "london_open": "08:00",
@@ -51,7 +51,7 @@
     "rate_limit_backoff_max": 300
   },
   "signal": {
-    "cooldown_minutes": 10,
+    "cooldown_minutes": 1,
     "max_signal_age_hours": 12,
     "result_notification_cooldown_minutes": 5
   },

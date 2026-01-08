@@ -1,157 +1,157 @@
 [
   {
     "symbol": "BTC/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "BTC/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ETH/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ETH/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "SOL/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "SOL/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "XRP/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "XRP/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "DOGE/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "DOGE/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "LINK/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "AVAX/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ADA/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "POWER/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "BLUAI/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "IRYS/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ON/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "CLO/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "APR/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "RLS/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "TRUTH/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "SOON/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ASR/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "ZKJ/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "H/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   },
   {
     "symbol": "FHE/USDT",
-    "timeframe": "5m",
+    "timeframe": "1m",
     "exchange": "binanceusdm",
     "market_type": "swap"
   }

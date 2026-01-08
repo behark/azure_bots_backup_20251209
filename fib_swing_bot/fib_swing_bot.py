@@ -877,7 +877,7 @@ class FibSwingBot(BotSignalMixin):
             bot_name="fib_swing_bot",
             notifier=self.notifier,
             exchange="Binance",
-            default_timeframe="15m",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

@@ -535,7 +535,7 @@ class ORBBot(BotSignalMixin):
             bot_name="orb_bot",
             notifier=self.notifier,
             exchange="Binance",
-            default_timeframe="15m",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

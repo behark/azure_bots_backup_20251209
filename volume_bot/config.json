@@ -22,7 +22,7 @@
       "comment": "Conservative risk settings for better win rate"
     },
     "signal_management": {
-      "cooldown_minutes": 5,
+      "cooldown_minutes": 1,
       "max_signal_age_hours": 24,
       "allow_simultaneous_directions": false,
       "check_exchange_for_duplicates": true,

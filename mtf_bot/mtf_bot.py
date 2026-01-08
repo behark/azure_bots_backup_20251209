@@ -575,7 +575,7 @@ class MTFBot(BotSignalMixin):
             bot_name="mtf_bot",
             notifier=self.notifier,
             exchange="Binance",
-            default_timeframe="1h",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

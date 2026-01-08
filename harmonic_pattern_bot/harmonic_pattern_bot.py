@@ -633,7 +633,7 @@ class HarmonicPatternBot(BotSignalMixin):
             bot_name="harmonic_pattern_bot",
             notifier=self.notifier,
             exchange="Binance",
-            default_timeframe="1h",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

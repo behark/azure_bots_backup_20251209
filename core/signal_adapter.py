@@ -492,13 +492,14 @@ if __name__ == "__main__":
         reasons=["Strong momentum", "Volume confirmation"],
     )
     
-    print(f"\nCreated signal: {signal.signal_id}")
-    print(f"Open signals: {len(adapter.get_open_signals())}")
+    logger = logging.getLogger(__name__)
+    logger.info(f"Created signal: {signal.signal_id}")
+    logger.info(f"Open signals: {len(adapter.get_open_signals())}")
     
     # Check for TP/SL (would use real price fetcher)
     def mock_price_fetcher(symbol: str) -> float:
         return 42600.0  # Simulates TP1 hit
     
     results = adapter.check_and_notify(mock_price_fetcher)
-    print(f"Results: {len(results)}")
+    logger.info(f"Results: {len(results)}")
 

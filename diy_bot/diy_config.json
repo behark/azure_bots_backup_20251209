@@ -98,7 +98,7 @@
   },
   "signal": {
     "_description": "Signal generation and notification settings",
-    "cooldown_minutes": 10,
+    "cooldown_minutes": 1,
     "max_signal_age_hours": 24,
     "result_notification_cooldown_minutes": 1,
     "no_signal_alert_hours": 1

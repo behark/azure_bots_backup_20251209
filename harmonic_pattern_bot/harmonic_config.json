@@ -9,7 +9,7 @@
     "tp1_rr": 1.5,
     "tp2_rr": 2.5,
     "max_stop_pct": 3.0,
-    "cooldown_minutes": 10,
+    "cooldown_minutes": 1,
     "min_pattern_score": 70.0
   }
 }

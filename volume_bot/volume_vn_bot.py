@@ -1338,7 +1338,7 @@ class VolumeVNBOT(BotSignalMixin):
             bot_name="volume_bot",
             notifier=self.notifier,
             exchange="Binance",
-            default_timeframe="5m",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

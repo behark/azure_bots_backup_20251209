@@ -1544,7 +1544,7 @@ class DIYBot(BotSignalMixin):
             bot_name="diy_bot",
             notifier=self.notifier,
             exchange="MEXC",
-            default_timeframe="15m",
+            default_timeframe="1m",
             notification_mode="signal_only",
         )
 

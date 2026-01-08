@@ -1,8 +1,8 @@
 [
   {
     "symbol": "POWER/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -13,8 +13,8 @@
   },
   {
     "symbol": "BLUAI/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -25,8 +25,8 @@
   },
   {
     "symbol": "IRYS/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -37,8 +37,8 @@
   },
   {
     "symbol": "ON/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -49,8 +49,8 @@
   },
   {
     "symbol": "CLO/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -61,8 +61,8 @@
   },
   {
     "symbol": "APR/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -73,8 +73,8 @@
   },
   {
     "symbol": "RLS/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -85,8 +85,8 @@
   },
   {
     "symbol": "TRUTH/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -97,8 +97,8 @@
   },
   {
     "symbol": "SOON/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -109,8 +109,8 @@
   },
   {
     "symbol": "ASR/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -121,8 +121,8 @@
   },
   {
     "symbol": "ZKJ/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -133,8 +133,8 @@
   },
   {
     "symbol": "H/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,
@@ -145,8 +145,8 @@
   },
   {
     "symbol": "FHE/USDT",
-    "timeframe": "5m",
-    "cooldown_minutes": 10,
+    "timeframe": "1m",
+    "cooldown_minutes": 1,
     "orb_stages": [
       5,
       15,

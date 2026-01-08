@@ -15,6 +15,17 @@ echo -e "${GREEN}=== Starting All Trading Bots ===${NC}"
 echo "Base directory: $BASE_DIR"
 echo ""
 
+# Validate configuration before starting
+if [ -f "$BASE_DIR/validate_config.py" ]; then
+    echo -e "${YELLOW}Validating configuration...${NC}"
+    if "$BASE_DIR/venv/bin/python" "$BASE_DIR/validate_config.py" 2>/dev/null || python3 "$BASE_DIR/validate_config.py" 2>/dev/null; then
+        echo -e "${GREEN}✓ Configuration valid${NC}"
+    else
+        echo -e "${YELLOW}⚠ Configuration validation had warnings (continuing anyway)${NC}"
+    fi
+    echo ""
+fi
+
 # Check if virtual environment exists
 if [[ ! -d "$VENV_DIR" ]]; then
     echo -e "${RED}Error: Virtual environment not found at $VENV_DIR${NC}" >&2

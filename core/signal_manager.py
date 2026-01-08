@@ -841,10 +841,11 @@ if __name__ == "__main__":
     
     manager.add_signal(signal)
     
-    print(f"Created signal: {signal.signal_id}")
-    print(f"Open signals: {len(manager.get_open_signals())}")
+    logger = logging.getLogger(__name__)
+    logger.info(f"Created signal: {signal.signal_id}")
+    logger.info(f"Open signals: {len(manager.get_open_signals())}")
     
     # Get stats
     stats = manager.get_performance_stats()
-    print(f"Performance: {stats}")
+    logger.info(f"Performance: {stats}")
 

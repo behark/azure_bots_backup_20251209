@@ -20,8 +20,8 @@
     "funding_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
@@ -30,17 +30,17 @@
         "min_risk_reward_tp2": 2.0
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",    "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",    "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "liquidation_bot": {
       "enabled": true,
       "max_open_signals": 7,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.8,
         "tp1_atr_multiplier": 2.5,
@@ -48,19 +48,19 @@
         "min_risk_reward": 1.0
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "APR",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "MINA",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",    "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "APR",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "MINA",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",    "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "harmonic_bot": {
       "enabled": true,
       "max_open_signals": 35,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 2.0,
         "tp1_atr_multiplier": 2.0,
@@ -68,60 +68,60 @@
         "min_risk_reward": 1.0
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "VVV",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",    "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "APR",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "LAB",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "VVV",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",    "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "APR",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "LAB",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "candlestick_bot": {
       "enabled": true,
       "max_open_signals": 35,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 1.5,
         "tp2_atr_multiplier": 2.5
       },
       "symbols": [
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "APR",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "MINA",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "APR",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "MINA",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "volume_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
         "tp2_atr_multiplier": 3.0
       },
       "symbols": [
-        { "symbol": "RIVER",      "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",       "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",       "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "JELLYJELLY", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "LAB",        "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "RIVER",      "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",       "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",       "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "JELLYJELLY", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "LAB",        "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "psar_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.0,
         "tp1_atr_multiplier": 2.0,
@@ -129,20 +129,20 @@
         "use_trailing_stop": true
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",    "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "APR",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",    "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "APR",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "most_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.0,
         "tp1_atr_multiplier": 2.0,
@@ -150,18 +150,18 @@
         "use_trailing_stop": true
       },
       "symbols": [
-        { "symbol": "RLS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "RLS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "mtf_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
@@ -170,19 +170,19 @@
         "min_risk_reward_tp2": 2.0
       },
       "symbols": [
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",    "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",    "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "diy_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
@@ -191,42 +191,42 @@
         "min_risk_reward_tp2": 2.0
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "APR",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "ON",    "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "MINA",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "APR",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "ON",    "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "MINA",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "strat_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
         "tp2_atr_multiplier": 3.0
       },
       "symbols": [
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "APR",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "MINA",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "APR",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "MINA",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "fib_reversal_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
@@ -234,18 +234,18 @@
         "min_risk_reward": 1.0
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "BLUAI", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "CLO",   "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "RLS",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "BLUAI", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "CLO",   "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "RLS",   "period": "1m", "cooldown_minutes": 1 }
       ]
     },
     "fib_swing_bot": {
       "enabled": true,
       "max_open_signals": 55,
-      "interval_seconds": 300,
-      "default_cooldown_minutes": 5,
+      "interval_seconds": 60,
+      "default_cooldown_minutes": 1,
       "risk": {
         "sl_atr_multiplier": 1.5,
         "tp1_atr_multiplier": 2.0,
@@ -253,10 +253,10 @@
         "min_risk_reward": 1.0
       },
       "symbols": [
-        { "symbol": "POWER", "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "IRYS",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "KITE",  "period": "5m", "cooldown_minutes": 5 },
-        { "symbol": "VVV",   "period": "5m", "cooldown_minutes": 5 }
+        { "symbol": "POWER", "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "IRYS",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "KITE",  "period": "1m", "cooldown_minutes": 1 },
+        { "symbol": "VVV",   "period": "1m", "cooldown_minutes": 1 }
       ]
     }
   }

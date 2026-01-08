@@ -35,6 +35,24 @@ logs/
 # State files (contain trading data)
 *_state.json
 *_state.json.backup
+**/state*.json
+**/state*.json.lock
+
+# Signal log files (generated at runtime)
+**/*_signals.json
+**/signals.json
+
+# Generated analysis outputs
+bot_performance_*.json
+bot_performance_*.html
+bot_performance_*.csv
+
+# Backtest results (generated outputs)
+**/backtest_*_results.json
+**/*_backtest_results.json
+
+# Demo/test folders
+demo_*/
 
 # IDE
 .vscode/
@@ -53,3 +71,5 @@ Thumbs.db
 
 # Runtime artifacts
 *.pid
+*.log
+logs/

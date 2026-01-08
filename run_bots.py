@@ -35,6 +35,15 @@ try:
 except ImportError:
     pass
 
+# Load version if available
+VERSION_FILE = BASE_DIR / "VERSION"
+VERSION = "unknown"
+if VERSION_FILE.exists():
+    try:
+        VERSION = VERSION_FILE.read_text().strip()
+    except Exception:
+        pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +51,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("run_bots")
+
+# Log version on startup
+logger.info(f"Trading Bot System v{VERSION}")
 
 # Reduce noise from libraries
 logging.getLogger("urllib3").setLevel(logging.WARNING)

@@ -26,7 +26,7 @@ byk/
 ├── *_bot/                     # Legacy Bot Directories
 ├── tests/                     # Test Suite
 ├── global_config.json         # Centralized configuration
-├── main.py                    # Unified entry point
+├── run_bots.py                # Unified entry point
 └── requirements.txt
 ```
 
@@ -56,22 +56,22 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 ```bash
 # Run a specific strategy
-python main.py --bot orb
+python run_bots.py --bot orb
 
 # Run multiple bots
-python main.py --bot orb psar
+python run_bots.py --bot orb psar
 
 # Run all enabled bots
-python main.py --all
+python run_bots.py --all
 
 # Run one cycle only (testing)
-python main.py --bot orb --once
+python run_bots.py --bot orb --once
 
 # Show status of all bots
-python main.py --status
+python run_bots.py --status
 
 # Monitor live signals
-python main.py --monitor
+python run_bots.py --monitor
 ```
 
 ## 🎯 Available Strategies
@@ -152,10 +152,10 @@ Each bot can have its own configuration file in its directory (e.g., `orb_bot/or
 
 ```bash
 # Monitor all open signals
-python main.py --monitor
+python run_bots.py --monitor
 
 # View bot status
-python main.py --status
+python run_bots.py --status
 ```
 
 ### Telegram Notifications
@@ -230,7 +230,7 @@ The legacy bot scripts in `*_bot/` directories remain fully functional. To migra
 
 1. Create a new strategy file in `strategies/`
 2. Extend `BaseBot` and implement `generate_signal()`
-3. Register in `main.py`'s `BOT_REGISTRY`
+3. Register in `run_bots.py`'s `BOT_REGISTRY`
 4. Test with `--once` flag before production
 
 ## ⚠️ Critical Fixes Applied (v2.0)
@@ -251,7 +251,7 @@ Track performance with:
 
 ```bash
 # View summary for each bot
-python main.py --status
+python run_bots.py --status
 
 # Detailed analysis
 python analyze_bot_performance.py
